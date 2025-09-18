@@ -3,11 +3,29 @@ use std::collections::HashMap;
 // Currency conversion rate
 pub const USD_TO_TWD: f64 = 30.11;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AssetType {
+    UsStock,
+    TwStock,
+    Crypto,
+}
+
+impl std::fmt::Display for AssetType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AssetType::UsStock => write!(f, "US Stocks"),
+            AssetType::TwStock => write!(f, "TW Stocks"),
+            AssetType::Crypto => write!(f, "Crypto"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Asset {
     pub ticker: String,
     pub name: String,
     pub value_usd: f64,
+    pub asset_type: AssetType,
 }
 
 // Your original data
@@ -68,6 +86,7 @@ pub fn get_all_assets() -> Vec<Asset> {
             ticker: ticker.clone(),
             name: name.to_string(),
             value_usd: amount * current_price,
+            asset_type: AssetType::UsStock,
         });
     }
 
@@ -76,6 +95,7 @@ pub fn get_all_assets() -> Vec<Asset> {
             ticker: ticker.clone(),
             name: name.to_string(),
             value_usd: (amount * current_price) / USD_TO_TWD,
+            asset_type: AssetType::TwStock,
         });
     }
 
@@ -84,6 +104,7 @@ pub fn get_all_assets() -> Vec<Asset> {
             ticker: ticker.clone(),
             name: name.to_string(),
             value_usd: amount * current_price,
+            asset_type: AssetType::Crypto,
         });
     }
     assets
