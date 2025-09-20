@@ -8,24 +8,9 @@ use serde::{Deserialize, Serialize};
 // --- Enums for Type-Safety ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum BuySell {
+pub enum TransactionKind {
     Buy,
     Sell,
-}
-
-impl std::fmt::Display for BuySell {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BuySell::Buy => write!(f, "BUY"),
-            BuySell::Sell => write!(f, "SELL"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
-pub enum TransactionKind {
-    Trade,      // Buying or selling a security
     Dividend,   // Dividend payment
     Interest,   // Interest received
     Fee,        // Broker fees, ADR fees, etc.
@@ -88,7 +73,6 @@ pub struct Transaction {
     pub kind: TransactionKind,
     pub datetime: DateTime<chrono::Utc>,
     pub settle_date: Option<NaiveDate>,
-    pub buy_sell: Option<BuySell>,
     pub quantity: Decimal,
     pub price: Decimal,
     pub amount: Decimal,
@@ -104,9 +88,10 @@ pub struct Transaction {
 pub struct Holding {
     pub symbol: String,
     pub quantity: Decimal,
-    pub average_cost_basis: Decimal, /* (Total cost) / (Total shares)
-                                      * We could add more fields like current market value,
-                                      * unrealized P/L, etc. */
+    pub total_cost: Decimal,
+    pub average_cost: Decimal, /* (Total cost) / (Total shares)
+                                * We could add more fields like current market value,
+                                * unrealized P/L, etc. */
 }
 
 // --- Refined Top-Level Struct ---
@@ -144,7 +129,6 @@ impl CsvTransactionRecord {
             self.transaction
                 .settle_date
                 .map_or("".to_string(), |d| d.format("%Y-%m-%d").to_string()),
-            self.transaction.buy_sell.map_or("".to_string(), |bs| bs.to_string()),
             self.transaction.quantity.to_string(),
             self.transaction.price.round_dp(2).to_string(),
             self.transaction.amount.round_dp(2).to_string(),
@@ -166,42 +150,39 @@ impl Portfolio {
     }
 
     pub fn calculate_holdings(&mut self) {
-        let mut temp_holdings: HashMap<String, (Decimal, Decimal)> = HashMap::new(); // symbol -> (quantity, total_cost)
+        let mut temp_holdings: HashMap<String, (Decimal, Decimal, Decimal)> = HashMap::new(); // symbol -> (quantity, total_cost)
 
         for t in &self.transactions {
-            if t.kind == TransactionKind::Trade {
-                if let Some(buy_sell) = &t.buy_sell {
-                    let (quantity, total_cost) = temp_holdings
-                        .entry(t.symbol.clone())
-                        .or_insert((Decimal::ZERO, Decimal::ZERO));
-
-                    match buy_sell {
-                        BuySell::Buy => {
-                            *quantity += t.quantity;
-                            *total_cost += t.amount.abs();
-                        }
-                        BuySell::Sell => {
-                            let sold_quantity = t.quantity.abs();
-                            let avg_cost = if !quantity.is_zero() {
-                                *total_cost / *quantity
-                            } else {
-                                Decimal::ZERO
-                            };
-                            *total_cost -= avg_cost * sold_quantity;
-                            *quantity -= sold_quantity;
-                        }
-                    }
+            let (quantity, total_cost, avg) = temp_holdings.entry(t.symbol.clone()).or_insert((
+                Decimal::ZERO,
+                Decimal::ZERO,
+                Decimal::ZERO,
+            ));
+            match t.kind {
+                TransactionKind::Buy => {
+                    *quantity += t.quantity;
+                    *total_cost += t.amount.abs();
+                    *avg = total_cost.checked_div(*quantity).unwrap_or_default();
                 }
+                TransactionKind::Sell => {
+                    let sold_quantity = t.quantity.abs();
+                    *total_cost -= *avg * sold_quantity;
+                    *quantity -= sold_quantity;
+                }
+                TransactionKind::Deposit if t.quantity != Decimal::ZERO => {
+                    *quantity += t.quantity;
+                    *total_cost += t.amount;
+                    *avg = total_cost.checked_div(*quantity).unwrap_or_default();
+                }
+                _ => {}
             }
         }
 
         self.holdings = temp_holdings
             .into_iter()
-            .filter(|(_, (quantity, _))| !quantity.is_zero())
-            .map(|(symbol, (quantity, total_cost))| {
-                let average_cost_basis =
-                    if !quantity.is_zero() { total_cost / quantity } else { Decimal::ZERO };
-                (symbol.clone(), Holding { symbol, quantity, average_cost_basis })
+            .filter(|(_, (quantity, ..))| !quantity.is_zero())
+            .map(|(symbol, (quantity, total_cost, average_cost))| {
+                (symbol.clone(), Holding { symbol, quantity, total_cost, average_cost })
             })
             .collect();
     }
@@ -217,7 +198,6 @@ impl Portfolio {
             "kind",
             "datetime",
             "settle_date",
-            "buy_sell",
             "quantity",
             "price",
             "amount",
