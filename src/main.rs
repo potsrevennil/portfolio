@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     let mut portfolio = Portfolio::new();
-    ib::load_from_ib_csv(&mut portfolio, "ib.csv")?;
+    ib::load_from_ib_csv(&mut portfolio, "ib_combined.csv")?;
     portfolio.calculate_holdings();
     portfolio.to_csv_file("transactions.csv")?;
 
