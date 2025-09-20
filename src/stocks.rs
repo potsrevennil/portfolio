@@ -1,42 +1,72 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate};
+use csv;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 
 // --- Enums for Type-Safety ---
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum BuySell {
     Buy,
     Sell,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+impl std::fmt::Display for BuySell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuySell::Buy => write!(f, "BUY"),
+            BuySell::Sell => write!(f, "SELL"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum TransactionKind {
+    #[serde(alias = "ExchTrade")]
     Trade,
     Dividend,
     Interest,
     Fee,
     TransferIn,
     TransferOut,
+    #[serde(other)]
     Other,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+impl std::fmt::Display for TransactionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{:?}", self) }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum Currency {
     USD,
     TWD,
 }
 
+impl std::fmt::Display for Currency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Currency::USD => write!(f, "USD"),
+            Currency::TWD => write!(f, "TWD"),
+        }
+    }
+}
+
 // --- Refined Core Structs ---
 
 // Security struct remains largely the same
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Security {
     pub symbol: String,
     pub description: String,
     // ... other fields
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Transaction {
     pub symbol: String,
     pub kind: TransactionKind,
@@ -53,7 +83,7 @@ pub struct Transaction {
 // --- New Struct for Calculated Holdings ---
 
 /// Represents the current holding of a specific security.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Holding {
     pub symbol: String,
     pub quantity: Decimal,
@@ -64,6 +94,7 @@ pub struct Holding {
 
 // --- Refined Top-Level Struct ---
 
+#[derive(Debug)]
 pub struct Portfolio {
     // Static data about all securities ever transacted.
     pub securities: HashMap<String, Security>,
@@ -79,3 +110,114 @@ pub struct Portfolio {
     pub cash_balances: HashMap<Currency, Decimal>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CsvTransactionRecord {
+    pub security: Security,
+    pub transaction: Transaction,
+}
+
+impl CsvTransactionRecord {
+    fn to_string_record(&self) -> Vec<String> {
+        vec![
+            self.security.symbol.clone(),
+            self.security.description.clone(),
+            self.transaction.kind.to_string(),
+            self.transaction.datetime.format("%Y-%m-%dT%H:%M").to_string(),
+            self.transaction.settle_date.format("%Y-%m-%d").to_string(),
+            self.transaction.buy_sell.map_or("".to_string(), |bs| bs.to_string()),
+            self.transaction.quantity.to_string(),
+            self.transaction.price.map_or("".to_string(), |p| p.round_dp(2).to_string()),
+            self.transaction.amount.round_dp(2).to_string(),
+            self.transaction.commission.round_dp(2).to_string(),
+            self.transaction.currency.to_string(),
+        ]
+    }
+}
+
+impl Portfolio {
+    pub fn new() -> Self {
+        Portfolio {
+            securities: HashMap::new(),
+            transactions: Vec::new(),
+            holdings: HashMap::new(),
+            cash_balances: HashMap::new(),
+        }
+    }
+
+    pub fn calculate_holdings(&mut self) {
+        let mut temp_holdings: HashMap<String, (Decimal, Decimal)> = HashMap::new(); // symbol -> (quantity, total_cost)
+
+        for t in &self.transactions {
+            let cash_impact = t.amount + t.commission;
+            *self.cash_balances.entry(t.currency.clone()).or_default() += cash_impact;
+
+            if t.kind == TransactionKind::Trade {
+                if let Some(buy_sell) = &t.buy_sell {
+                    let (quantity, total_cost) = temp_holdings
+                        .entry(t.symbol.clone())
+                        .or_insert((Decimal::ZERO, Decimal::ZERO));
+
+                    match buy_sell {
+                        BuySell::Buy => {
+                            *quantity += t.quantity;
+                            *total_cost += t.amount.abs();
+                        }
+                        BuySell::Sell => {
+                            let sold_quantity = t.quantity.abs();
+                            let avg_cost = if !quantity.is_zero() {
+                                *total_cost / *quantity
+                            } else {
+                                Decimal::ZERO
+                            };
+                            *total_cost -= avg_cost * sold_quantity;
+                            *quantity -= sold_quantity;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.holdings = temp_holdings
+            .into_iter()
+            .filter(|(_, (quantity, _))| !quantity.is_zero())
+            .map(|(symbol, (quantity, total_cost))| {
+                let average_cost_basis =
+                    if !quantity.is_zero() { total_cost / quantity } else { Decimal::ZERO };
+                (symbol.clone(), Holding { symbol, quantity, average_cost_basis })
+            })
+            .collect();
+    }
+
+    pub fn to_csv_file(&self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut writer = csv::Writer::from_path(file_path)?;
+
+        // NOTE: csv doesn't support serde(flatten)
+        writer.write_record(&[
+            "symbol",
+            "description",
+            "kind",
+            "datetime",
+            "settle_date",
+            "buy_sell",
+            "quantity",
+            "price",
+            "amount",
+            "commission",
+            "currency",
+        ])?;
+
+        for t in &self.transactions {
+            let security = self
+                .securities
+                .get(&t.symbol)
+                .cloned()
+                .unwrap_or(Security { symbol: t.symbol.clone(), description: "".to_string() });
+
+            let row = CsvTransactionRecord { security, transaction: t.clone() };
+            writer.write_record(&row.to_string_record())?;
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+}
