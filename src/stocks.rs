@@ -112,31 +112,20 @@ pub struct Portfolio {
     pub cash_balances: HashMap<Currency, Decimal>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CsvTransactionRecord {
-    pub security: Security,
-    pub transaction: Transaction,
-}
-
-impl CsvTransactionRecord {
-    fn to_string_record(&self) -> Vec<String> {
-        vec![
-            self.transaction.source.to_string(),
-            self.security.symbol.clone(),
-            self.security.description.clone(),
-            self.transaction.kind.to_string(),
-            self.transaction.datetime.format("%Y-%m-%dT%H:%M").to_string(),
-            self.transaction
-                .settle_date
-                .map_or("".to_string(), |d| d.format("%Y-%m-%d").to_string()),
-            self.transaction.quantity.to_string(),
-            self.transaction.price.round_dp(2).to_string(),
-            self.transaction.amount.round_dp(2).to_string(),
-            self.transaction.commission.round_dp(2).to_string(),
-            self.transaction.currency.to_string(),
-            self.transaction.balance.round_dp(2).to_string(),
-        ]
-    }
+    pub source: Broker,
+    pub symbol: String,
+    pub description: String,
+    pub kind: TransactionKind,
+    pub datetime: DateTime<chrono::Utc>,
+    pub settle_date: Option<NaiveDate>,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    pub amount: Decimal,
+    pub commission: Decimal,
+    pub currency: Currency,
+    pub balance: Decimal,
 }
 
 impl Portfolio {
@@ -147,6 +136,31 @@ impl Portfolio {
             holdings: HashMap::new(),
             cash_balances: HashMap::new(),
         }
+    }
+
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let mut reader = csv::Reader::from_path(file_path)?;
+        for result in reader.deserialize() {
+            let record: CsvTransactionRecord = result?;
+            self.transactions.push(Transaction {
+                source: record.source,
+                symbol: record.symbol.clone(),
+                kind: record.kind,
+                datetime: record.datetime,
+                settle_date: record.settle_date,
+                quantity: record.quantity,
+                price: record.price,
+                amount: record.amount,
+                commission: record.commission,
+                currency: record.currency,
+                balance: record.balance,
+            });
+            self.securities.entry(record.symbol.clone()).or_insert(Security {
+                symbol: record.symbol.clone(),
+                description: record.description,
+            });
+        }
+        Ok(())
     }
 
     pub fn calculate_holdings(&mut self) {
@@ -189,23 +203,6 @@ impl Portfolio {
 
     pub fn to_csv_file(&self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut writer = csv::Writer::from_path(file_path)?;
-
-        // NOTE: csv doesn't support serde(flatten)
-        writer.write_record(&[
-            "source",
-            "symbol",
-            "description",
-            "kind",
-            "datetime",
-            "settle_date",
-            "quantity",
-            "price",
-            "amount",
-            "commission",
-            "currency",
-            "balance",
-        ])?;
-
         for t in &self.transactions {
             let security = self
                 .securities
@@ -213,10 +210,21 @@ impl Portfolio {
                 .cloned()
                 .unwrap_or(Security { symbol: t.symbol.clone(), description: "".to_string() });
 
-            let row = CsvTransactionRecord { security, transaction: t.clone() };
-            writer.write_record(&row.to_string_record())?;
+            writer.serialize(CsvTransactionRecord {
+                source: t.source,
+                symbol: t.symbol.clone(),
+                description: security.description,
+                kind: t.kind,
+                datetime: t.datetime,
+                settle_date: t.settle_date,
+                quantity: t.quantity,
+                price: t.price,
+                amount: t.amount,
+                commission: t.commission,
+                currency: t.currency,
+                balance: t.balance,
+            })?;
         }
-
         writer.flush()?;
         Ok(())
     }
