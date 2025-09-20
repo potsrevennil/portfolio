@@ -1,11 +1,16 @@
-use std::collections::HashMap;
-
 use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::Deserialize;
 
-use crate::stocks::{Broker, BuySell, Currency, Portfolio, Security, Transaction, TransactionKind};
+use crate::stocks::{Broker, Currency, Portfolio, Security, Transaction, TransactionKind};
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "UPPERCASE")]
+enum BuySell {
+    Buy,
+    Sell,
+}
 
 mod de_utils {
 
@@ -82,8 +87,6 @@ struct IbTransferRecord {
     #[serde(with = "de_utils::optional_date_format")]
     settle_date: Option<NaiveDate>,
     quantity: Decimal,
-    #[serde(rename = "TransferPrice")]
-    transfer_price: Decimal,
     #[serde(rename = "PositionAmount")]
     position_amount: Decimal,
 }
@@ -97,24 +100,32 @@ enum ParserType {
 impl IbRecord {
     fn get_transaction_kind(&self) -> TransactionKind {
         let desc = &self.activity_description;
-        if desc.contains("Dividend") {
-            TransactionKind::Dividend
-        } else if desc.contains("Tax") || desc.contains("Withholding") {
-            TransactionKind::Tax
-        } else if desc.contains("Interest") {
-            TransactionKind::Interest
-        } else if desc.contains("Fee") {
-            TransactionKind::Fee
-        } else if desc.starts_with("Buy") || desc.starts_with("Sell") {
-            TransactionKind::Trade
-        } else if desc == "Cash Transfer" || desc == "Electronic Fund Transfer" {
-            if self.amount.is_sign_positive() {
-                TransactionKind::Deposit
-            } else {
-                TransactionKind::Withdrawal
+        match self.buy_sell {
+            Some(BuySell::Buy) => TransactionKind::Buy,
+            Some(BuySell::Sell) => TransactionKind::Sell,
+            None => {
+                if desc.contains("Dividend") {
+                    TransactionKind::Dividend
+                } else if desc.contains("Tax") || desc.contains("Withholding") {
+                    TransactionKind::Tax
+                } else if desc.contains("Interest") {
+                    TransactionKind::Interest
+                } else if desc.contains("Fee") {
+                    TransactionKind::Fee
+                } else if desc.starts_with("Buy") {
+                    TransactionKind::Buy
+                } else if desc.starts_with("Sell") {
+                    TransactionKind::Sell
+                } else if desc == "Cash Transfer" || desc == "Electronic Fund Transfer" {
+                    if self.amount.is_sign_positive() {
+                        TransactionKind::Deposit
+                    } else {
+                        TransactionKind::Withdrawal
+                    }
+                } else {
+                    TransactionKind::Other
+                }
             }
-        } else {
-            TransactionKind::Other
         }
     }
 }
@@ -167,7 +178,6 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                         Utc,
                     ),
                     settle_date: ib_record.settle_date,
-                    buy_sell: ib_record.buy_sell,
                     quantity: ib_record.quantity,
                     price: ib_record.price,
                     amount: ib_record.amount,
@@ -223,7 +233,6 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                         Utc,
                     ),
                     settle_date: ib_transfer_record.settle_date,
-                    buy_sell: None,
                     quantity: ib_transfer_record.quantity,
                     price: ib_transfer_record
                         .position_amount

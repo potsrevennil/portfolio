@@ -49,7 +49,7 @@ fn print_holdings(
     sort_by: SortBy,
     order: Order,
 ) {
-    let get_value = |h: &(&String, &Holding)| h.1.quantity * h.1.average_cost_basis;
+    let get_value = |h: &(&String, &Holding)| h.1.quantity * h.1.average_cost;
 
     match (sort_by, order) {
         (SortBy::Name, Order::Asc) => holdings.sort_by(|a, b| a.0.cmp(b.0)),
@@ -62,29 +62,29 @@ fn print_holdings(
         }
     }
 
-    let name_col_width = 40;
+    let name_col_width = 35;
     println!(
-        "{: <15} {:<width$} {:<20} {:<10}",
+        "{: <15} {:<width$} {:>12} {:>18} {:>15}",
         "Ticker",
         "Name",
-        "Value (USD)",
+        "Quantity",
+        "Cost (USD)",
         "Percentage",
         width = name_col_width
     );
-    println!("{}", "=".repeat(90));
+    println!("{}", "=".repeat(99));
 
     for (symbol, holding) in holdings {
-        let value = holding.quantity * holding.average_cost_basis;
-        let percentage = if !total_assets_usd.is_zero() {
-            (value / total_assets_usd) * Decimal::from(100)
-        } else {
-            Decimal::ZERO
-        };
+        let percentage = holding.total_cost.checked_div(total_assets_usd).unwrap_or_default()
+            * Decimal::from(100);
         let name = securities.get(*symbol).map_or("", |s| &s.description);
         let name_width = UnicodeWidthStr::width(name);
         let padding = if name_width <= name_col_width { name_col_width - name_width } else { 0 };
         let name_part = format!("{}{}", name, " ".repeat(padding));
-        println!("{: <15} {} ${:<19.2} {:.2}%", symbol, name_part, value, percentage);
+        println!(
+            "{: <15} {} {:>12.4} {:>17.2} {:>14.2}%",
+            symbol, name_part, holding.quantity, holding.total_cost, percentage
+        );
     }
 }
 
@@ -103,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let total_holdings_value: Decimal =
-        portfolio.holdings.values().map(|h| h.quantity * h.average_cost_basis).sum();
+        portfolio.holdings.values().map(|h| h.quantity * h.average_cost).sum();
 
     let total_cash: Decimal = portfolio.cash_balances.values().sum(); // Assuming
     let total_assets_usd = total_holdings_value + total_cash;
