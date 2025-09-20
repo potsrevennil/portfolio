@@ -1,9 +1,13 @@
+mod ib;
 mod stocks;
 
-use crate::stocks::{Asset, AssetType};
-use clap::{builder::PossibleValue, Parser, ValueEnum};
 use std::collections::HashMap;
+
+use clap::{builder::PossibleValue, Parser, ValueEnum};
+use rust_decimal::Decimal;
 use unicode_width::UnicodeWidthStr;
+
+use crate::stocks::{Holding, Portfolio, Security};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -23,7 +27,7 @@ struct Cli {
     order: String,
 
     #[arg(short, long)]
-    group: bool,
+    group: bool, // This is not used yet in the refactored version
 }
 
 #[derive(ValueEnum, Clone, Debug, Copy)]
@@ -38,15 +42,23 @@ enum Order {
     Desc,
 }
 
-fn print_assets(assets: &mut [Asset], total_assets_usd: f64, sort_by: SortBy, order: Order) {
+fn print_holdings(
+    holdings: &mut [(&String, &Holding)],
+    securities: &HashMap<String, Security>,
+    total_assets_usd: Decimal,
+    sort_by: SortBy,
+    order: Order,
+) {
+    let get_value = |h: &(&String, &Holding)| h.1.quantity * h.1.average_cost_basis;
+
     match (sort_by, order) {
-        (SortBy::Name, Order::Asc) => assets.sort_by(|a, b| a.ticker.cmp(&b.ticker)),
-        (SortBy::Name, Order::Desc) => assets.sort_by(|a, b| b.ticker.cmp(&a.ticker)),
+        (SortBy::Name, Order::Asc) => holdings.sort_by(|a, b| a.0.cmp(b.0)),
+        (SortBy::Name, Order::Desc) => holdings.sort_by(|a, b| b.0.cmp(a.0)),
         (SortBy::Percentage, Order::Asc) => {
-            assets.sort_by(|a, b| a.value_usd.partial_cmp(&b.value_usd).unwrap())
+            holdings.sort_by(|a, b| get_value(a).partial_cmp(&get_value(b)).unwrap())
         }
         (SortBy::Percentage, Order::Desc) => {
-            assets.sort_by(|a, b| b.value_usd.partial_cmp(&a.value_usd).unwrap())
+            holdings.sort_by(|a, b| get_value(b).partial_cmp(&get_value(a)).unwrap())
         }
     }
 
@@ -61,29 +73,28 @@ fn print_assets(assets: &mut [Asset], total_assets_usd: f64, sort_by: SortBy, or
     );
     println!("{}", "=".repeat(90));
 
-    for asset in assets {
-        let percentage = (asset.value_usd / total_assets_usd) * 100.0;
-        let name_width = UnicodeWidthStr::width(asset.name.as_str());
-        let padding = if name_width <= name_col_width {
-            name_col_width - name_width
+    for (symbol, holding) in holdings {
+        let value = holding.quantity * holding.average_cost_basis;
+        let percentage = if !total_assets_usd.is_zero() {
+            (value / total_assets_usd) * Decimal::from(100)
         } else {
-            0
+            Decimal::ZERO
         };
-        let name_part = format!("{}{}", asset.name, " ".repeat(padding));
-        println!(
-            "{: <15} {} ${:<19.2} {:.2}%",
-            asset.ticker,
-            name_part,
-            asset.value_usd,
-            percentage
-        );
+        let name = securities.get(*symbol).map_or("", |s| &s.description);
+        let name_width = UnicodeWidthStr::width(name);
+        let padding = if name_width <= name_col_width { name_col_width - name_width } else { 0 };
+        let name_part = format!("{}{}", name, " ".repeat(padding));
+        println!("{: <15} {} ${:<19.2} {:.2}%", symbol, name_part, value, percentage);
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let mut assets: Vec<Asset> = stocks::get_all_assets();
-    let total_assets_usd: f64 = assets.iter().map(|a| a.value_usd).sum();
+
+    let mut portfolio = Portfolio::new();
+    ib::load_from_ib_csv(&mut portfolio, "ib.csv")?;
+    portfolio.calculate_holdings();
+    portfolio.to_csv_file("transactions.csv")?;
 
     let order = match cli.order.as_str() {
         "+" => Order::Asc,
@@ -91,29 +102,43 @@ fn main() {
         _ => unreachable!(), // clap should prevent this
     };
 
+    let total_holdings_value: Decimal =
+        portfolio.holdings.values().map(|h| h.quantity * h.average_cost_basis).sum();
+
+    let total_cash: Decimal = portfolio.cash_balances.values().sum(); // Assuming
+    let total_assets_usd = total_holdings_value + total_cash;
+
     println!("Total Portfolio Value: ${:.2} USD", total_assets_usd);
-    println!("USD/TWD Exchange Rate: {}", stocks::USD_TO_TWD);
     println!();
 
+    let mut holdings_vec: Vec<_> = portfolio.holdings.iter().collect();
+
     if cli.group {
-        let mut grouped_assets: HashMap<AssetType, Vec<Asset>> = HashMap::new();
-        for asset in assets {
-            grouped_assets
-                .entry(asset.asset_type.clone())
-                .or_default()
-                .push(asset);
-        }
-
-        let group_order = vec![AssetType::UsStock, AssetType::TwStock, AssetType::Crypto];
-
-        for asset_type in group_order {
-            if let Some(mut assets) = grouped_assets.remove(&asset_type) {
-                println!("--- {} ---", asset_type);
-                print_assets(&mut assets, total_assets_usd, cli.sort_by, order);
-                println!();
-            }
-        }
+        // Grouping logic is not implemented yet as AssetType is gone.
+        // For now, just print all holdings.
+        println!("--- All Holdings ---");
+        print_holdings(
+            &mut holdings_vec,
+            &portfolio.securities,
+            total_assets_usd,
+            cli.sort_by,
+            order,
+        );
+        println!();
     } else {
-        print_assets(&mut assets, total_assets_usd, cli.sort_by, order);
+        print_holdings(
+            &mut holdings_vec,
+            &portfolio.securities,
+            total_assets_usd,
+            cli.sort_by,
+            order,
+        );
     }
+
+    println!("--- Cash Balances ---");
+    for (currency, balance) in &portfolio.cash_balances {
+        println!("{:?}: {:.2}", currency, balance);
+    }
+
+    Ok(())
 }
