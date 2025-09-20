@@ -25,13 +25,13 @@ impl std::fmt::Display for BuySell {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum TransactionKind {
-    #[serde(alias = "ExchTrade")]
-    Trade,
-    Dividend,
-    Interest,
-    Fee,
-    TransferIn,
-    TransferOut,
+    Trade,       // Buying or selling a security
+    Dividend,    // Dividend payment
+    Interest,    // Interest received
+    Fee,         // Broker fees, ADR fees, etc.
+    Tax,         // Withholding tax
+    Deposit,     // Cash deposit
+    Withdrawal,  // Cash withdrawal
     #[serde(other)]
     Other,
 }
@@ -56,6 +56,21 @@ impl std::fmt::Display for Currency {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum Broker {
+    InteractiveBrokers,
+    Firstrade,
+}
+
+impl std::fmt::Display for Broker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Broker::InteractiveBrokers => write!(f, "InteractiveBrokers"),
+            Broker::Firstrade => write!(f, "Firstrade"),
+        }
+    }
+}
+
 // --- Refined Core Structs ---
 
 // Security struct remains largely the same
@@ -68,16 +83,18 @@ pub struct Security {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Transaction {
+    pub source: Broker,
     pub symbol: String,
     pub kind: TransactionKind,
-    pub datetime: DateTime<chrono::Utc>, // Precise timestamp
-    pub settle_date: NaiveDate,          // Just the date is enough
-    pub buy_sell: Option<BuySell>,       // Not all transactions are buys/sells
-    pub quantity: Decimal,               // Use Decimal for precision
-    pub price: Option<Decimal>,          // Price might not apply to all kinds
+    pub datetime: DateTime<chrono::Utc>,
+    pub settle_date: Option<NaiveDate>,
+    pub buy_sell: Option<BuySell>,
+    pub quantity: Decimal,
+    pub price: Option<Decimal>,
     pub amount: Decimal,
     pub commission: Decimal,
     pub currency: Currency,
+    pub balance: Decimal,
 }
 
 // --- New Struct for Calculated Holdings ---
@@ -119,17 +136,19 @@ pub struct CsvTransactionRecord {
 impl CsvTransactionRecord {
     fn to_string_record(&self) -> Vec<String> {
         vec![
+            self.transaction.source.to_string(),
             self.security.symbol.clone(),
             self.security.description.clone(),
             self.transaction.kind.to_string(),
             self.transaction.datetime.format("%Y-%m-%dT%H:%M").to_string(),
-            self.transaction.settle_date.format("%Y-%m-%d").to_string(),
+            self.transaction.settle_date.map_or("".to_string(), |d| d.format("%Y-%m-%d").to_string()),
             self.transaction.buy_sell.map_or("".to_string(), |bs| bs.to_string()),
             self.transaction.quantity.to_string(),
             self.transaction.price.map_or("".to_string(), |p| p.round_dp(2).to_string()),
             self.transaction.amount.round_dp(2).to_string(),
             self.transaction.commission.round_dp(2).to_string(),
             self.transaction.currency.to_string(),
+            self.transaction.balance.round_dp(2).to_string(),
         ]
     }
 }
@@ -193,6 +212,7 @@ impl Portfolio {
 
         // NOTE: csv doesn't support serde(flatten)
         writer.write_record(&[
+            "source",
             "symbol",
             "description",
             "kind",
@@ -204,6 +224,7 @@ impl Portfolio {
             "amount",
             "commission",
             "currency",
+            "balance",
         ])?;
 
         for t in &self.transactions {
