@@ -1,28 +1,45 @@
-use std::error::Error;
+use std::{collections::HashMap, error::Error};
 
 use chrono::{DateTime, NaiveDate, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::Deserialize;
 
-use crate::stocks::{BuySell, Currency, Portfolio, Security, Transaction, TransactionKind};
+use crate::stocks::{Broker, BuySell, Currency, Portfolio, Security, Transaction, TransactionKind};
 
 mod de_utils {
-    use chrono::{DateTime, Utc};
-    use serde::{de, Deserialize, Deserializer};
 
-    pub fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let parts: Vec<&str> = s.split(';').collect();
-        if parts.len() != 2 {
-            return Err(de::Error::custom("Invalid datetime format"));
+    pub mod date_format {
+        use chrono::NaiveDate;
+        use serde::{self, Deserialize, Deserializer};
+
+        const FORMAT: &'static str = "%Y%m%d";
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<NaiveDate, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let s = String::deserialize(deserializer)?;
+            NaiveDate::parse_from_str(&s, FORMAT).map_err(serde::de::Error::custom)
         }
-        let date_time_str = format!("{} {}", parts[0], parts[1]);
-        let naive_dt = chrono::NaiveDateTime::parse_from_str(&date_time_str, "%Y-%m-%d %H%M%S")
-            .map_err(de::Error::custom)?;
-        Ok(DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc))
+    }
+
+    pub mod optional_date_format {
+        use chrono::NaiveDate;
+        use serde::{self, Deserialize, Deserializer};
+
+        const FORMAT: &'static str = "%Y%m%d";
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let s = String::deserialize(deserializer)?;
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                NaiveDate::parse_from_str(&s, FORMAT).map(Some).map_err(serde::de::Error::custom)
+            }
+        }
     }
 }
 
@@ -33,50 +50,102 @@ struct IbRecord {
     currency: Currency,
     symbol: String,
     description: String,
-    transaction_type: TransactionKind,
-    #[serde(rename = "Date/Time", deserialize_with = "de_utils::deserialize_datetime")]
-    datetime: DateTime<Utc>,
-    settle_date: NaiveDate,
+    #[serde(with = "de_utils::date_format")]
+    date: NaiveDate,
+    #[serde(with = "de_utils::optional_date_format")]
+    settle_date: Option<NaiveDate>,
+    activity_description: String,
     #[serde(rename = "Buy/Sell")]
     buy_sell: Option<BuySell>,
+    #[serde(rename = "TradeQuantity")]
     quantity: Decimal,
-    price: Option<Decimal>,
-    amount: Decimal,
+    #[serde(rename = "TradePrice")]
+    price: Decimal,
+    #[serde(rename = "TradeCommission")]
     commission: Decimal,
-    broker_execution_commission: Decimal,
-    broker_clearing_commission: Decimal,
-    other_commission: Decimal,
+    #[serde(rename = "TradeTax")]
     tax: Decimal,
+    amount: Decimal,
+    balance: Decimal,
+}
+
+impl IbRecord {
+    fn get_transaction_kind(&self) -> TransactionKind {
+        let desc = &self.activity_description;
+        if desc.contains("Dividend") {
+            TransactionKind::Dividend
+        } else if desc.contains("Tax") || desc.contains("Withholding") {
+            TransactionKind::Tax
+        } else if desc.contains("Interest") {
+            TransactionKind::Interest
+        } else if desc.contains("Fee") {
+            TransactionKind::Fee
+        } else if desc.starts_with("Buy") || desc.starts_with("Sell") {
+            TransactionKind::Trade
+        } else if desc == "Cash Transfer" || desc == "Electronic Fund Transfer" {
+            if self.amount.is_sign_positive() {
+                TransactionKind::Deposit
+            } else {
+                TransactionKind::Withdrawal
+            }
+        } else {
+            TransactionKind::Other
+        }
+    }
 }
 
 pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<(), Box<dyn Error>> {
     let mut rdr = csv::Reader::from_path(file_path)?;
 
+    let mut running_cash_balance: HashMap<Currency, Decimal> = HashMap::new();
+
+    let mut i = 0;
     for result in rdr.deserialize() {
         let record: IbRecord = result?;
 
         portfolio.securities.entry(record.symbol.clone()).or_insert_with(|| Security {
             symbol: record.symbol.clone(),
-            description: record.description,
+            description: record.description.clone(),
         });
 
+        let kind = record.get_transaction_kind();
         let transaction = Transaction {
-            symbol: record.symbol,
-            kind: record.transaction_type,
-            datetime: record.datetime,
+            source: Broker::InteractiveBrokers,
+            symbol: record.symbol.clone(),
+            kind,
+            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
+                record.date.and_hms_opt(0, 0, 0).unwrap(),
+                Utc,
+            ),
             settle_date: record.settle_date,
             buy_sell: record.buy_sell,
             quantity: record.quantity,
-            price: record.price,
+            price: if record.price.is_zero() { None } else { Some(record.price) },
             amount: record.amount,
-            commission: record.commission
-                + record.broker_execution_commission
-                + record.broker_clearing_commission
-                + record.other_commission
-                + record.tax,
+            commission: record.commission + record.tax,
             currency: record.currency,
+            balance: record.balance,
         };
+
+        // Update running cash balance
+        let current_currency_balance =
+            running_cash_balance.entry(transaction.currency).or_insert(Decimal::ZERO);
+        *current_currency_balance += transaction.amount;
+
+        // Compare with record.balance
+        // Use a small epsilon for floating point comparisons with Decimal
+        let epsilon = Decimal::from_f64(0.00000001).unwrap(); // Define a small epsilon
+        if (record.balance - *current_currency_balance).abs() > epsilon {
+            println!("{i} {:?}", transaction);
+            return Err(format!(
+                "Balance mismatch for transaction on {}: Expected {}, got {}",
+                transaction.datetime, record.balance, *current_currency_balance
+            )
+            .into());
+        }
+
         portfolio.transactions.push(transaction);
+        i += 1;
     }
 
     Ok(())
