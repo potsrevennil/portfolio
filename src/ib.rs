@@ -1,5 +1,6 @@
-use std::{collections::HashMap, error::Error};
+use std::collections::HashMap;
 
+use anyhow::{bail, ensure, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::Deserialize;
@@ -69,6 +70,30 @@ struct IbRecord {
     balance: Decimal,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct IbTransferRecord {
+    #[serde(rename = "CurrencyPrimary")]
+    currency: Currency,
+    symbol: String,
+    description: String,
+    #[serde(with = "de_utils::date_format")]
+    date: NaiveDate,
+    #[serde(with = "de_utils::optional_date_format")]
+    settle_date: Option<NaiveDate>,
+    quantity: Decimal,
+    #[serde(rename = "TransferPrice")]
+    transfer_price: Decimal,
+    #[serde(rename = "PositionAmount")]
+    position_amount: Decimal,
+}
+
+enum ParserType {
+    IbRecord,
+    IbTransferRecord,
+    Unknown,
+}
+
 impl IbRecord {
     fn get_transaction_kind(&self) -> TransactionKind {
         let desc = &self.activity_description;
@@ -94,58 +119,127 @@ impl IbRecord {
     }
 }
 
-pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<(), Box<dyn Error>> {
-    let mut rdr = csv::Reader::from_path(file_path)?;
+pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()> {
+    let records = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_path(file_path)?
+        .into_records();
 
-    let mut running_cash_balance: HashMap<Currency, Decimal> = HashMap::new();
+    let mut current_parser_type = ParserType::Unknown;
+    let mut ib_record_header: Option<csv::StringRecord> = None;
+    let mut ib_transfer_record_header: Option<csv::StringRecord> = None;
 
-    let mut i = 0;
-    for result in rdr.deserialize() {
-        let record: IbRecord = result?;
+    for (i, record_result) in records.into_iter().enumerate() {
+        let record_string = record_result.context(format!("Failed to read record from CSV {i}"))?;
 
-        portfolio.securities.entry(record.symbol.clone()).or_insert_with(|| Security {
-            symbol: record.symbol.clone(),
-            description: record.description.clone(),
-        });
-
-        let kind = record.get_transaction_kind();
-        let transaction = Transaction {
-            source: Broker::InteractiveBrokers,
-            symbol: record.symbol.clone(),
-            kind,
-            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
-                record.date.and_hms_opt(0, 0, 0).unwrap(),
-                Utc,
-            ),
-            settle_date: record.settle_date,
-            buy_sell: record.buy_sell,
-            quantity: record.quantity,
-            price: if record.price.is_zero() { None } else { Some(record.price) },
-            amount: record.amount,
-            commission: record.commission + record.tax,
-            currency: record.currency,
-            balance: record.balance,
-        };
-
-        // Update running cash balance
-        let current_currency_balance =
-            running_cash_balance.entry(transaction.currency).or_insert(Decimal::ZERO);
-        *current_currency_balance += transaction.amount;
-
-        // Compare with record.balance
-        // Use a small epsilon for floating point comparisons with Decimal
-        let epsilon = Decimal::from_f64(0.00000001).unwrap(); // Define a small epsilon
-        if (record.balance - *current_currency_balance).abs() > epsilon {
-            println!("{i} {:?}", transaction);
-            return Err(format!(
-                "Balance mismatch for transaction on {}: Expected {}, got {}",
-                transaction.datetime, record.balance, *current_currency_balance
-            )
-            .into());
+        // Attempt to detect header
+        if record_string.iter().any(|field| field == "Buy/Sell") {
+            current_parser_type = ParserType::IbRecord;
+            ib_record_header = Some(record_string);
+            continue; // Skip header row
+        } else if record_string.iter().any(|field| field == "TransferPrice") {
+            current_parser_type = ParserType::IbTransferRecord;
+            ib_transfer_record_header = Some(record_string);
+            continue; // Skip header row
         }
 
-        portfolio.transactions.push(transaction);
-        i += 1;
+        // Process data row based on current_parser_type
+        match current_parser_type {
+            ParserType::IbRecord => {
+                let header = ib_record_header.as_ref().context("IbRecord header not found")?;
+                let ib_record: IbRecord = record_string.deserialize(Some(header)).context(
+                    format!("Failed to deserialize row as IbRecord: {:?}", record_string),
+                )?;
+
+                portfolio.securities.entry(ib_record.symbol.clone()).or_insert_with(|| Security {
+                    symbol: ib_record.symbol.clone(),
+                    description: ib_record.description.clone(),
+                });
+
+                let kind = ib_record.get_transaction_kind();
+                let transaction = Transaction {
+                    source: Broker::InteractiveBrokers,
+                    symbol: ib_record.symbol.clone(),
+                    kind,
+                    datetime: DateTime::<Utc>::from_naive_utc_and_offset(
+                        ib_record.date.and_hms_opt(0, 0, 0).unwrap(),
+                        Utc,
+                    ),
+                    settle_date: ib_record.settle_date,
+                    buy_sell: ib_record.buy_sell,
+                    quantity: ib_record.quantity,
+                    price: ib_record.price,
+                    amount: ib_record.amount,
+                    commission: ib_record.commission + ib_record.tax,
+                    currency: ib_record.currency,
+                    balance: ib_record.balance,
+                };
+
+                // Update running cash balance
+                let balance =
+                    portfolio.cash_balances.entry(transaction.currency).or_insert(Decimal::ZERO);
+                *balance += transaction.amount;
+
+                // Compare with record.balance
+                let epsilon = Decimal::from_f64(0.00000001).unwrap();
+                ensure!(
+                    (ib_record.balance - *balance).abs() <= epsilon,
+                    "Balance mismatch for transaction on {}: Expected {}, got {}",
+                    transaction.datetime,
+                    ib_record.balance,
+                    *balance
+                );
+
+                portfolio.transactions.push(transaction);
+            }
+            ParserType::IbTransferRecord => {
+                let header = ib_transfer_record_header
+                    .as_ref()
+                    .context("IbTransferRecord header not found")?;
+                let ib_transfer_record: IbTransferRecord =
+                    record_string.deserialize(Some(header)).context(format!(
+                        "Failed to deserialize row as IbTransferRecord: {:?}",
+                        record_string
+                    ))?;
+
+                portfolio.securities.entry(ib_transfer_record.symbol.clone()).or_insert_with(
+                    || Security {
+                        symbol: ib_transfer_record.symbol.clone(),
+                        description: ib_transfer_record.description.clone(),
+                    },
+                );
+
+                let balance = portfolio
+                    .cash_balances
+                    .entry(ib_transfer_record.currency)
+                    .or_insert(Decimal::ZERO);
+                let transaction = Transaction {
+                    source: Broker::InteractiveBrokers,
+                    symbol: ib_transfer_record.symbol.clone(),
+                    kind: TransactionKind::Deposit,
+                    datetime: DateTime::<Utc>::from_naive_utc_and_offset(
+                        ib_transfer_record.date.and_hms_opt(0, 0, 0).unwrap(),
+                        Utc,
+                    ),
+                    settle_date: ib_transfer_record.settle_date,
+                    buy_sell: None,
+                    quantity: ib_transfer_record.quantity,
+                    price: ib_transfer_record
+                        .position_amount
+                        .checked_div(ib_transfer_record.quantity)
+                        .unwrap_or_default(),
+                    amount: ib_transfer_record.position_amount,
+                    commission: Decimal::ZERO,
+                    currency: ib_transfer_record.currency,
+                    balance: *balance,
+                };
+                portfolio.transactions.push(transaction);
+            }
+            ParserType::Unknown => {
+                bail!("Encountered data row before a recognized header: {:?}", record_string);
+            }
+        }
     }
 
     Ok(())

@@ -25,13 +25,13 @@ impl std::fmt::Display for BuySell {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum TransactionKind {
-    Trade,       // Buying or selling a security
-    Dividend,    // Dividend payment
-    Interest,    // Interest received
-    Fee,         // Broker fees, ADR fees, etc.
-    Tax,         // Withholding tax
-    Deposit,     // Cash deposit
-    Withdrawal,  // Cash withdrawal
+    Trade,      // Buying or selling a security
+    Dividend,   // Dividend payment
+    Interest,   // Interest received
+    Fee,        // Broker fees, ADR fees, etc.
+    Tax,        // Withholding tax
+    Deposit,    // Cash deposit
+    Withdrawal, // Cash withdrawal
     #[serde(other)]
     Other,
 }
@@ -90,7 +90,7 @@ pub struct Transaction {
     pub settle_date: Option<NaiveDate>,
     pub buy_sell: Option<BuySell>,
     pub quantity: Decimal,
-    pub price: Option<Decimal>,
+    pub price: Decimal,
     pub amount: Decimal,
     pub commission: Decimal,
     pub currency: Currency,
@@ -141,10 +141,12 @@ impl CsvTransactionRecord {
             self.security.description.clone(),
             self.transaction.kind.to_string(),
             self.transaction.datetime.format("%Y-%m-%dT%H:%M").to_string(),
-            self.transaction.settle_date.map_or("".to_string(), |d| d.format("%Y-%m-%d").to_string()),
+            self.transaction
+                .settle_date
+                .map_or("".to_string(), |d| d.format("%Y-%m-%d").to_string()),
             self.transaction.buy_sell.map_or("".to_string(), |bs| bs.to_string()),
             self.transaction.quantity.to_string(),
-            self.transaction.price.map_or("".to_string(), |p| p.round_dp(2).to_string()),
+            self.transaction.price.round_dp(2).to_string(),
             self.transaction.amount.round_dp(2).to_string(),
             self.transaction.commission.round_dp(2).to_string(),
             self.transaction.currency.to_string(),
@@ -167,9 +169,6 @@ impl Portfolio {
         let mut temp_holdings: HashMap<String, (Decimal, Decimal)> = HashMap::new(); // symbol -> (quantity, total_cost)
 
         for t in &self.transactions {
-            let cash_impact = t.amount + t.commission;
-            *self.cash_balances.entry(t.currency.clone()).or_default() += cash_impact;
-
             if t.kind == TransactionKind::Trade {
                 if let Some(buy_sell) = &t.buy_sell {
                     let (quantity, total_cost) = temp_holdings
