@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
+set -o errexit
+set -o errtrace
+set -o nounset
+set -o pipefail
+
+# consts
+ROOT="$(realpath "$(dirname "$0")"/../)"
+
+GREEN="$(tput setaf 2)"
+NORMAL="$(tput sgr0)"
+
+# utility
+info()
+{
+  printf "%s %b\n" "${GREEN}info" "${NORMAL}${*}"
+}
+
+info "Formatting nix files"
+nixpkgs-fmt "$(git ls-files -- ":/*.nix")"
+
+info "Formatting shell scripts"
+# shellcheck disable=SC2046
+shfmt -s -w -l -i 2 -ci -fn $(shfmt -f $(git grep -l '' :/))
+
+info "Formatting python scripts"
+black --include scripts/tests "$ROOT"
