@@ -26,6 +26,13 @@ impl std::fmt::Display for TransactionKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{:?}", self) }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum AssetClass {
+    Stk,
+    Cash,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Currency {
@@ -71,6 +78,7 @@ pub struct Security {
 pub struct Transaction {
     pub id: String,
     pub source: Broker,
+    pub asset_class: AssetClass,
     pub symbol: String,
     pub kind: TransactionKind,
     pub datetime: DateTime<chrono::Utc>,
@@ -118,6 +126,7 @@ pub struct Portfolio {
 pub struct CsvTransactionRecord {
     pub id: String,
     pub source: Broker,
+    pub asset_class: AssetClass,
     pub symbol: String,
     pub description: String,
     pub kind: TransactionKind,
@@ -156,6 +165,7 @@ impl Portfolio {
             self.transactions.push(Transaction {
                 id: record.id,
                 source: record.source,
+                asset_class: record.asset_class,
                 symbol: record.symbol.clone(),
                 kind: record.kind,
                 datetime: record.datetime,
@@ -176,9 +186,28 @@ impl Portfolio {
     }
 
     pub fn calculate_holdings(&mut self) {
+        self.cash_balances.clear();
         let mut temp_holdings: HashMap<String, (Decimal, Decimal, Decimal)> = HashMap::new(); // symbol -> (quantity, total_cost)
 
         for t in &self.transactions {
+            // Update cash balance
+            let should_update = match t.kind {
+                TransactionKind::Buy
+                | TransactionKind::Sell
+                | TransactionKind::Dividend
+                | TransactionKind::Interest
+                | TransactionKind::Fee
+                | TransactionKind::Tax => true,
+                TransactionKind::Deposit | TransactionKind::Withdrawal => {
+                    t.asset_class == AssetClass::Cash
+                }
+                _ => false,
+            };
+
+            if should_update {
+                *self.cash_balances.entry(t.currency).or_default() += t.amount;
+            }
+
             let (quantity, total_cost, avg) = temp_holdings.entry(t.symbol.clone()).or_insert((
                 Decimal::ZERO,
                 Decimal::ZERO,
@@ -225,6 +254,7 @@ impl Portfolio {
             writer.serialize(CsvTransactionRecord {
                 id: t.id.clone(),
                 source: t.source,
+                asset_class: t.asset_class.clone(),
                 symbol: t.symbol.clone(),
                 description: security.description,
                 kind: t.kind,
