@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use anyhow::Result;
 use chrono::{DateTime, NaiveDate};
 use csv;
 use rust_decimal::Decimal;
@@ -140,13 +141,16 @@ impl Portfolio {
         }
     }
 
-    pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn load_from_csv(&mut self, file_path: &str) -> Result<()> {
         let mut reader = csv::Reader::from_path(file_path)?;
         let mut transaction_ids = std::collections::HashSet::new();
         for result in reader.deserialize() {
             let record: CsvTransactionRecord = result?;
             if !transaction_ids.insert(record.id.clone()) {
-                eprintln!("Warning: Duplicate transaction ID found, skipping record: {}", record.id);
+                eprintln!(
+                    "Warning: Duplicate transaction ID found, skipping record: {}",
+                    record.id
+                );
                 continue;
             }
             self.transactions.push(Transaction {
@@ -209,7 +213,7 @@ impl Portfolio {
             .collect();
     }
 
-    pub fn to_csv_file(&self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn to_csv_file(&self, file_path: &str) -> Result<()> {
         let mut writer = csv::Writer::from_path(file_path)?;
         for t in &self.transactions {
             let security = self
