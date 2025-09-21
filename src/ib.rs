@@ -3,7 +3,9 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::Deserialize;
 
-use crate::stocks::{AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind};
+use crate::stocks::{
+    AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind,
+};
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "UPPERCASE")]

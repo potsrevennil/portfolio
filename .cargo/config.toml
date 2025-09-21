@@ -1,2 +1,5 @@
 [registries.crates-io]
 protocol = "sparse"
+
+[env]
+DATABASE_URL = "sqlite:sqlite.db"

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT date, close_price FROM stock_prices\n            WHERE symbol = ? AND date >= ? AND date <= ?\n            ORDER BY date ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "date",
+        "ordinal": 0,
+        "type_info": "Date"
+      },
+      {
+        "name": "close_price",
+        "ordinal": 1,
+        "type_info": "Float"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5b7acf97a9a5a019c97c8be83b60517f662346a2358f9ba0b75489b630c49536"
+}
