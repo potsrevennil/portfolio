@@ -52,6 +52,8 @@ mod de_utils {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct IbRecord {
+    #[serde(rename = "TransactionID")]
+    id: String,
     #[serde(rename = "CurrencyPrimary")]
     currency: Currency,
     symbol: String,
@@ -78,6 +80,8 @@ struct IbRecord {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct IbTransferRecord {
+    #[serde(rename = "TransactionID")]
+    id: String,
     #[serde(rename = "CurrencyPrimary")]
     currency: Currency,
     symbol: String,
@@ -137,6 +141,7 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
         .from_path(file_path)?
         .into_records();
 
+    let mut transaction_ids = std::collections::HashSet::new();
     let mut current_parser_type = ParserType::Unknown;
     let mut ib_record_header: Option<csv::StringRecord> = None;
     let mut ib_transfer_record_header: Option<csv::StringRecord> = None;
@@ -163,6 +168,14 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                     format!("Failed to deserialize row as IbRecord: {:?}", record_string),
                 )?;
 
+                if !transaction_ids.insert(ib_record.id.clone()) {
+                    eprintln!(
+                        "Warning: Duplicate transaction ID found, skipping record: {}",
+                        ib_record.id
+                    );
+                    continue;
+                }
+
                 portfolio.securities.entry(ib_record.symbol.clone()).or_insert_with(|| Security {
                     symbol: ib_record.symbol.clone(),
                     description: ib_record.description.clone(),
@@ -170,6 +183,7 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
 
                 let kind = ib_record.get_transaction_kind();
                 let transaction = Transaction {
+                    id: ib_record.id.clone(),
                     source: Broker::InteractiveBrokers,
                     symbol: ib_record.symbol.clone(),
                     kind,
@@ -213,6 +227,14 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                         record_string
                     ))?;
 
+                if !transaction_ids.insert(ib_transfer_record.id.clone()) {
+                    eprintln!(
+                        "Warning: Duplicate transaction ID found, skipping record: {}",
+                        ib_transfer_record.id
+                    );
+                    continue;
+                }
+
                 portfolio.securities.entry(ib_transfer_record.symbol.clone()).or_insert_with(
                     || Security {
                         symbol: ib_transfer_record.symbol.clone(),
@@ -225,6 +247,7 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                     .entry(ib_transfer_record.currency)
                     .or_insert(Decimal::ZERO);
                 let transaction = Transaction {
+                    id: ib_transfer_record.id.clone(),
                     source: Broker::InteractiveBrokers,
                     symbol: ib_transfer_record.symbol.clone(),
                     kind: TransactionKind::Deposit,
