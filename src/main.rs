@@ -1,14 +1,10 @@
-mod ib;
-mod stocks;
-
 use std::collections::HashMap;
 
 use anyhow::Result;
 use clap::{builder::PossibleValue, Parser, Subcommand, ValueEnum};
+use portfolio::{ib, Holding, Portfolio, Security};
 use rust_decimal::Decimal;
 use unicode_width::UnicodeWidthStr;
-
-use crate::stocks::{Holding, Portfolio, Security};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -168,7 +164,9 @@ fn print_portfolio(portfolio: &Portfolio, args: &SharedArgs) {
     }
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let cli = Cli::parse();
 
     let mut portfolio = Portfolio::new();

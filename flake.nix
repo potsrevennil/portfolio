@@ -39,6 +39,8 @@
                 clang
                 taplo
                 codespell
+                protobuf
+                sqlx-cli
                 ;
             };
         };

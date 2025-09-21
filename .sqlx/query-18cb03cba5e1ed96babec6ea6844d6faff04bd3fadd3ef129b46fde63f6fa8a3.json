@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n                INSERT OR REPLACE INTO stock_prices (symbol, date, close_price)\n                VALUES (?, ?, ?)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "18cb03cba5e1ed96babec6ea6844d6faff04bd3fadd3ef129b46fde63f6fa8a3"
+}
