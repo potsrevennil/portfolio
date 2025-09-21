@@ -3,6 +3,7 @@ mod stocks;
 
 use std::collections::HashMap;
 
+use anyhow::Result;
 use clap::{builder::PossibleValue, Parser, Subcommand, ValueEnum};
 use rust_decimal::Decimal;
 use unicode_width::UnicodeWidthStr;
@@ -46,7 +47,6 @@ struct Calculate {
     args: SharedArgs,
 }
 
-
 #[derive(Parser, Debug)]
 struct SharedArgs {
     #[arg(short, long, value_enum, default_value_t = SortBy::Percentage)]
@@ -66,7 +66,6 @@ struct SharedArgs {
     #[arg(short, long)]
     group: bool,
 }
-
 
 #[derive(ValueEnum, Clone, Debug, Copy)]
 enum SortBy {
@@ -169,7 +168,7 @@ fn print_portfolio(portfolio: &Portfolio, args: &SharedArgs) {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let mut portfolio = Portfolio::new();
