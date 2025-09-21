@@ -68,6 +68,7 @@ pub struct Security {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Transaction {
+    pub id: String,
     pub source: Broker,
     pub symbol: String,
     pub kind: TransactionKind,
@@ -114,6 +115,7 @@ pub struct Portfolio {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CsvTransactionRecord {
+    pub id: String,
     pub source: Broker,
     pub symbol: String,
     pub description: String,
@@ -140,9 +142,15 @@ impl Portfolio {
 
     pub fn load_from_csv(&mut self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut reader = csv::Reader::from_path(file_path)?;
+        let mut transaction_ids = std::collections::HashSet::new();
         for result in reader.deserialize() {
             let record: CsvTransactionRecord = result?;
+            if !transaction_ids.insert(record.id.clone()) {
+                eprintln!("Warning: Duplicate transaction ID found, skipping record: {}", record.id);
+                continue;
+            }
             self.transactions.push(Transaction {
+                id: record.id,
                 source: record.source,
                 symbol: record.symbol.clone(),
                 kind: record.kind,
@@ -211,6 +219,7 @@ impl Portfolio {
                 .unwrap_or(Security { symbol: t.symbol.clone(), description: "".to_string() });
 
             writer.serialize(CsvTransactionRecord {
+                id: t.id.clone(),
                 source: t.source,
                 symbol: t.symbol.clone(),
                 description: security.description,
