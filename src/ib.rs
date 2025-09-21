@@ -3,7 +3,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::Deserialize;
 
-use crate::stocks::{Broker, Currency, Portfolio, Security, Transaction, TransactionKind};
+use crate::stocks::{AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind};
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "UPPERCASE")]
@@ -56,6 +56,8 @@ struct IbRecord {
     id: String,
     #[serde(rename = "CurrencyPrimary")]
     currency: Currency,
+    #[serde(rename = "AssetClass")]
+    asset_class: Option<AssetClass>,
     symbol: String,
     description: String,
     #[serde(with = "de_utils::date_format")]
@@ -84,6 +86,8 @@ struct IbTransferRecord {
     id: String,
     #[serde(rename = "CurrencyPrimary")]
     currency: Currency,
+    #[serde(rename = "AssetClass")]
+    asset_class: Option<AssetClass>,
     symbol: String,
     description: String,
     #[serde(with = "de_utils::date_format")]
@@ -185,6 +189,7 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                 let transaction = Transaction {
                     id: ib_record.id.clone(),
                     source: Broker::InteractiveBrokers,
+                    asset_class: ib_record.asset_class.unwrap_or(AssetClass::Cash),
                     symbol: ib_record.symbol.clone(),
                     kind,
                     datetime: DateTime::<Utc>::from_naive_utc_and_offset(
@@ -249,6 +254,7 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                 let transaction = Transaction {
                     id: ib_transfer_record.id.clone(),
                     source: Broker::InteractiveBrokers,
+                    asset_class: ib_transfer_record.asset_class.unwrap_or(AssetClass::Cash),
                     symbol: ib_transfer_record.symbol.clone(),
                     kind: TransactionKind::Deposit,
                     datetime: DateTime::<Utc>::from_naive_utc_and_offset(
