@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use thiserror::Error;
 use yfinance_rs::{core::conversions, Ticker, YfClient, YfError};
@@ -12,6 +12,8 @@ pub enum PriceError {
     Sqlx(#[from] sqlx::Error),
     #[error("Other error: {0}")]
     Other(String),
+    #[error(transparent)]
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl From<String> for PriceError {
@@ -41,7 +43,8 @@ impl YFinanceSource {
         let end_datetime = end_date.and_hms_opt(23, 59, 59).unwrap().and_utc();
 
         let history =
-            ticker.history_builder().between(start_datetime, end_datetime).fetch().await?;
+            ticker.history_builder().between(start_datetime, end_datetime).fetch().await
+            .context(format!("Failed to fetch prices for {} from {} to {}", symbol, start_date, end_date))?;
 
         let stock_prices = history
             .into_iter()

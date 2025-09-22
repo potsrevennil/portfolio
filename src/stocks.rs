@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate};
 use csv;
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
+
+use crate::StockPrice;
 
 // --- Enums for Type-Safety ---
 
@@ -99,9 +101,12 @@ pub struct Holding {
     pub symbol: String,
     pub quantity: Decimal,
     pub total_cost: Decimal,
-    pub average_cost: Decimal, /* (Total cost) / (Total shares)
-                                * We could add more fields like current market value,
-                                * unrealized P/L, etc. */
+    pub average_cost: Decimal,
+    pub market_value: Decimal, // Current value based on the latest available price
+    pub unrealized_pnl_value: Decimal, // Unrealized profit/loss in currency
+    pub unrealized_pnl_percentage: Decimal, // Unrealized profit/loss as a percentage
+    pub realized_pnl_value: Decimal, // Overall realized profit/loss in currency
+    pub realized_pnl_percentage: Decimal, // Overall realized profit/loss as a percentage
 }
 
 // --- Refined Top-Level Struct ---
@@ -177,21 +182,36 @@ impl Portfolio {
                 currency: record.currency,
                 balance: record.balance,
             });
-            self.securities.entry(record.symbol.clone()).or_insert(Security {
-                symbol: record.symbol.clone(),
-                description: record.description,
-            });
+            // Only insert into securities map if the symbol is not empty
+            if !record.symbol.is_empty() {
+                self.securities.entry(record.symbol.clone()).or_insert(Security {
+                    symbol: record.symbol.clone(),
+                    description: record.description,
+                });
+            }
         }
         Ok(())
     }
 
-    pub fn calculate_holdings(&mut self) {
+    /// Calculates the current holdings, including market value, unrealized P&L,
+    /// and realized P&L.
+    ///
+    /// Note: Market value, unrealized P&L, and realized P&L are calculated
+    /// based on the latest available prices for the current date.
+    /// Calculation of these values over a time range or lot-specific
+    /// analysis is left for future work.
+    pub fn calculate_holdings(&mut self, prices: &HashMap<String, Vec<StockPrice>>) {
         self.cash_balances.clear();
-        let mut temp_holdings: HashMap<String, (Decimal, Decimal, Decimal)> = HashMap::new(); // symbol -> (quantity, total_cost)
+        let mut temp_holdings: HashMap<String, (Decimal, Decimal, Decimal, Decimal)> =
+            HashMap::new(); // symbol -> (quantity, total_cost, average_cost, realized_pnl_value)
 
+        // Sort transactions by datetime to ensure chronological processing
+        self.transactions.sort_by_key(|t| t.datetime);
+
+        // First pass: Calculate total_cost, quantity, average_cost, and realized P&L
         for t in &self.transactions {
             // Update cash balance
-            let should_update = match t.kind {
+            let should_update_cash = match t.kind {
                 TransactionKind::Buy
                 | TransactionKind::Sell
                 | TransactionKind::Dividend
@@ -204,15 +224,18 @@ impl Portfolio {
                 _ => false,
             };
 
-            if should_update {
+            if should_update_cash {
                 *self.cash_balances.entry(t.currency).or_default() += t.amount;
             }
 
-            let (quantity, total_cost, avg) = temp_holdings.entry(t.symbol.clone()).or_insert((
-                Decimal::ZERO,
-                Decimal::ZERO,
-                Decimal::ZERO,
-            ));
+            let (quantity, total_cost, avg, realized_pnl_value) =
+                temp_holdings.entry(t.symbol.clone()).or_insert((
+                    Decimal::ZERO,
+                    Decimal::ZERO,
+                    Decimal::ZERO,
+                    Decimal::ZERO, // Initialize realized_pnl_value
+                ));
+
             match t.kind {
                 TransactionKind::Buy => {
                     *quantity += t.quantity;
@@ -221,7 +244,12 @@ impl Portfolio {
                 }
                 TransactionKind::Sell => {
                     let sold_quantity = t.quantity.abs();
-                    *total_cost -= *avg * sold_quantity;
+                    let cost_of_sold_shares = *avg * sold_quantity;
+                    let profit_loss = t.amount.abs() - cost_of_sold_shares;
+
+                    *realized_pnl_value += profit_loss; // Update realized_pnl_value directly
+
+                    *total_cost -= cost_of_sold_shares;
                     *quantity -= sold_quantity;
                 }
                 TransactionKind::Deposit if t.quantity != Decimal::ZERO => {
@@ -233,11 +261,37 @@ impl Portfolio {
             }
         }
 
+        // Second pass: Create Holding structs with market value and P&L
         self.holdings = temp_holdings
             .into_iter()
             .filter(|(_, (quantity, ..))| !quantity.is_zero())
-            .map(|(symbol, (quantity, total_cost, average_cost))| {
-                (symbol.clone(), Holding { symbol, quantity, total_cost, average_cost })
+            .map(|(symbol, (quantity, total_cost, average_cost, security_realized_pnl_value))| { // Destructure realized_pnl_value
+                let latest_price = prices
+                    .get(&symbol)
+                    .and_then(|p| p.last()) // Get the latest price (assuming sorted by date)
+                    .map_or(Decimal::ZERO, |p| Decimal::from_f64(p.close_price).unwrap_or_default());
+
+                let market_value = quantity * latest_price;
+                let unrealized_pnl_value = market_value - total_cost;
+                let unrealized_pnl_percentage = (unrealized_pnl_value.checked_div(total_cost).unwrap_or_default()) * Decimal::from(100);
+
+                let security_realized_pnl_percentage = (security_realized_pnl_value.checked_div(total_cost).unwrap_or_default()) * Decimal::from(100);
+
+
+                (
+                    symbol.clone(),
+                    Holding {
+                        symbol,
+                        quantity,
+                        total_cost,
+                        average_cost,
+                        market_value,
+                        unrealized_pnl_value,
+                        unrealized_pnl_percentage,
+                        realized_pnl_value: security_realized_pnl_value,
+                        realized_pnl_percentage: security_realized_pnl_percentage,
+                    },
+                )
             })
             .collect();
     }
