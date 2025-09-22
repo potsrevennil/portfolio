@@ -1,5 +1,7 @@
 use sqlx::Row;
 use tokio;
+
+#[path = "common/mod.rs"]
 mod common;
 use common::create_temp_db;
 

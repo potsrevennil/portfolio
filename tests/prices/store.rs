@@ -1,7 +1,10 @@
 use chrono::NaiveDate;
 use portfolio::prices::{StockPrice, StockPriceStore};
 use tokio;
+
+#[path = "../common/mod.rs"]
 mod common;
+
 use common::create_temp_db;
 
 #[tokio::test]
