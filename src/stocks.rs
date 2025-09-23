@@ -14,12 +14,13 @@ use crate::StockPrice;
 pub enum TransactionKind {
     Buy,
     Sell,
-    Dividend,   // Dividend payment
-    Interest,   // Interest received
-    Fee,        // Broker fees, ADR fees, etc.
-    Tax,        // Withholding tax
-    Deposit,    // Cash deposit
-    Withdrawal, // Cash withdrawal
+    Dividend,        // Dividend payment
+    Interest,        // Interest received
+    Fee,             // Broker fees, ADR fees, etc.
+    Tax,             // Withholding tax
+    Deposit,         // Cash deposit
+    Withdrawal,      // Cash withdrawal
+    CorporateAction, // Stock split or merge
     #[serde(other)]
     Other,
 }
@@ -29,9 +30,8 @@ impl std::fmt::Display for TransactionKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "UPPERCASE")]
 pub enum AssetClass {
-    Stk,
+    Stocks,
     Cash,
 }
 
@@ -225,7 +225,7 @@ impl Portfolio {
             };
 
             if should_update_cash {
-                *self.cash_balances.entry(t.currency).or_default() += t.amount;
+                *self.cash_balances.entry(t.currency).or_default() += t.amount + t.commission;
             }
 
             let (quantity, total_cost, avg, realized_pnl_value) =
@@ -255,6 +255,13 @@ impl Portfolio {
                 TransactionKind::Deposit if t.quantity != Decimal::ZERO => {
                     *quantity += t.quantity;
                     *total_cost += t.amount;
+                    *avg = total_cost.checked_div(*quantity).unwrap_or_default();
+                }
+                TransactionKind::CorporateAction => {
+                    // Corporate actions change quantity but not cost basis
+                    *quantity += t.quantity;
+                    // average_cost will be recalculated based on new quantity and unchanged
+                    // total_cost
                     *avg = total_cost.checked_div(*quantity).unwrap_or_default();
                 }
                 _ => {}
