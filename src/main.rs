@@ -26,7 +26,7 @@ enum Command {
 
 #[derive(Parser, Debug)]
 struct Init {
-    #[arg(short, long, default_value = "ib_combined.csv")]
+    #[arg(short, long, default_value = "ib.csv")]
     ib_file: String,
 
     #[arg(short, long, default_value = "transactions.csv")]
