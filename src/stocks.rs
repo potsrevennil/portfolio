@@ -96,9 +96,8 @@ pub struct Transaction {
 // --- New Struct for Calculated Holdings ---
 
 /// Represents the current holding of a specific security.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Holding {
-    pub symbol: String,
     pub quantity: Decimal,
     pub total_cost: Decimal,
     pub average_cost: Decimal,
@@ -121,10 +120,9 @@ pub struct Portfolio {
 
     // The calculated current state of all holdings.
     // This is derived from the transaction history.
-    pub holdings: HashMap<String, Holding>,
 
-    // Current cash balances for each currency.
-    pub cash_balances: HashMap<Currency, Decimal>,
+    // Daily snapshots of holdings and cash balances over a calculated range.
+    pub daily_snapshots: HashMap<NaiveDate, (HashMap<String, Holding>, HashMap<Currency, Decimal>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,13 +143,16 @@ pub struct CsvTransactionRecord {
     pub balance: Decimal,
 }
 
+impl Default for Portfolio {
+    fn default() -> Self { Self::new() }
+}
+
 impl Portfolio {
     pub fn new() -> Self {
         Portfolio {
             securities: HashMap::new(),
             transactions: Vec::new(),
-            holdings: HashMap::new(),
-            cash_balances: HashMap::new(),
+            daily_snapshots: HashMap::new(),
         }
     }
 
@@ -193,6 +194,32 @@ impl Portfolio {
         Ok(())
     }
 
+    pub fn to_csv_file(&self, file_path: &str) -> Result<()> {
+        let mut writer = csv::Writer::from_path(file_path)?;
+        for tx in &self.transactions {
+            let description =
+                self.securities.get(&tx.symbol).map_or("", |s| &s.description).to_string();
+            writer.serialize(CsvTransactionRecord {
+                id: tx.id.clone(),
+                source: tx.source,
+                asset_class: tx.asset_class,
+                symbol: tx.symbol.clone(),
+                description,
+                kind: tx.kind,
+                datetime: tx.datetime,
+                settle_date: tx.settle_date,
+                quantity: tx.quantity,
+                price: tx.price,
+                amount: tx.amount,
+                commission: tx.commission,
+                currency: tx.currency,
+                balance: tx.balance,
+            })?;
+        }
+        writer.flush()?;
+        Ok(())
+    }
+
     /// Calculates the current holdings, including market value, unrealized P&L,
     /// and realized P&L.
     ///
@@ -200,136 +227,174 @@ impl Portfolio {
     /// based on the latest available prices for the current date.
     /// Calculation of these values over a time range or lot-specific
     /// analysis is left for future work.
-    pub fn calculate_holdings(&mut self, prices: &HashMap<String, Vec<StockPrice>>) {
-        self.cash_balances.clear();
-        let mut temp_holdings: HashMap<String, (Decimal, Decimal, Decimal, Decimal)> =
-            HashMap::new(); // symbol -> (quantity, total_cost, average_cost, realized_pnl_value)
+    pub fn calculate_holdings(
+        &mut self,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        prices: &HashMap<String, Vec<StockPrice>>,
+    ) {
+        self.daily_snapshots.clear();
 
         // Sort transactions by datetime to ensure chronological processing
         self.transactions.sort_by_key(|t| t.datetime);
 
-        // First pass: Calculate total_cost, quantity, average_cost, and realized P&L
-        for t in &self.transactions {
-            // Update cash balance
-            let should_update_cash = match t.kind {
-                TransactionKind::Buy
-                | TransactionKind::Sell
-                | TransactionKind::Dividend
-                | TransactionKind::Interest
-                | TransactionKind::Fee
-                | TransactionKind::Tax => true,
-                TransactionKind::Deposit | TransactionKind::Withdrawal => {
-                    t.asset_class == AssetClass::Cash
+        let mut current_holdings: HashMap<String, Holding> = HashMap::new();
+        let mut current_cash_balances: HashMap<Currency, Decimal> = HashMap::new();
+
+        // Phase 1: Apply all transactions before start_date to initialize holdings/cash
+        let i = self.transactions.iter().rposition(|t| t.datetime.date_naive() < start_date);
+        if let Some(mut i) = i {
+            apply_daily_transactions(
+                &mut current_holdings,
+                &mut current_cash_balances,
+                &self.transactions[..=i],
+            );
+
+            // Phase 2: Daily incremental calculation from start_date to end_date
+            let mut current = start_date;
+            while current <= end_date {
+                // Find last transaction of current day
+                let j = self
+                    .transactions
+                    .iter()
+                    .skip(i)
+                    .enumerate()
+                    .take_while(|(_, t)| t.datetime.date_naive() <= current)
+                    .map(|(k, _)| k + i)
+                    .last();
+
+                if let Some(j) = j {
+                    // Apply transactions for the current day
+                    apply_daily_transactions(
+                        &mut current_holdings,
+                        &mut current_cash_balances,
+                        &self.transactions[(i + 1)..=j],
+                    );
+                    i = j;
                 }
-                _ => false,
-            };
 
-            if should_update_cash {
-                *self.cash_balances.entry(t.currency).or_default() += t.amount + t.commission;
+                // Get prices for the current day
+                let current_prices: HashMap<String, &StockPrice> = prices
+                    .iter()
+                    .filter_map(|(symbol, daily_prices)| {
+                        daily_prices
+                            .iter()
+                            .rev()
+                            .find(|p| p.date <= current)
+                            .map(|p| (symbol.clone(), p))
+                    })
+                    .collect();
+
+                // Calculate P&L for the current day's snapshot
+                let daily_snapshot = calculate_daily_pnl(&mut current_holdings, &current_prices);
+
+                self.daily_snapshots
+                    .insert(current, (daily_snapshot, current_cash_balances.clone()));
+                current = current.checked_add_signed(chrono::Duration::days(1)).unwrap();
             }
+        }
+    }
+}
 
-            let (quantity, total_cost, avg, realized_pnl_value) =
-                temp_holdings.entry(t.symbol.clone()).or_insert((
-                    Decimal::ZERO,
-                    Decimal::ZERO,
-                    Decimal::ZERO,
-                    Decimal::ZERO, // Initialize realized_pnl_value
-                ));
+fn apply_daily_transactions(
+    holdings: &mut HashMap<String, Holding>,
+    cash_balances: &mut HashMap<Currency, Decimal>,
+    ts: &[Transaction],
+) {
+    for t in ts {
+        // Update cash balance
+        let should_update_cash = match t.kind {
+            TransactionKind::Buy
+            | TransactionKind::Sell
+            | TransactionKind::Dividend
+            | TransactionKind::Interest
+            | TransactionKind::Fee
+            | TransactionKind::Tax => true,
+            TransactionKind::Deposit | TransactionKind::Withdrawal => {
+                t.asset_class == AssetClass::Cash
+            }
+            _ => false,
+        };
 
+        if should_update_cash {
+            // Update cash balance first
+            let cash_balance = cash_balances.entry(t.currency).or_insert(Decimal::ZERO);
+            *cash_balance += t.amount + t.commission;
+        }
+
+        // Update holdings for stock-related transactions
+        if t.asset_class == AssetClass::Stocks {
+            let h = holdings.entry(t.symbol.clone()).or_insert(Holding::default());
             match t.kind {
                 TransactionKind::Buy => {
-                    *quantity += t.quantity;
-                    *total_cost += t.amount.abs();
-                    *avg = total_cost.checked_div(*quantity).unwrap_or_default();
+                    h.quantity += t.quantity;
+                    h.total_cost += t.quantity * t.price;
                 }
                 TransactionKind::Sell => {
-                    let sold_quantity = t.quantity.abs();
-                    let cost_of_sold_shares = *avg * sold_quantity;
-                    let profit_loss = t.amount.abs() - cost_of_sold_shares;
+                    if h.quantity > Decimal::ZERO {
+                        let cost_basis_per_share =
+                            h.total_cost.checked_div(h.quantity).unwrap_or_default();
+                        let cost_of_sold_shares = t.quantity * cost_basis_per_share;
+                        let proceeds = t.quantity * t.price;
+                        let pnl = proceeds - cost_of_sold_shares;
 
-                    *realized_pnl_value += profit_loss; // Update realized_pnl_value directly
-
-                    *total_cost -= cost_of_sold_shares;
-                    *quantity -= sold_quantity;
+                        h.realized_pnl_value += pnl;
+                        // realized_pnl_percentage will be calculated after all transactions for the
+                        // day
+                        h.quantity -= t.quantity;
+                        h.total_cost -= cost_of_sold_shares;
+                    }
                 }
-                TransactionKind::Deposit if t.quantity != Decimal::ZERO => {
-                    *quantity += t.quantity;
-                    *total_cost += t.amount;
-                    *avg = total_cost.checked_div(*quantity).unwrap_or_default();
+                TransactionKind::Deposit => {
+                    h.quantity += t.quantity;
+                    // For deposits (e.g., from transfers), the cost is the market value at the time
+                    h.total_cost += t.amount;
+                }
+                TransactionKind::Withdrawal => {
+                    if h.quantity > Decimal::ZERO {
+                        let cost_basis_per_share =
+                            h.total_cost.checked_div(h.quantity).unwrap_or_default();
+                        let cost_of_withdrawn_shares = t.quantity * cost_basis_per_share;
+                        h.quantity -= t.quantity;
+                        h.total_cost -= cost_of_withdrawn_shares;
+                    }
                 }
                 TransactionKind::CorporateAction => {
-                    // Corporate actions change quantity but not cost basis
-                    *quantity += t.quantity;
-                    // average_cost will be recalculated based on new quantity and unchanged
-                    // total_cost
-                    *avg = total_cost.checked_div(*quantity).unwrap_or_default();
+                    h.quantity += t.quantity;
                 }
                 _ => {}
             }
         }
-
-        // Second pass: Create Holding structs with market value and P&L
-        self.holdings = temp_holdings
-            .into_iter()
-            .filter(|(_, (quantity, ..))| !quantity.is_zero())
-            .map(|(symbol, (quantity, total_cost, average_cost, security_realized_pnl_value))| { // Destructure realized_pnl_value
-                let latest_price = prices
-                    .get(&symbol)
-                    .and_then(|p| p.last()) // Get the latest price (assuming sorted by date)
-                    .map_or(Decimal::ZERO, |p| Decimal::from_f64(p.close_price).unwrap_or_default());
-
-                let market_value = quantity * latest_price;
-                let unrealized_pnl_value = market_value - total_cost;
-                let unrealized_pnl_percentage = (unrealized_pnl_value.checked_div(total_cost).unwrap_or_default()) * Decimal::from(100);
-
-                let security_realized_pnl_percentage = (security_realized_pnl_value.checked_div(total_cost).unwrap_or_default()) * Decimal::from(100);
-
-
-                (
-                    symbol.clone(),
-                    Holding {
-                        symbol,
-                        quantity,
-                        total_cost,
-                        average_cost,
-                        market_value,
-                        unrealized_pnl_value,
-                        unrealized_pnl_percentage,
-                        realized_pnl_value: security_realized_pnl_value,
-                        realized_pnl_percentage: security_realized_pnl_percentage,
-                    },
-                )
-            })
-            .collect();
     }
 
-    pub fn to_csv_file(&self, file_path: &str) -> Result<()> {
-        let mut writer = csv::Writer::from_path(file_path)?;
-        for t in &self.transactions {
-            let security = self
-                .securities
-                .get(&t.symbol)
-                .cloned()
-                .unwrap_or(Security { symbol: t.symbol.clone(), description: "".to_string() });
-
-            writer.serialize(CsvTransactionRecord {
-                id: t.id.clone(),
-                source: t.source,
-                asset_class: t.asset_class.clone(),
-                symbol: t.symbol.clone(),
-                description: security.description,
-                kind: t.kind,
-                datetime: t.datetime,
-                settle_date: t.settle_date,
-                quantity: t.quantity,
-                price: t.price,
-                amount: t.amount,
-                commission: t.commission,
-                currency: t.currency,
-                balance: t.balance,
-            })?;
-        }
-        writer.flush()?;
-        Ok(())
+    // Calculate realized_pnl_percentage and average_cost once for each stock after
+    // all daily transactions
+    for h in holdings.values_mut() {
+        h.realized_pnl_percentage =
+            h.realized_pnl_value.checked_div(h.total_cost).unwrap_or_default() * Decimal::from(100);
+        h.average_cost = h.total_cost.checked_div(h.quantity).unwrap_or_default();
     }
+}
+
+fn calculate_daily_pnl(
+    holdings: &mut HashMap<String, Holding>,
+    prices: &HashMap<String, &StockPrice>,
+) -> HashMap<String, Holding> {
+    for (symbol, h) in holdings.iter_mut() {
+        let market_price = prices
+            .get(symbol)
+            .map_or(Decimal::ZERO, |p| Decimal::from_f64(p.close_price).unwrap_or_default());
+        h.market_value = h.quantity * market_price;
+        h.unrealized_pnl_value = h.market_value - h.total_cost;
+        h.unrealized_pnl_percentage =
+            h.unrealized_pnl_value.checked_div(h.total_cost).unwrap_or_default()
+                * Decimal::from(100);
+    }
+
+    // Snapshot all holdings, including zero-quantity ones, for realized PnL
+    // tracking
+    let snapshot = holdings.clone();
+    holdings.retain(|_k, h| !h.quantity.is_zero());
+
+    snapshot
 }

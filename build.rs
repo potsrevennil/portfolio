@@ -11,7 +11,7 @@ async fn main() -> Result<()> {
     let db_url = format!("sqlite:{}", db_path);
 
     // Create the database file if it doesn't exist
-    if !fs::metadata(db_path).is_ok() {
+    if fs::metadata(db_path).is_err() {
         println!("Build script: Creating database file: {}", db_path);
         fs::File::create(db_path)?;
     }
