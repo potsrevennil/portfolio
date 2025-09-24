@@ -275,7 +275,7 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                         }
                         "Withholding Tax" => {
                             let r = record.deserialize::<IbWithholdingTaxRecord>(Some(header))?;
-                            withholding_tax_records.push(r.into());
+                            withholding_tax_records.push(r);
                         }
                         "Interest" => {
                             let r = record.deserialize::<IbInterestRecord>(Some(header))?;

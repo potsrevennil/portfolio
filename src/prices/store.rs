@@ -57,7 +57,7 @@ impl StockPriceStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(record.map(|r| r.max_date).flatten())
+        Ok(record.and_then(|r| r.max_date))
     }
 
     pub async fn get_stock_prices_in_range(

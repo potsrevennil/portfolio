@@ -43,12 +43,16 @@ impl YFinanceSource {
         let end_datetime = end_date.and_hms_opt(23, 59, 59).unwrap().and_utc();
 
         let history =
-            ticker.history_builder().between(start_datetime, end_datetime).fetch().await
-            .context(format!("Failed to fetch prices for {} from {} to {}", symbol, start_date, end_date))?;
+            ticker.history_builder().between(start_datetime, end_datetime).fetch().await.context(
+                format!(
+                    "Failed to fetch prices for {} from {} to {}",
+                    symbol, start_date, end_date
+                ),
+            )?;
 
         let stock_prices = history
             .into_iter()
-            .filter_map(|bar| {
+            .map(|bar| {
                 let timestamp = bar.ts;
                 let close_price_money = bar.close;
 
@@ -56,7 +60,7 @@ impl YFinanceSource {
 
                 let close_price = conversions::money_to_f64(&close_price_money);
 
-                Some(StockPrice { date, close_price })
+                StockPrice { date, close_price }
             })
             .collect();
 

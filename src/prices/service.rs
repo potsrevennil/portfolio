@@ -17,14 +17,13 @@ pub struct PriceService {
 
 impl PriceService {
     /// Creates a new `PriceService` instance.
-    pub fn new(store: StockPriceStore) -> Self {
-        Self { store }
-    }
+    pub fn new(store: StockPriceStore) -> Self { Self { store } }
 
     /// Retrieves stock prices for specified symbols within a given date range.
     ///
-    /// Fetches data from the local database first. If data is missing or incomplete,
-    /// it fetches from an external web source, saves it, and returns the complete data.
+    /// Fetches data from the local database first. If data is missing or
+    /// incomplete, it fetches from an external web source, saves it, and
+    /// returns the complete data.
     ///
     /// # Arguments
     /// * `symbols` - List of stock ticker symbols.
@@ -32,8 +31,9 @@ impl PriceService {
     /// * `end_date` - End of the date range (inclusive).
     ///
     /// # Returns
-    /// A `HashMap` where keys are stock symbols and values are lists of `StockPrice`
-    /// objects. Returns an error if data fetching or storage fails.
+    /// A `HashMap` where keys are stock symbols and values are lists of
+    /// `StockPrice` objects. Returns an error if data fetching or storage
+    /// fails.
     pub async fn get_prices(
         &self,
         symbols: &[&str],
@@ -46,11 +46,14 @@ impl PriceService {
         let mut all_prices =
             self.store.get_stock_prices_in_range(symbols, start_date, end_date).await?;
 
-        // For each symbol, determine if additional data needs to be fetched from the web.
+        // For each symbol, determine if additional data needs to be fetched from the
+        // web.
         for &symbol in symbols {
-            let needs_fetching = all_prices
-                .get(symbol)
-                .map_or(true, |prices| prices.is_empty() || prices.last().unwrap().date < end_date);
+            let needs_fetching = all_prices.get(symbol).is_none_or(|prices| {
+                prices.is_empty()
+                    || prices.first().unwrap().date > start_date
+                    || prices.last().unwrap().date < end_date
+            });
 
             if needs_fetching {
                 let symbol_owned = symbol.to_string();
@@ -67,15 +70,16 @@ impl PriceService {
         // Execute all pending data fetching tasks concurrently.
         let fetched_results: HashMap<String, Vec<StockPrice>> =
             try_join_all(fetch_futures).await?.into_iter().collect();
-        
+
         // Save any newly fetched data to the database.
         if !fetched_results.is_empty() {
             self.store.save_stock_prices(&fetched_results).await?;
         }
 
-        // Merge the newly fetched data with the data already retrieved from the database.
+        // Merge the newly fetched data with the data already retrieved from the
+        // database.
         all_prices.extend(fetched_results);
-        
+
         Ok(all_prices)
     }
 }
