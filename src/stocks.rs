@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate};
@@ -116,7 +116,7 @@ pub struct Portfolio {
     pub securities: HashMap<String, Security>,
 
     // The raw, immutable log of all historical transactions.
-    pub transactions: Vec<Transaction>,
+    pub transactions: BTreeMap<NaiveDate, Vec<Transaction>>,
 
     // The calculated current state of all holdings.
     // This is derived from the transaction history.
@@ -151,24 +151,16 @@ impl Portfolio {
     pub fn new() -> Self {
         Portfolio {
             securities: HashMap::new(),
-            transactions: Vec::new(),
+            transactions: BTreeMap::new(),
             daily_snapshots: HashMap::new(),
         }
     }
 
     pub fn load_from_csv(&mut self, file_path: &str) -> Result<()> {
         let mut reader = csv::Reader::from_path(file_path)?;
-        let mut transaction_ids = std::collections::HashSet::new();
         for result in reader.deserialize() {
             let record: CsvTransactionRecord = result?;
-            if !transaction_ids.insert(record.id.clone()) {
-                eprintln!(
-                    "Warning: Duplicate transaction ID found, skipping record: {}",
-                    record.id
-                );
-                continue;
-            }
-            self.transactions.push(Transaction {
+            let t = Transaction {
                 id: record.id,
                 source: record.source,
                 asset_class: record.asset_class,
@@ -182,7 +174,11 @@ impl Portfolio {
                 commission: record.commission,
                 currency: record.currency,
                 balance: record.balance,
-            });
+            };
+
+            let date = t.datetime.date_naive();
+            self.transactions.entry(date).and_modify(|ts| ts.push(t.clone())).or_insert(vec![t]);
+
             // Only insert into securities map if the symbol is not empty
             if !record.symbol.is_empty() {
                 self.securities.entry(record.symbol.clone()).or_insert(Security {
@@ -196,25 +192,31 @@ impl Portfolio {
 
     pub fn to_csv_file(&self, file_path: &str) -> Result<()> {
         let mut writer = csv::Writer::from_path(file_path)?;
-        for tx in &self.transactions {
-            let description =
-                self.securities.get(&tx.symbol).map_or("", |s| &s.description).to_string();
-            writer.serialize(CsvTransactionRecord {
-                id: tx.id.clone(),
-                source: tx.source,
-                asset_class: tx.asset_class,
-                symbol: tx.symbol.clone(),
-                description,
-                kind: tx.kind,
-                datetime: tx.datetime,
-                settle_date: tx.settle_date,
-                quantity: tx.quantity,
-                price: tx.price,
-                amount: tx.amount,
-                commission: tx.commission,
-                currency: tx.currency,
-                balance: tx.balance,
-            })?;
+        for ts in self.transactions.values() {
+            // Sort transactions within the same day by datetime for consistent output
+            let mut ts = ts.clone();
+            ts.sort_by_key(|t| t.datetime);
+
+            for t in ts {
+                let description =
+                    self.securities.get(&t.symbol).map_or("", |s| &s.description).to_string();
+                writer.serialize(CsvTransactionRecord {
+                    id: t.id,
+                    source: t.source,
+                    asset_class: t.asset_class,
+                    symbol: t.symbol,
+                    description,
+                    kind: t.kind,
+                    datetime: t.datetime,
+                    settle_date: t.settle_date,
+                    quantity: t.quantity,
+                    price: t.price,
+                    amount: t.amount,
+                    commission: t.commission,
+                    currency: t.currency,
+                    balance: t.balance,
+                })?;
+            }
         }
         writer.flush()?;
         Ok(())
@@ -235,63 +237,61 @@ impl Portfolio {
     ) {
         self.daily_snapshots.clear();
 
-        // Sort transactions by datetime to ensure chronological processing
-        self.transactions.sort_by_key(|t| t.datetime);
-
-        let mut current_holdings: HashMap<String, Holding> = HashMap::new();
-        let mut current_cash_balances: HashMap<Currency, Decimal> = HashMap::new();
+        let mut holdings: HashMap<String, Holding> = HashMap::new();
+        let mut cash_balances: HashMap<Currency, Decimal> = HashMap::new();
 
         // Phase 1: Apply all transactions before start_date to initialize holdings/cash
-        let i = self.transactions.iter().rposition(|t| t.datetime.date_naive() < start_date);
-        if let Some(mut i) = i {
-            apply_daily_transactions(
-                &mut current_holdings,
-                &mut current_cash_balances,
-                &self.transactions[..=i],
-            );
+        for (_d, ts) in self.transactions.iter().take_while(|&(&d, _)| d < start_date) {
+            apply_daily_transactions(&mut holdings, &mut cash_balances, ts);
+        }
 
-            // Phase 2: Daily incremental calculation from start_date to end_date
-            let mut current = start_date;
-            while current <= end_date {
-                // Find last transaction of current day
-                let j = self
-                    .transactions
-                    .iter()
-                    .skip(i)
-                    .enumerate()
-                    .take_while(|(_, t)| t.datetime.date_naive() <= current)
-                    .map(|(k, _)| k + i)
-                    .last();
+        // Phase 2: Iterate from start_date to end_date, processing transactions and
+        // creating snapshots
+        for (d, ts) in self
+            .transactions
+            .iter()
+            .skip_while(|&(&d, _)| d < start_date)
+            .take_while(|&(&d, _)| d >= start_date && d <= end_date)
+        {
+            // Apply transactions for the current day
+            apply_daily_transactions(&mut holdings, &mut cash_balances, ts);
 
-                if let Some(j) = j {
-                    // Apply transactions for the current day
-                    apply_daily_transactions(
-                        &mut current_holdings,
-                        &mut current_cash_balances,
-                        &self.transactions[(i + 1)..=j],
-                    );
-                    i = j;
-                }
+            // Get prices for the current day
+            let current_prices: HashMap<String, &StockPrice> = prices
+                .iter()
+                .filter_map(|(s, daily_prices)| {
+                    let price_idx = daily_prices.partition_point(|p| p.date <= *d);
+                    (price_idx > 0).then(|| (s.clone(), &daily_prices[price_idx - 1]))
+                })
+                .collect();
 
-                // Get prices for the current day
-                let current_prices: HashMap<String, &StockPrice> = prices
-                    .iter()
-                    .filter_map(|(symbol, daily_prices)| {
-                        daily_prices
-                            .iter()
-                            .rev()
-                            .find(|p| p.date <= current)
-                            .map(|p| (symbol.clone(), p))
-                    })
-                    .collect();
+            // Calculate P&L for the current day's snapshot
+            let daily_snapshot = calculate_daily_pnl(&mut holdings, &current_prices);
 
-                // Calculate P&L for the current day's snapshot
-                let daily_snapshot = calculate_daily_pnl(&mut current_holdings, &current_prices);
+            self.daily_snapshots
+                .entry(*d)
+                .and_modify(|(h, c)| {
+                    *h = daily_snapshot.clone();
+                    *c = cash_balances.clone();
+                })
+                .or_insert((daily_snapshot, cash_balances.clone()));
+        }
 
-                self.daily_snapshots
-                    .insert(current, (daily_snapshot, current_cash_balances.clone()));
-                current = current.checked_add_signed(chrono::Duration::days(1)).unwrap();
-            }
+        // Handle the case where start_date has no transactions but needs a snapshot
+        // This ensures a baseline snapshot for start_date if no transactions occurred
+        // on it
+        if self.daily_snapshots.get(&start_date).is_none() && start_date <= end_date {
+            let current_prices: HashMap<String, &StockPrice> = prices
+                .iter()
+                .filter_map(|(s, daily_prices)| {
+                    let price_idx = daily_prices.partition_point(|p| p.date <= start_date);
+                    (price_idx > 0).then(|| (s.clone(), &daily_prices[price_idx - 1]))
+                })
+                .collect();
+            let daily_snapshot = calculate_daily_pnl(&mut holdings, &current_prices);
+            self.daily_snapshots
+                .entry(start_date)
+                .or_insert((daily_snapshot, cash_balances.clone()));
         }
     }
 }
