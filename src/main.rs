@@ -190,16 +190,11 @@ fn print_holdings(
 
 fn print_portfolio(
     portfolio: &Portfolio,
-    args: &SharedArgs,
+    sort_by: SortBy,
+    order: Order,
     _end_date: NaiveDate, // end_date is now implicitly handled by daily_snapshots
-    prices: &HashMap<String, Vec<portfolio::prices::StockPrice>>,
+    prices: &HashMap<String, Vec<portfolio::prices::StockPrice>>, // Add prices map
 ) {
-    let order = match args.order.as_str() {
-        "+" => Order::Asc,
-        "-" => Order::Desc,
-        _ => unreachable!(), // clap should prevent this
-    };
-
     if portfolio.daily_snapshots.is_empty() {
         println!("No portfolio data available for the selected period.");
         return;
@@ -243,27 +238,14 @@ fn print_portfolio(
         println!();
 
         let mut holdings_vec: Vec<_> = holdings_map.iter().collect();
-        if args.group {
-            println!("--- All Holdings ---");
-            print_holdings(
-                &mut holdings_vec,
-                &portfolio.securities,
-                total_assets_usd,
-                args.sort_by,
-                order,
-                prices,
-            );
-            println!("\n");
-        } else {
-            print_holdings(
-                &mut holdings_vec,
-                &portfolio.securities,
-                total_assets_usd,
-                args.sort_by,
-                order,
-                prices,
-            );
-        }
+        print_holdings(
+            &mut holdings_vec,
+            &portfolio.securities,
+            total_assets_usd,
+            sort_by,
+            order,
+            prices,
+        );
 
         println!("--- Cash Balances ---\n");
         for (currency, balance) in cash_balances_map {
@@ -271,8 +253,49 @@ fn print_portfolio(
         }
     }
 }
+async fn print_report(
+    portfolio: &mut Portfolio,
+    shared_args: &SharedArgs,
+    end_date: NaiveDate,
+    price_service: &PriceService,
+) -> Result<()> {
+    let start_date = if let Some(ref from) = shared_args.from {
+        match from {
+            TimeSelector::Year(y) => {
+                end_date.checked_sub_months(Months::new(*y * 12)).unwrap_or(NaiveDate::MIN)
+            }
+            TimeSelector::Month(m) => {
+                end_date.checked_sub_months(Months::new(*m)).unwrap_or(NaiveDate::MIN)
+            }
+            TimeSelector::Week(w) => {
+                end_date.checked_sub_signed(Duration::weeks((*w).into())).unwrap_or(NaiveDate::MIN)
+            }
+            TimeSelector::Day(d) => {
+                end_date.checked_sub_signed(Duration::days((*d).into())).unwrap_or(NaiveDate::MIN)
+            }
+            TimeSelector::Date(d) => *d,
+        }
+    } else {
+        end_date
+    };
+
+    // Fetch prices for all securities in the portfolio
+    let unique_symbols: Vec<&str> = portfolio.securities.keys().map(|s| s.as_str()).collect();
+    let prices = price_service.get_prices(&unique_symbols, start_date, end_date).await?;
+
+    portfolio.calculate_holdings(start_date, end_date, &prices);
+    let order = match shared_args.order.as_str() {
+        "+" => Order::Asc,
+        "-" => Order::Desc,
+        _ => unreachable!(), // clap should prevent this
+    };
+    print_portfolio(portfolio, shared_args.sort_by, order, end_date, &prices);
+
+    Ok(())
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
@@ -289,71 +312,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             portfolio.to_csv_file(&init_args.transactions_file)?;
 
             let end_date = Utc::now().date_naive();
-            let start_date = if let Some(ref from) = init_args.args.from {
-                match from {
-                    TimeSelector::Year(y) => {
-                        end_date.checked_sub_months(Months::new(*y * 12)).unwrap_or(NaiveDate::MIN)
-                    }
-                    TimeSelector::Month(m) => {
-                        end_date.checked_sub_months(Months::new(*m)).unwrap_or(NaiveDate::MIN)
-                    }
-                    TimeSelector::Week(w) => end_date
-                        .checked_sub_signed(Duration::weeks((*w).into()))
-                        .unwrap_or(NaiveDate::MIN),
-                    TimeSelector::Day(d) => end_date
-                        .checked_sub_signed(Duration::days((*d).into()))
-                        .unwrap_or(NaiveDate::MIN),
-                    TimeSelector::Date(d) => *d,
-                }
-            } else {
-                end_date
-            };
-
-            // Fetch prices for all securities in the portfolio
-            let unique_symbols: Vec<&str> =
-                portfolio.securities.keys().map(|s| s.as_str()).collect();
-            let prices = price_service.get_prices(&unique_symbols, start_date, end_date).await?;
-
-            portfolio.calculate_holdings(start_date, end_date, &prices); // Pass start_date, end_date and prices to calculate_holdings
-            print_portfolio(&portfolio, &init_args.args, end_date, &prices);
+            print_report(&mut portfolio, &init_args.args, end_date, &price_service).await?;
         }
         None => {
             // Default to calculate
             portfolio.load_from_csv(&cli.calculate.transactions_file)?;
 
             let end_date = Utc::now().date_naive();
-            let start_date = if let Some(ref from) = cli.calculate.args.from {
-                match from {
-                    TimeSelector::Year(y) => {
-                        end_date.checked_sub_months(Months::new(*y * 12)).unwrap_or(NaiveDate::MIN)
-                    }
-                    TimeSelector::Month(m) => {
-                        end_date.checked_sub_months(Months::new(*m)).unwrap_or(NaiveDate::MIN)
-                    }
-                    TimeSelector::Week(w) => end_date
-                        .checked_sub_signed(Duration::weeks((*w).into()))
-                        .unwrap_or(NaiveDate::MIN),
-                    TimeSelector::Day(d) => end_date
-                        .checked_sub_signed(Duration::days((*d).into()))
-                        .unwrap_or(NaiveDate::MIN),
-                    TimeSelector::Date(d) => *d,
-                }
-            } else {
-                end_date
-            };
-
-            // Fetch prices for all securities in the portfolio
-            let unique_symbols: Vec<&str> =
-                portfolio.securities.keys().map(|s| s.as_str()).collect();
-            let prices = price_service.get_prices(&unique_symbols, start_date, end_date).await?;
-
-            portfolio.calculate_holdings(start_date, end_date, &prices); // Pass
-                                                                         // start_date,
-                                                                         // end_date
-                                                                         // and prices
-                                                                         // to calculate_holdings
-
-            print_portfolio(&portfolio, &cli.calculate.args, end_date, &prices);
+            print_report(&mut portfolio, &cli.calculate.args, end_date, &price_service).await?;
         }
     }
 
