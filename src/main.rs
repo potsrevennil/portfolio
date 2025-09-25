@@ -4,12 +4,8 @@ use clap::{builder::PossibleValue, Parser, Subcommand};
 use portfolio::{
     ib,
     prices::{PriceService, StockPriceStore},
-    stocks::Portfolio,
+    Order, Portfolio, SortBy,
 };
-
-use crate::display::{print_portfolio, Order, SortBy};
-
-mod display;
 
 #[derive(Debug, Clone)]
 enum TimeSelector {
@@ -106,12 +102,31 @@ struct SharedArgs {
     from: Option<TimeSelector>,
 }
 
-async fn print_report(
-    portfolio: &mut Portfolio,
-    shared_args: &SharedArgs,
-    end_date: NaiveDate,
-    price_service: &PriceService,
-) -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
+    env_logger::init();
+    let cli = Cli::parse();
+
+    let mut portfolio = Portfolio::new();
+
+    // Initialize PriceService and StockPriceStore
+    let pool = portfolio::db::init_db("sqlite:sqlite.db").await?;
+    let price_store = StockPriceStore::new(pool.clone());
+    let price_service = PriceService::new(price_store.clone());
+
+    let shared_args = match cli.command {
+        Some(Command::Init(init_args)) => {
+            ib::load_from_ib_csv(&mut portfolio, &init_args.ib_file)?;
+            portfolio.to_csv_file(&init_args.transactions_file)?;
+            init_args.args
+        }
+        None => {
+            portfolio.load_from_csv(&cli.calculate.transactions_file)?;
+            cli.calculate.args
+        }
+    };
+
+    let end_date = Utc::now().date_naive();
     let start_date = if let Some(ref from) = shared_args.from {
         match from {
             TimeSelector::Year(y) => {
@@ -132,49 +147,15 @@ async fn print_report(
         end_date
     };
 
-    // Fetch prices for all securities in the portfolio
-    let unique_symbols: Vec<&str> = portfolio.securities.keys().map(|s| s.as_str()).collect();
-    let prices = price_service.get_prices(&unique_symbols, start_date, end_date).await?;
-
-    portfolio.calculate_holdings(start_date, end_date, &prices);
     let order = match shared_args.order.as_str() {
         "+" => Order::Asc,
         "-" => Order::Desc,
-        _ => unreachable!(), // clap should prevent this
+        _ => unreachable!(),
     };
-    print_portfolio(portfolio, shared_args.sort_by, order, end_date, &prices);
 
-    Ok(())
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    env_logger::init();
-    let cli = Cli::parse();
-
-    let mut portfolio = Portfolio::new();
-
-    // Initialize PriceService and StockPriceStore
-    let pool = portfolio::db::init_db("sqlite:sqlite.db").await?; // Assuming sqlite.db is the default
-    let price_store = StockPriceStore::new(pool.clone());
-    let price_service = PriceService::new(price_store.clone());
-
-    match cli.command {
-        Some(Command::Init(init_args)) => {
-            ib::load_from_ib_csv(&mut portfolio, &init_args.ib_file)?;
-            portfolio.to_csv_file(&init_args.transactions_file)?;
-
-            let end_date = Utc::now().date_naive();
-            print_report(&mut portfolio, &init_args.args, end_date, &price_service).await?;
-        }
-        None => {
-            // Default to calculate
-            portfolio.load_from_csv(&cli.calculate.transactions_file)?;
-
-            let end_date = Utc::now().date_naive();
-            print_report(&mut portfolio, &cli.calculate.args, end_date, &price_service).await?;
-        }
-    }
+    portfolio
+        .generate_report(start_date, end_date, shared_args.sort_by, order, &price_service)
+        .await?;
 
     Ok(())
 }

@@ -51,9 +51,7 @@ mod de_utils {
     }
 }
 
-use crate::stocks::{
-    AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind,
-};
+use crate::portfolio::portfolio::{AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind};
 
 // --- Trades ---
 #[derive(Debug, Deserialize)]
