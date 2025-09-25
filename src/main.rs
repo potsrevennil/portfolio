@@ -1,14 +1,15 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
 use chrono::{Duration, Months, NaiveDate, Utc};
-use clap::{builder::PossibleValue, Parser, Subcommand, ValueEnum};
+use clap::{builder::PossibleValue, Parser, Subcommand};
 use portfolio::{
     ib,
     prices::{PriceService, StockPriceStore},
-    Currency, Holding, Portfolio, Security,
+    stocks::Portfolio,
 };
-use rust_decimal::{prelude::FromPrimitive, Decimal};
+
+use crate::display::{print_portfolio, Order, SortBy};
+
+mod display;
 
 #[derive(Debug, Clone)]
 enum TimeSelector {
@@ -105,154 +106,6 @@ struct SharedArgs {
     from: Option<TimeSelector>,
 }
 
-#[derive(ValueEnum, Clone, Debug, Copy)]
-enum SortBy {
-    Name,
-    Percentage,
-}
-
-#[derive(Debug, Copy, Clone)]
-enum Order {
-    Asc,
-    Desc,
-}
-
-fn print_holdings(
-    holdings: &mut [(&String, &Holding)],
-    securities: &HashMap<String, Security>,
-    total_market_value_usd: Decimal, // Changed from total_assets_usd
-    sort_by: SortBy,
-    order: Order,
-    prices: &HashMap<String, Vec<portfolio::prices::StockPrice>>, // Add prices map
-) {
-    match (sort_by, order) {
-        (SortBy::Name, Order::Asc) => holdings.sort_by(|a, b| a.0.cmp(b.0)),
-        (SortBy::Name, Order::Desc) => holdings.sort_by(|a, b| b.0.cmp(a.0)),
-        (SortBy::Percentage, Order::Asc) => {
-            holdings.sort_by(|a, b| a.1.market_value.partial_cmp(&b.1.market_value).unwrap())
-            // Changed to market_value
-        }
-        (SortBy::Percentage, Order::Desc) => {
-            holdings.sort_by(|a, b| b.1.market_value.partial_cmp(&a.1.market_value).unwrap())
-            // Changed to market_value
-        }
-    }
-
-    let name_col_width = 35;
-    println!(
-        "{:<15} {:<width$} {:>12} {:>18} {:>18} {:>15} {:>15} {:>15} {:>15} {:>14} {:>12}", /* Added {:>12} for Market Price */
-        "Ticker",
-        "Name",
-        "Quantity",
-        "Cost (USD)",
-        "Market Value",
-        "Unrealized P&L",
-        "Unrealized %",
-        "Realized P&L",
-        "Realized %",
-        "Portfolio %",
-        "Mkt Price", // New column header
-        width = name_col_width
-    );
-    println!("{}", "=".repeat(190)); // Adjusted width
-
-    for (symbol, holding) in holdings {
-        let percentage =
-            holding.market_value.checked_div(total_market_value_usd).unwrap_or_default()
-                * Decimal::from(100);
-        let name = securities.get(*symbol).map_or("", |s| &s.description);
-        let name_width = unicode_width::UnicodeWidthStr::width(name);
-        let padding = name_col_width.saturating_sub(name_width);
-        let name_part = format!("{}{}", name, " ".repeat(padding));
-
-        let market_price = prices
-            .get(*symbol)
-            .and_then(|p| p.last()) // Get the latest price (assuming sorted by date)
-            .map_or(Decimal::ZERO, |p| Decimal::from_f64(p.close_price).unwrap_or_default());
-
-        println!(
-            "{:<15} {} {:>12.4} {:>18.2} {:>18.2} {:>15.2} {:>14.2}% {:>15.2} {:>14.2}% {:>13.2}% \
-             {:>11.2}", // Added {:>11.2} for Market Price
-            symbol,
-            name_part,
-            holding.quantity,
-            holding.total_cost,
-            holding.market_value,
-            holding.unrealized_pnl_value,
-            holding.unrealized_pnl_percentage,
-            holding.realized_pnl_value,
-            holding.realized_pnl_percentage,
-            percentage,
-            market_price, // Use direct market price
-        );
-    }
-}
-
-fn print_portfolio(
-    portfolio: &Portfolio,
-    sort_by: SortBy,
-    order: Order,
-    _end_date: NaiveDate, // end_date is now implicitly handled by daily_snapshots
-    prices: &HashMap<String, Vec<portfolio::prices::StockPrice>>, // Add prices map
-) {
-    if portfolio.daily_snapshots.is_empty() {
-        println!("No portfolio data available for the selected period.");
-        return;
-    }
-
-    let mut sorted_snapshots: Vec<(
-        &NaiveDate,
-        &(HashMap<String, Holding>, HashMap<Currency, Decimal>),
-    )> = portfolio.daily_snapshots.iter().collect();
-    sorted_snapshots.sort_by_key(|(date, _)| *date);
-
-    for (date, (holdings_map, cash_balances_map)) in sorted_snapshots {
-        println!("\n======================================================================================================================================================================================================");
-        println!("--- Account Summary as of {} ---", date);
-
-        let total_holdings_market_value: Decimal =
-            holdings_map.values().map(|h| h.market_value).sum();
-        let total_cash: Decimal = cash_balances_map.values().sum();
-        let total_assets_usd = total_holdings_market_value + total_cash;
-
-        let total_unrealized_pnl: Decimal =
-            holdings_map.values().map(|h| h.unrealized_pnl_value).sum();
-        let total_realized_pnl: Decimal = holdings_map.values().map(|h| h.realized_pnl_value).sum();
-
-        let total_unrealized_pnl_percentage =
-            total_unrealized_pnl.checked_div(total_assets_usd).unwrap_or_default()
-                * Decimal::from(100);
-        let total_realized_pnl_percentage =
-            total_realized_pnl.checked_div(total_assets_usd).unwrap_or_default()
-                * Decimal::from(100);
-
-        println!("{:<25}: {:>10.2} USD", "Total Portfolio Value", total_assets_usd);
-        println!(
-            "{:<25}: {:>10.2} USD ({:>6.2}%)",
-            "Total Unrealized P&L", total_unrealized_pnl, total_unrealized_pnl_percentage
-        );
-        println!(
-            "{:<25}: {:>10.2} USD ({:>6.2}%)",
-            "Total Realized P&L", total_realized_pnl, total_realized_pnl_percentage
-        );
-        println!();
-
-        let mut holdings_vec: Vec<_> = holdings_map.iter().collect();
-        print_holdings(
-            &mut holdings_vec,
-            &portfolio.securities,
-            total_assets_usd,
-            sort_by,
-            order,
-            prices,
-        );
-
-        println!("--- Cash Balances ---\n");
-        for (currency, balance) in cash_balances_map {
-            println!("{:?}: {:.2}", currency, balance);
-        }
-    }
-}
 async fn print_report(
     portfolio: &mut Portfolio,
     shared_args: &SharedArgs,
