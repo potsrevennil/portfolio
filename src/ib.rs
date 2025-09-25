@@ -310,38 +310,36 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
     transactions.sort_by_key(|t| t.datetime);
 
     // Populate portfolio and generate unique IDs
-    let mut transaction_ids = std::collections::HashSet::new();
-    for mut tx in transactions {
+    for mut t in transactions {
         // Generate unique ID using gxhash
         let id_string = format!(
             "{}-{:?}-{:?}-{}-{:?}-{:?}",
-            tx.datetime.to_rfc3339(),
-            tx.source,
-            tx.kind,
-            tx.symbol,
-            tx.quantity,
-            tx.amount
+            t.datetime.to_rfc3339(),
+            t.source,
+            t.kind,
+            t.symbol,
+            t.quantity,
+            t.amount
         );
         use gxhash::gxhash64;
 
-        // ... (rest of the file)
+        t.id = format!("{:x}", gxhash64(id_string.as_bytes(), 0));
 
-        tx.id = format!("{:x}", gxhash64(id_string.as_bytes(), 0));
+        let date = t.datetime.date_naive();
+        portfolio
+            .transactions
+            .entry(date)
+            .and_modify(|ts| ts.push(t.clone()))
+            .or_insert(vec![t.clone()]);
 
-        if !transaction_ids.insert(tx.id.clone()) {
-            eprintln!("Warning: Duplicate transaction ID generated, skipping record: {}", tx.id);
-            continue;
-        }
-
-        if !tx.symbol.is_empty() {
-            portfolio.securities.entry(tx.symbol.clone()).or_insert_with(|| Security {
-                symbol: tx.symbol.clone(),
+        if !t.symbol.is_empty() {
+            portfolio.securities.entry(t.symbol.clone()).or_insert_with(|| Security {
+                symbol: t.symbol.clone(),
                 description: "".to_string(), /* Description will be updated from Financial
                                               * Instrument
                                               * Information later */
             });
         }
-        portfolio.transactions.push(tx);
     }
 
     Ok(())
