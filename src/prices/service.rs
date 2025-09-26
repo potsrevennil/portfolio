@@ -68,8 +68,10 @@ impl PriceService {
         }
 
         // Execute all pending data fetching tasks concurrently.
-        let fetched_results: HashMap<String, Vec<StockPrice>> =
+        let mut fetched_results: HashMap<String, Vec<StockPrice>> =
             try_join_all(fetch_futures).await?.into_iter().collect();
+
+        fetched_results.retain(|_, v| !v.is_empty());
 
         // Save any newly fetched data to the database.
         if !fetched_results.is_empty() {

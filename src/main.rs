@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{Duration, Months, NaiveDate, Utc};
 use clap::{builder::PossibleValue, Parser, Subcommand};
 use portfolio::{
-    ib,
+    cathay, ib,
     prices::{PriceService, StockPriceStore},
     Order, Portfolio, SortBy,
 };
@@ -54,20 +54,36 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Initialize and process Interactive Brokers data
+    /// Initialize and process broker data
     Init(Init),
 }
 
 #[derive(Parser, Debug)]
 struct Init {
-    #[arg(short, long, default_value = "ib.csv")]
-    ib_file: String,
+    #[command(subcommand)]
+    broker: BrokerCommand,
 
     #[arg(short, long, default_value = "transactions.csv")]
     transactions_file: String,
 
     #[command(flatten)]
     args: SharedArgs,
+}
+
+#[derive(Subcommand, Debug)]
+enum BrokerCommand {
+    /// Process Interactive Brokers data from file(s)
+    Ib {
+        /// One or more file paths for IB reports
+        #[arg(short, long, required = true, num_args = 1..)]
+        files: Vec<String>,
+    },
+    /// Process Cathay data from file(s)
+    Cathay {
+        /// One or more file paths for Cathay reports
+        #[arg(short, long, required = true, num_args = 1..)]
+        files: Vec<String>,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -114,19 +130,34 @@ async fn main() -> Result<()> {
     let price_store = StockPriceStore::new(pool.clone());
     let price_service = PriceService::new(price_store.clone());
 
-    let shared_args = match cli.command {
+    let (shared_args, reporting_currency) = match cli.command {
         Some(Command::Init(init_args)) => {
-            ib::load_from_ib_csv(&mut portfolio, &init_args.ib_file)?;
+            let current_reporting_currency = match init_args.broker {
+                BrokerCommand::Ib { files } => {
+                    for file in files {
+                        ib::load_from_ib_csv(&mut portfolio, &file)?;
+                    }
+                    portfolio::portfolio::Currency::USD
+                }
+                BrokerCommand::Cathay { files } => {
+                    for file in files {
+                        cathay::load_from_cathay_csv(&mut portfolio, &file)?;
+                    }
+                    portfolio::portfolio::Currency::TWD
+                }
+            };
             portfolio.to_csv_file(&init_args.transactions_file)?;
-            init_args.args
+            (init_args.args, current_reporting_currency)
         }
         None => {
             portfolio.load_from_csv(&cli.calculate.transactions_file)?;
-            cli.calculate.args
+            // For calculate command, default to USD for now
+            (cli.calculate.args, portfolio::portfolio::Currency::USD)
         }
     };
 
     let end_date = Utc::now().date_naive();
+
     let start_date = if let Some(ref from) = shared_args.from {
         match from {
             TimeSelector::Year(y) => {
@@ -154,7 +185,14 @@ async fn main() -> Result<()> {
     };
 
     portfolio
-        .generate_report(start_date, end_date, shared_args.sort_by, order, &price_service)
+        .generate_report(
+            start_date,
+            end_date,
+            shared_args.sort_by,
+            order,
+            &price_service,
+            reporting_currency,
+        )
         .await?;
 
     Ok(())

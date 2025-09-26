@@ -1,3 +1,4 @@
+pub mod cathay;
 pub mod db;
 pub mod ib;
 pub mod portfolio;
