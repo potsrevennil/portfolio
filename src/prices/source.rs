@@ -41,7 +41,6 @@ impl YFinanceSource {
 
         let start_datetime = start_date.and_hms_opt(0, 0, 0).unwrap().and_utc();
         let end_datetime = end_date.and_hms_opt(23, 59, 59).unwrap().and_utc();
-
         let history =
             ticker.history_builder().between(start_datetime, end_datetime).fetch().await.context(
                 format!(
@@ -50,7 +49,7 @@ impl YFinanceSource {
                 ),
             )?;
 
-        let stock_prices = history
+        let stock_prices: Vec<StockPrice> = history
             .into_iter()
             .map(|bar| {
                 let timestamp = bar.ts;
@@ -63,7 +62,6 @@ impl YFinanceSource {
                 StockPrice { date, close_price }
             })
             .collect();
-
         Ok(stock_prices)
     }
 }

@@ -129,15 +129,16 @@ pub struct HoldingDisplay<'a> {
     pub symbol: &'a String,
     pub holding: &'a Holding,
     pub securities: &'a HashMap<String, Security>,
-    pub total_market_value_usd: Decimal,
+    pub total_market_value: Decimal,
     pub prices: &'a HashMap<String, Vec<StockPrice>>,
     pub name_col_width: usize,
+    pub reporting_currency: Currency,
 }
 
 impl fmt::Display for HoldingDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let percentage =
-            self.holding.market_value.checked_div(self.total_market_value_usd).unwrap_or_default()
+            self.holding.market_value.checked_div(self.total_market_value).unwrap_or_default()
                 * Decimal::from(100);
         let name = self.securities.get(self.symbol).map_or("", |s| &s.description);
         let name_width = unicode_width::UnicodeWidthStr::width(name);
@@ -167,4 +168,3 @@ impl fmt::Display for HoldingDisplay<'_> {
         )
     }
 }
-
