@@ -51,7 +51,9 @@ mod de_utils {
     }
 }
 
-use crate::portfolio::portfolio::{AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind};
+use crate::portfolio::portfolio::{
+    AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind,
+};
 
 // --- Trades ---
 #[derive(Debug, Deserialize)]
@@ -308,21 +310,7 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
     transactions.sort_by_key(|t| t.datetime);
 
     // Populate portfolio and generate unique IDs
-    for mut t in transactions {
-        // Generate unique ID using gxhash
-        let id_string = format!(
-            "{}-{:?}-{:?}-{}-{:?}-{:?}",
-            t.datetime.to_rfc3339(),
-            t.source,
-            t.kind,
-            t.symbol,
-            t.quantity,
-            t.amount
-        );
-        use gxhash::gxhash64;
-
-        t.id = format!("{:x}", gxhash64(id_string.as_bytes(), 0));
-
+    for t in transactions {
         let date = t.datetime.date_naive();
         portfolio
             .transactions
@@ -374,14 +362,19 @@ impl From<IbTradeRecord> for Transaction {
         };
         let asset_class = record.asset_category;
         let currency = record.currency;
+        let datetime = record.date_time;
+        let symbol = record.symbol;
+
+        let id = format!("{}-{:?}-{}", datetime, kind, symbol);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
         Transaction {
-            id: String::new(), // ID will be generated later
+            id,
             source: Broker::InteractiveBrokers,
             asset_class,
-            symbol: record.symbol,
+            symbol,
             kind,
-            datetime: record.date_time,
+            datetime,
             settle_date: Some(record.date_time.date_naive()), /* Assuming settle_date is trade
                                                                * date for now */
             quantity: record.quantity.abs(),
@@ -396,16 +389,22 @@ impl From<IbTradeRecord> for Transaction {
 
 impl From<IbGrantActivityRecord> for Transaction {
     fn from(record: IbGrantActivityRecord) -> Self {
+        let kind = TransactionKind::Deposit;
+        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
+            record.award_date.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
+        let symbol = record.symbol;
+        let id = format!("{}-{:?}-{}", datetime.to_rfc3339(), kind, symbol);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
+
         Transaction {
-            id: String::new(),
+            id,
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Stocks,
-            symbol: record.symbol,
-            kind: TransactionKind::Deposit,
-            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
-                record.award_date.and_hms_opt(0, 0, 0).unwrap(),
-                Utc,
-            ),
+            symbol,
+            kind,
+            datetime,
             settle_date: Some(record.vesting_date),
             quantity: record.quantity,
             price: Decimal::ZERO,
@@ -424,19 +423,24 @@ impl From<IbTransferRecord> for Transaction {
         } else {
             TransactionKind::Withdrawal
         };
+        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
+            record.date.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
+        let symbol = record.symbol;
         let asset_class = record.asset_category;
         let currency = record.currency;
 
+        let id = format!("{}-{:?}-{}", datetime, kind, symbol);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
+
         Transaction {
-            id: String::new(),
+            id,
             source: Broker::InteractiveBrokers,
             asset_class,
-            symbol: record.symbol,
+            symbol,
             kind,
-            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
-                record.date.and_hms_opt(0, 0, 0).unwrap(),
-                Utc,
-            ),
+            datetime,
             settle_date: Some(record.date),
             quantity: record.quantity,
             price: record.market_value.checked_div(record.quantity).unwrap_or_default(),
@@ -455,18 +459,22 @@ impl From<IbDepositWithdrawalRecord> for Transaction {
         } else {
             TransactionKind::Withdrawal
         };
+        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
+            record.settle_date.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
+
         let currency = record.currency;
+        let id = format!("{}-{:?}", datetime, kind);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
         Transaction {
-            id: String::new(),
+            id,
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol: String::new(), // No symbol for cash transactions
             kind,
-            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
-                record.settle_date.and_hms_opt(0, 0, 0).unwrap(),
-                Utc,
-            ),
+            datetime,
             settle_date: Some(record.settle_date),
             quantity: Decimal::ZERO,
             price: Decimal::ZERO,
@@ -481,18 +489,22 @@ impl From<IbDepositWithdrawalRecord> for Transaction {
 impl From<IbFeeRecord> for Transaction {
     fn from(record: IbFeeRecord) -> Self {
         let currency = record.currency;
+        let kind = TransactionKind::Fee;
+        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
+            record.date.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
         let symbol = extract_symbol_from_description(&record.description).unwrap_or_default();
+        let id = format!("{}-{:?}", datetime, kind);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
         Transaction {
-            id: String::new(),
+            id,
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol,
-            kind: TransactionKind::Fee,
-            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
-                record.date.and_hms_opt(0, 0, 0).unwrap(),
-                Utc,
-            ),
+            kind,
+            datetime,
             settle_date: Some(record.date),
             quantity: Decimal::ZERO,
             price: Decimal::ZERO,
@@ -508,17 +520,21 @@ impl From<IbDividendRecord> for Transaction {
     fn from(record: IbDividendRecord) -> Self {
         let currency = record.currency;
         let symbol = extract_symbol_from_description(&record.description).unwrap_or_default();
+        let kind = TransactionKind::Dividend;
+        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
+            record.date.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
+        let id = format!("{}-{:?}", datetime, kind);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
         Transaction {
-            id: String::new(),
+            id,
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol,
-            kind: TransactionKind::Dividend,
-            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
-                record.date.and_hms_opt(0, 0, 0).unwrap(),
-                Utc,
-            ),
+            kind,
+            datetime,
             settle_date: Some(record.date),
             quantity: Decimal::ZERO,
             price: Decimal::ZERO,
@@ -533,14 +549,21 @@ impl From<IbDividendRecord> for Transaction {
 impl From<IbWithholdingTaxRecord> for Transaction {
     fn from(record: IbWithholdingTaxRecord) -> Self {
         let currency = record.currency;
+        let kind = TransactionKind::Tax;
+        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
+            record.date.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
         let symbol = extract_symbol_from_description(&record.description).unwrap_or_default();
+        let id = format!("{}-{:?}", datetime, kind);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
         Transaction {
-            id: String::new(),
+            id,
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol,
-            kind: TransactionKind::Tax,
+            kind,
             datetime: DateTime::<Utc>::from_naive_utc_and_offset(
                 record.date.and_hms_opt(0, 0, 0).unwrap(),
                 Utc,
@@ -559,17 +582,21 @@ impl From<IbWithholdingTaxRecord> for Transaction {
 impl From<IbInterestRecord> for Transaction {
     fn from(record: IbInterestRecord) -> Self {
         let currency = record.currency;
+        let kind = TransactionKind::Interest;
+        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(
+            record.date.and_hms_opt(0, 0, 0).unwrap(),
+            Utc,
+        );
+        let id = format!("{}-{:?}", datetime, kind);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
         Transaction {
-            id: String::new(),
+            id,
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol: String::new(), // No symbol for general interest
-            kind: TransactionKind::Interest,
-            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
-                record.date.and_hms_opt(0, 0, 0).unwrap(),
-                Utc,
-            ),
+            kind,
+            datetime,
             settle_date: Some(record.date),
             quantity: Decimal::ZERO,
             price: Decimal::ZERO,
@@ -585,15 +612,19 @@ impl From<IbCorporateActionRecord> for Transaction {
     fn from(record: IbCorporateActionRecord) -> Self {
         let _asset_class = record.asset_category;
         let currency = record.currency;
+        let kind = TransactionKind::CorporateAction;
+        let datetime = record.date_time;
         let symbol = extract_symbol_from_description(&record.description).unwrap_or_default();
+        let id = format!("{}-{:?}", datetime, kind);
+        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
         Transaction {
-            id: String::new(),
+            id,
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Stocks,
             symbol,
-            kind: TransactionKind::CorporateAction,
-            datetime: record.date_time,
+            kind,
+            datetime,
             settle_date: Some(record.date_time.date_naive()),
             quantity: record.quantity,
             price: Decimal::ZERO,
