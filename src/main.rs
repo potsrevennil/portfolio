@@ -3,6 +3,7 @@ use chrono::{Duration, Months, NaiveDate, Utc};
 use clap::{builder::PossibleValue, Parser, Subcommand};
 use portfolio::{
     cathay, ib,
+    portfolio::PortfolioDisplay,
     prices::{PriceService, StockPriceStore},
     Order, Portfolio, SortBy,
 };
@@ -156,26 +157,26 @@ async fn main() -> Result<()> {
         }
     };
 
-    let end_date = Utc::now().date_naive();
+    let end = Utc::now().date_naive();
 
-    let start_date = if let Some(ref from) = shared_args.from {
+    let start = if let Some(ref from) = shared_args.from {
         match from {
             TimeSelector::Year(y) => {
-                end_date.checked_sub_months(Months::new(*y * 12)).unwrap_or(NaiveDate::MIN)
+                end.checked_sub_months(Months::new(*y * 12)).unwrap_or(NaiveDate::MIN)
             }
             TimeSelector::Month(m) => {
-                end_date.checked_sub_months(Months::new(*m)).unwrap_or(NaiveDate::MIN)
+                end.checked_sub_months(Months::new(*m)).unwrap_or(NaiveDate::MIN)
             }
             TimeSelector::Week(w) => {
-                end_date.checked_sub_signed(Duration::weeks((*w).into())).unwrap_or(NaiveDate::MIN)
+                end.checked_sub_signed(Duration::weeks((*w).into())).unwrap_or(NaiveDate::MIN)
             }
             TimeSelector::Day(d) => {
-                end_date.checked_sub_signed(Duration::days((*d).into())).unwrap_or(NaiveDate::MIN)
+                end.checked_sub_signed(Duration::days((*d).into())).unwrap_or(NaiveDate::MIN)
             }
             TimeSelector::Date(d) => *d,
         }
     } else {
-        end_date
+        end
     };
 
     let order = match shared_args.order.as_str() {
@@ -184,16 +185,24 @@ async fn main() -> Result<()> {
         _ => unreachable!(),
     };
 
-    portfolio
-        .generate_report(
-            start_date,
-            end_date,
-            shared_args.sort_by,
-            order,
-            &price_service,
-            reporting_currency,
-        )
-        .await?;
+    // Determine the start date for fetching prices
+    let fetch_start =
+        portfolio.transactions.first_key_value().map_or(start, |(d, _)| start.min(*d));
+
+    // Fetch prices for all securities in the portfolio
+    let symbols: Vec<&str> = portfolio.securities.keys().map(|s| s.as_str()).collect();
+    let prices = price_service.get_prices(&symbols, fetch_start, end).await?;
+
+    portfolio.generate_daily_statements(start, end, &prices, reporting_currency);
+
+    let display = PortfolioDisplay {
+        portfolio: &portfolio,
+        sort_by: shared_args.sort_by,
+        order,
+        prices: &prices,
+        reporting_currency,
+    };
+    println!("{}", display);
 
     Ok(())
 }

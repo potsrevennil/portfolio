@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     portfolio::holding::{mark_to_market, settle_transactions, Holding, HoldingDisplay},
-    prices::{PriceService, StockPrice},
+    prices::StockPrice,
 };
 
 // --- Enums for Type-Safety ---
@@ -291,27 +291,6 @@ impl Portfolio {
         }
     }
 
-    pub async fn generate_report(
-        &mut self,
-        start_date: NaiveDate,
-        end_date: NaiveDate,
-        sort_by: SortBy,
-        order: Order,
-        price_service: &PriceService,
-        reporting_currency: Currency,
-    ) -> Result<()> {
-        // Fetch prices for all securities in the portfolio
-        let unique_symbols: Vec<&str> = self.securities.keys().map(|s| s.as_str()).collect();
-        let prices = price_service.get_prices(&unique_symbols, start_date, end_date).await?;
-
-        self.generate_daily_statements(start_date, end_date, &prices, reporting_currency);
-
-        let portfolio_display =
-            PortfolioDisplay { portfolio: self, sort_by, order, prices: &prices, reporting_currency };
-        println!("{}", portfolio_display);
-
-        Ok(())
-    }
 }
 
 #[derive(ValueEnum, Clone, Debug, Copy)]
