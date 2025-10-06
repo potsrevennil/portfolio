@@ -6,7 +6,7 @@ use rust_decimal::{
     prelude::{FromPrimitive, ToPrimitive},
     Decimal,
 };
-use sqlx::{query, query_as, SqlitePool};
+use sqlx::{query_as, SqlitePool};
 
 use crate::split::service::StockSplits;
 
@@ -30,25 +30,44 @@ impl SplitStore {
             return Ok(());
         }
 
+        let mut all_splits_to_save: Vec<(String, NaiveDate, f64)> = Vec::new();
+        for (date, splits_for_date) in splits {
+            for (symbol, ratio) in splits_for_date {
+                let ratio_f64 = ratio.to_f64().unwrap_or(1.0);
+                all_splits_to_save.push((symbol.clone(), *date, ratio_f64));
+            }
+        }
+
         let mut tx = self.pool.begin().await?;
 
-        for (symbol, splits) in splits {
-            for (date, ratio) in splits {
-                let ratio_f64 = ratio.to_f64().unwrap_or(1.0);
-                query!(
-                    r#"
-                    INSERT INTO stock_splits (symbol, date, ratio)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(symbol, date) DO UPDATE SET
-                        ratio = excluded.ratio;
-                    "#,
-                    symbol,
-                    *date,
-                    ratio_f64
-                )
-                .execute(&mut *tx)
-                .await?;
+        // SQLite has a limit of 999 host parameters. Each split uses 3 parameters.
+        // So, max_splits_per_batch = 999 / 3 = 333.
+        // We'll use a slightly smaller batch size to be safe.
+        const BATCH_SIZE: usize = 300;
+
+        for chunk in all_splits_to_save.chunks(BATCH_SIZE) {
+            let mut query_builder = String::from(
+                "INSERT INTO stock_splits (symbol, date, ratio) VALUES ",
+            );
+
+
+            for (i, (_symbol, _date, _ratio)) in chunk.iter().enumerate() {
+                if i > 0 {
+                    query_builder.push_str(", ");
+                }
+                query_builder.push_str("(?, ?, ?)");
+
             }
+
+            query_builder.push_str(" ON CONFLICT(symbol, date) DO UPDATE SET ratio = excluded.ratio;");
+
+            let mut query_exec = sqlx::query(&query_builder);
+            for (symbol, date, ratio) in chunk.iter() {
+                query_exec = query_exec.bind(symbol);
+                query_exec = query_exec.bind(date);
+                query_exec = query_exec.bind(ratio);
+            }
+            query_exec.execute(&mut *tx).await?;
         }
 
         tx.commit().await?;
