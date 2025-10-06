@@ -42,7 +42,7 @@ mod de_utils {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct CathayTradeRecord {
     #[serde(rename = "股名")]
     pub name: String,
@@ -100,12 +100,55 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
             anyhow::anyhow!("Symbol not found for Cathay stock name: {}", record.name)
         })?;
 
-        let transaction: Transaction = (record, symbol.to_string()).into();
+        let transaction: Transaction = (record.clone(), symbol.to_string()).into();
 
         transactions
             .entry(transaction.datetime.date_naive())
             .or_default()
             .push(transaction.clone());
+
+        // Generate implicit deposit/withdrawal transactions for Cathay
+        let cash_flow_transaction = match transaction.kind {
+            TransactionKind::Buy => Some(Transaction {
+                id: String::new(), // Will be generated later
+                source: Broker::Cathay,
+                asset_class: AssetClass::Cash, // This is a cash movement
+                symbol: "CASH".to_string(), // Use a generic symbol for cash
+                kind: TransactionKind::Deposit,
+                datetime: transaction.datetime,
+                settle_date: transaction.settle_date,
+                quantity: Decimal::ZERO, // No quantity for cash
+                price: Decimal::ZERO, // No price for cash
+                amount: record.net_amount.abs(), // Absolute value of net_amount
+                commission: Decimal::ZERO, // Commission already accounted for in net_amount
+                currency: Currency::TWD,
+                balance: Decimal::ZERO, // Will be calculated later
+            }),
+            TransactionKind::Sell => Some(Transaction {
+                id: String::new(), // Will be generated later
+                source: Broker::Cathay,
+                asset_class: AssetClass::Cash, // This is a cash movement
+                symbol: "CASH".to_string(), // Use a generic symbol for cash
+                kind: TransactionKind::Withdrawal,
+                datetime: transaction.datetime,
+                settle_date: transaction.settle_date,
+                quantity: Decimal::ZERO, // No quantity for cash
+                price: Decimal::ZERO, // No price for cash
+                amount: record.net_amount.abs(), // Absolute value of net_amount
+                commission: Decimal::ZERO, // Commission already accounted for in net_amount
+                currency: Currency::TWD,
+                balance: Decimal::ZERO, // Will be calculated later
+            }),
+            _ => None, // Other transaction kinds don't generate implicit cash flow
+        };
+
+        if let Some(cash_tx) = cash_flow_transaction {
+            transactions
+                .entry(cash_tx.datetime.date_naive())
+                .or_default()
+                .push(cash_tx);
+        }
+
 
         if !transaction.symbol.is_empty() {
             portfolio.securities.entry(transaction.symbol.clone()).or_insert_with(|| Security {
