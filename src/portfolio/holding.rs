@@ -19,7 +19,6 @@ pub struct Holding {
     pub unrealized_pnl_value: Decimal, // Unrealized profit/loss in currency
     pub unrealized_pnl_percentage: Decimal, // Unrealized profit/loss as a percentage
     pub realized_pnl_value: Decimal, // Overall realized profit/loss in currency
-    pub realized_pnl_percentage: Decimal, // Overall realized profit/loss as a percentage
 }
 
 pub fn settle_transactions(
@@ -54,20 +53,17 @@ pub fn settle_transactions(
             match t.kind {
                 TransactionKind::Buy => {
                     h.quantity += t.quantity;
-                    h.total_cost += t.quantity * t.price;
+                    h.total_cost += t.amount.abs() + t.commission.abs();
+                    h.average_cost = h.total_cost.checked_div(h.quantity).unwrap_or_default();
                 }
                 TransactionKind::Sell => {
-                    let cost_basis_per_share =
-                        h.total_cost.checked_div(h.quantity).unwrap_or_default();
-                    let cost_of_sold_shares = t.quantity * cost_basis_per_share;
+                    let cost_of_sold_shares = t.quantity * h.average_cost;
                     let proceeds = t.quantity * t.price;
                     let pnl = proceeds - cost_of_sold_shares;
 
                     h.realized_pnl_value += pnl;
-                    // realized_pnl_percentage will be calculated after all transactions for the
-                    // day
                     h.quantity -= t.quantity;
-                    h.total_cost -= cost_of_sold_shares;
+                    h.total_cost = (h.total_cost - cost_of_sold_shares).round_dp(18);
                 }
                 TransactionKind::Deposit => {
                     h.quantity += t.quantity;
@@ -87,14 +83,6 @@ pub fn settle_transactions(
                 _ => {}
             }
         }
-    }
-
-    // Calculate realized_pnl_percentage and average_cost once for each stock after
-    // all daily transactions
-    for h in holdings.values_mut() {
-        h.realized_pnl_percentage =
-            h.realized_pnl_value.checked_div(h.total_cost).unwrap_or_default() * Decimal::from(100);
-        h.average_cost = h.total_cost.checked_div(h.quantity).unwrap_or_default();
     }
 }
 
@@ -157,8 +145,7 @@ impl fmt::Display for HoldingDisplay<'_> {
 
         write!(
             f,
-            "{:<15} {} {:>12.4} {:>18.2} {:>18.2} {:>15.2} {:>14.2}% {:>15.2} {:>14.2}% {:>13.2}% \
-             {:>11.2}", // Added {:>11.2} for Market Price
+            "{:<15} {} {:>12.4} {:>18.2} {:>18.2} {:>15.2} {:>14.2}% {:>15.2} {:>13.2}% {:>11.2}", /* Added {:>11.2} for Market Price */
             self.symbol,
             name_part,
             self.holding.quantity,
@@ -167,7 +154,6 @@ impl fmt::Display for HoldingDisplay<'_> {
             self.holding.unrealized_pnl_value,
             self.holding.unrealized_pnl_percentage,
             self.holding.realized_pnl_value,
-            self.holding.realized_pnl_percentage,
             percentage,
             market_price, // Use direct market price
         )

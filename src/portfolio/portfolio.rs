@@ -352,9 +352,6 @@ impl fmt::Display for PortfolioDisplay<'_> {
             let total_unrealized_pnl_percentage =
                 total_unrealized_pnl.checked_div(total_assets).unwrap_or_default()
                     * Decimal::from(100);
-            let total_realized_pnl_percentage =
-                total_realized_pnl.checked_div(total_assets).unwrap_or_default()
-                    * Decimal::from(100);
 
             writeln!(
                 f,
@@ -371,11 +368,8 @@ impl fmt::Display for PortfolioDisplay<'_> {
             )?;
             writeln!(
                 f,
-                "{:<25}: {:>10.2} {} ({:>6.2}%)",
-                "Total Realized P&L",
-                total_realized_pnl,
-                reporting_currency,
-                total_realized_pnl_percentage
+                "{:<25}: {:>10.2} {}",
+                "Total Realized P&L", total_realized_pnl, reporting_currency,
             )?;
             writeln!(f, "")?;
 
@@ -392,7 +386,7 @@ impl fmt::Display for PortfolioDisplay<'_> {
             let name_col_width = 35;
             writeln!(
                 f,
-                "{:<15} {:<width$} {:>12} {:>18} {:>18} {:>15} {:>15} {:>15} {:>15} {:>14} {:>12}",
+                "{:<15} {:<width$} {:>12} {:>18} {:>18} {:>15} {:>15} {:>15} {:>14} {:>12}",
                 "Ticker",
                 "Name",
                 "Quantity",
@@ -401,7 +395,6 @@ impl fmt::Display for PortfolioDisplay<'_> {
                 "Unrealized P&L",
                 "Unrealized %",
                 "Realized P&L",
-                "Realized %",
                 "Portfolio %",
                 "Mkt Price",
                 width = name_col_width,
