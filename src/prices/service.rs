@@ -59,10 +59,20 @@ impl PriceService {
                 let symbol_owned = symbol.to_string();
                 // Prepare an asynchronous task to fetch missing data for this symbol.
                 fetch_futures.push(async move {
-                    let prices =
+                    // NOTE: Temporarily skipping errors for specific symbols
+                    // due to parsing issues with yfinance-rs. This should be addressed
+                    // with a more robust error handling or data source in the future.
+                    let prices_result =
                         YFinanceSource::fetch_stock_prices(&symbol_owned, start_date, end_date)
-                            .await?;
-                    Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, prices))
+                            .await;
+
+                    match prices_result {
+                        Ok(prices) => Ok((symbol_owned, prices)),
+                        Err(e) => {
+                            log::warn!("Failed to fetch prices for {}: {}", symbol_owned, e);
+                            Ok((symbol_owned, Vec::new())) // Return empty vec on error
+                        }
+                    }
                 });
             }
         }
