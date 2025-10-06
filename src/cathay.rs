@@ -67,9 +67,15 @@ pub struct CathayTradeRecord {
 fn get_symbol_map() -> HashMap<&'static str, &'static str> {
     let mut map = HashMap::new();
     map.insert("範例證券01", "ZZ01.TW");
+    map.insert("範例證券02", "ZZ02.TW");
+    map.insert("範例證券03", "ZZ03.TW");
+    map.insert("範例證券04", "ZZ04.TW");
+    map.insert("範例證券05", "ZZ05.TW");
+    map.insert("範例證券06", "ZZ06.TWO");
+    map.insert("範例證券07", "ZZ07.TWO");
     map.insert("範例證券08", "ZZ08.TW");
-    map.insert("範例證券09", "ZZ09.TW");
-    map.insert("範例證券10", "ZZ10.TW");
+    map.insert("範例證券09", "ZZ09.TWO");
+    map.insert("範例證券10", "ZZ10.TWO");
     map.insert("範例證券11", "ZZ11.TW");
     map.insert("範例證券12", "ZZ12.TW");
     map.insert("範例證券13", "ZZ13.TW");
@@ -113,14 +119,14 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
                 id: String::new(), // Will be generated later
                 source: Broker::Cathay,
                 asset_class: AssetClass::Cash, // This is a cash movement
-                symbol: "CASH".to_string(), // Use a generic symbol for cash
+                symbol: "CASH".to_string(),    // Use a generic symbol for cash
                 kind: TransactionKind::Deposit,
                 datetime: transaction.datetime,
                 settle_date: transaction.settle_date,
-                quantity: Decimal::ZERO, // No quantity for cash
-                price: Decimal::ZERO, // No price for cash
+                quantity: Decimal::ZERO,         // No quantity for cash
+                price: Decimal::ZERO,            // No price for cash
                 amount: record.net_amount.abs(), // Absolute value of net_amount
-                commission: Decimal::ZERO, // Commission already accounted for in net_amount
+                commission: Decimal::ZERO,       // Commission already accounted for in net_amount
                 currency: Currency::TWD,
                 balance: Decimal::ZERO, // Will be calculated later
             }),
@@ -128,13 +134,13 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
                 id: String::new(), // Will be generated later
                 source: Broker::Cathay,
                 asset_class: AssetClass::Cash, // This is a cash movement
-                symbol: "CASH".to_string(), // Use a generic symbol for cash
+                symbol: "CASH".to_string(),    // Use a generic symbol for cash
                 kind: TransactionKind::Withdrawal,
                 datetime: transaction.datetime,
                 settle_date: transaction.settle_date,
                 quantity: Decimal::ZERO, // No quantity for cash
-                price: Decimal::ZERO, // No price for cash
-                amount: record.net_amount.abs(), // Absolute value of net_amount
+                price: Decimal::ZERO,    // No price for cash
+                amount: -record.net_amount.abs(),
                 commission: Decimal::ZERO, // Commission already accounted for in net_amount
                 currency: Currency::TWD,
                 balance: Decimal::ZERO, // Will be calculated later
@@ -143,12 +149,8 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
         };
 
         if let Some(cash_tx) = cash_flow_transaction {
-            transactions
-                .entry(cash_tx.datetime.date_naive())
-                .or_default()
-                .push(cash_tx);
+            transactions.entry(cash_tx.datetime.date_naive()).or_default().push(cash_tx);
         }
-
 
         if !transaction.symbol.is_empty() {
             portfolio.securities.entry(transaction.symbol.clone()).or_insert_with(|| Security {

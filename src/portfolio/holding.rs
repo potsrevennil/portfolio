@@ -57,19 +57,17 @@ pub fn settle_transactions(
                     h.total_cost += t.quantity * t.price;
                 }
                 TransactionKind::Sell => {
-                    if h.quantity > Decimal::ZERO {
-                        let cost_basis_per_share =
-                            h.total_cost.checked_div(h.quantity).unwrap_or_default();
-                        let cost_of_sold_shares = t.quantity * cost_basis_per_share;
-                        let proceeds = t.quantity * t.price;
-                        let pnl = proceeds - cost_of_sold_shares;
+                    let cost_basis_per_share =
+                        h.total_cost.checked_div(h.quantity).unwrap_or_default();
+                    let cost_of_sold_shares = t.quantity * cost_basis_per_share;
+                    let proceeds = t.quantity * t.price;
+                    let pnl = proceeds - cost_of_sold_shares;
 
-                        h.realized_pnl_value += pnl;
-                        // realized_pnl_percentage will be calculated after all transactions for the
-                        // day
-                        h.quantity -= t.quantity;
-                        h.total_cost -= cost_of_sold_shares;
-                    }
+                    h.realized_pnl_value += pnl;
+                    // realized_pnl_percentage will be calculated after all transactions for the
+                    // day
+                    h.quantity -= t.quantity;
+                    h.total_cost -= cost_of_sold_shares;
                 }
                 TransactionKind::Deposit => {
                     h.quantity += t.quantity;
@@ -77,13 +75,11 @@ pub fn settle_transactions(
                     h.total_cost += t.amount;
                 }
                 TransactionKind::Withdrawal => {
-                    if h.quantity > Decimal::ZERO {
-                        let cost_basis_per_share =
-                            h.total_cost.checked_div(h.quantity).unwrap_or_default();
-                        let cost_of_withdrawn_shares = t.quantity * cost_basis_per_share;
-                        h.quantity -= t.quantity;
-                        h.total_cost -= cost_of_withdrawn_shares;
-                    }
+                    let cost_basis_per_share =
+                        h.total_cost.checked_div(h.quantity).unwrap_or_default();
+                    let cost_of_withdrawn_shares = t.quantity * cost_basis_per_share;
+                    h.quantity -= t.quantity;
+                    h.total_cost -= cost_of_withdrawn_shares;
                 }
                 TransactionKind::CorporateAction => {
                     h.quantity += t.quantity;
