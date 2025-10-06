@@ -27,13 +27,13 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
     cathay::load_from_cathay_csv(&mut portfolio, path_2022)?;
     cathay::load_from_cathay_csv(&mut portfolio, path_2024)?;
 
-    let total_transactions: usize = portfolio.transactions.values().map(|v| v.len()).sum();
+    let total_transactions: usize = portfolio.events.values().map(|event| event.transactions.len()).sum();
 
     // We added 1 transaction from 2022 and 1 from 2024
     assert_eq!(total_transactions, 2);
 
     // Optional: Check specific transaction details
-    let first_transaction = portfolio.transactions.values().next().unwrap().first().unwrap();
+    let first_transaction = portfolio.events.values().next().unwrap().transactions.first().unwrap();
     assert_eq!(first_transaction.symbol, "ZZ01.TW");
     assert_eq!(first_transaction.quantity, rust_decimal::Decimal::from(10));
 

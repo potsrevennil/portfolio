@@ -11,11 +11,19 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    portfolio::holding::{mark_to_market, settle_transactions, Holding, HoldingDisplay},
+    portfolio::holding::{
+        adjust_holdings, mark_to_market, settle_transactions, Holding, HoldingDisplay,
+    },
     prices::StockPrice,
 };
 
 // --- Enums for Type-Safety ---
+
+#[derive(Debug, Default, Clone)]
+pub struct Event {
+    pub transactions: Vec<Transaction>,
+    pub splits: Vec<(String, Decimal)>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum TransactionKind {
@@ -107,15 +115,11 @@ pub struct Portfolio {
     // Static data about all securities ever transacted.
     pub securities: HashMap<String, Security>,
 
-    // The raw, immutable log of all historical transactions.
-    pub transactions: BTreeMap<NaiveDate, Vec<Transaction>>,
-
-    // The calculated current state of all holdings.
-    // This is derived from the transaction history.
+    // The raw, immutable log of all historical events.
+    pub events: BTreeMap<NaiveDate, Event>,
 
     // Daily snapshots of holdings and cash balances over a calculated range.
-    pub daily_statements:
-        BTreeMap<NaiveDate, (HashMap<String, Holding>, Decimal)>,
+    pub daily_statements: BTreeMap<NaiveDate, (HashMap<String, Holding>, Decimal)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,13 +148,15 @@ impl Portfolio {
     pub fn new() -> Self {
         Portfolio {
             securities: HashMap::new(),
-            transactions: BTreeMap::new(),
+            events: BTreeMap::new(),
             daily_statements: BTreeMap::new(),
         }
     }
 
     pub fn load_from_csv(&mut self, file_path: &str) -> Result<()> {
         let mut reader = csv::Reader::from_path(file_path)?;
+        let mut transactions: BTreeMap<NaiveDate, Vec<Transaction>> = BTreeMap::new();
+
         for result in reader.deserialize() {
             let record: CsvTransactionRecord = result?;
             let t = Transaction {
@@ -170,7 +176,7 @@ impl Portfolio {
             };
 
             let date = t.datetime.date_naive();
-            self.transactions.entry(date).and_modify(|ts| ts.push(t.clone())).or_insert(vec![t]);
+            transactions.entry(date).or_default().push(t);
 
             // Only insert into securities map if the symbol is not empty
             if !record.symbol.is_empty() {
@@ -180,24 +186,30 @@ impl Portfolio {
                 });
             }
         }
+
+        for (d, ts) in transactions {
+            let es = self.events.entry(d).or_insert_with(|| Event::default());
+            es.transactions.extend(ts);
+        }
+
         Ok(())
     }
 
     pub fn to_csv_file(&self, file_path: &str) -> Result<()> {
         let mut writer = csv::Writer::from_path(file_path)?;
-        for ts in self.transactions.values() {
+        for event in self.events.values() {
             // Sort transactions within the same day by datetime for consistent output
-            let mut ts = ts.clone();
-            ts.sort_by_key(|t| t.datetime);
+            let mut transactions = event.transactions.clone();
+            transactions.sort_by_key(|t| t.datetime);
 
-            for t in ts {
+            for t in &transactions {
                 let description =
                     self.securities.get(&t.symbol).map_or("", |s| &s.description).to_string();
                 writer.serialize(CsvTransactionRecord {
-                    id: t.id,
+                    id: t.id.clone(),
                     source: t.source,
                     asset_class: t.asset_class,
-                    symbol: t.symbol,
+                    symbol: t.symbol.clone(),
                     description,
                     kind: t.kind,
                     datetime: t.datetime,
@@ -234,21 +246,22 @@ impl Portfolio {
         let mut holdings: HashMap<String, Holding> = HashMap::new();
         let mut cash_balances: HashMap<Currency, Decimal> = HashMap::new();
 
-        // Phase 1: Apply all transactions before start_date to initialize holdings/cash
-        for (_d, ts) in self.transactions.iter().take_while(|&(&d, _)| d < start_date) {
-            settle_transactions(&mut holdings, &mut cash_balances, ts);
+        // Phase 1: Apply all events before start_date to initialize holdings/cash
+        for (_d, event) in self.events.iter().take_while(|&(&d, _)| d < start_date) {
+            adjust_holdings(&mut holdings, &event.splits);
+            settle_transactions(&mut holdings, &mut cash_balances, &event.transactions);
         }
 
-        // Phase 2: Iterate from start_date to end_date, processing transactions and
+        // Phase 2: Iterate from start_date to end_date, processing events and
         // creating snapshots
-        for (d, ts) in self
-            .transactions
+        for (d, event) in self
+            .events
             .iter()
             .skip_while(|&(&d, _)| d < start_date)
             .take_while(|&(&d, _)| d >= start_date && d <= end_date)
         {
-            // Apply transactions for the current day
-            settle_transactions(&mut holdings, &mut cash_balances, ts);
+            adjust_holdings(&mut holdings, &event.splits);
+            settle_transactions(&mut holdings, &mut cash_balances, &event.transactions);
 
             // Get prices for the current day
             let current_prices: HashMap<String, &StockPrice> = prices
@@ -285,12 +298,9 @@ impl Portfolio {
                 .collect();
             let daily_statement = mark_to_market(&mut holdings, &current_prices);
             let cash_balance = *cash_balances.get(&reporting_currency).unwrap_or(&Decimal::ZERO);
-            self.daily_statements
-                .entry(start_date)
-                .or_insert((daily_statement, cash_balance));
+            self.daily_statements.entry(start_date).or_insert((daily_statement, cash_balance));
         }
     }
-
 }
 
 #[derive(ValueEnum, Clone, Debug, Copy)]
@@ -346,16 +356,26 @@ impl fmt::Display for PortfolioDisplay<'_> {
                 total_realized_pnl.checked_div(total_assets).unwrap_or_default()
                     * Decimal::from(100);
 
-            writeln!(f, "{:<25}: {:>10.2} {}", "Total Portfolio Value", total_assets, reporting_currency)?;
             writeln!(
                 f,
-                "{:<25}: {:>10.2} {} ({:>6.2}%)",
-                "Total Unrealized P&L", total_unrealized_pnl, reporting_currency, total_unrealized_pnl_percentage
+                "{:<25}: {:>10.2} {}",
+                "Total Portfolio Value", total_assets, reporting_currency
             )?;
             writeln!(
                 f,
                 "{:<25}: {:>10.2} {} ({:>6.2}%)",
-                "Total Realized P&L", total_realized_pnl, reporting_currency, total_realized_pnl_percentage
+                "Total Unrealized P&L",
+                total_unrealized_pnl,
+                reporting_currency,
+                total_unrealized_pnl_percentage
+            )?;
+            writeln!(
+                f,
+                "{:<25}: {:>10.2} {} ({:>6.2}%)",
+                "Total Realized P&L",
+                total_realized_pnl,
+                reporting_currency,
+                total_realized_pnl_percentage
             )?;
             writeln!(f, "")?;
 

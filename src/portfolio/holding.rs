@@ -125,6 +125,15 @@ pub fn mark_to_market(
     snapshot
 }
 
+pub fn adjust_holdings(holdings: &mut HashMap<String, Holding>, splits: &[(String, Decimal)]) {
+    for (symbol, ratio) in splits {
+        if let Some(holding) = holdings.get_mut(symbol) {
+            holding.quantity *= ratio;
+            holding.average_cost = holding.average_cost.checked_div(*ratio).unwrap_or_default();
+        }
+    }
+}
+
 pub struct HoldingDisplay<'a> {
     pub symbol: &'a String,
     pub holding: &'a Holding,

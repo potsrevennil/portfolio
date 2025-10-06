@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -52,7 +52,7 @@ mod de_utils {
 }
 
 use crate::portfolio::portfolio::{
-    AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind,
+    AssetClass, Broker, Currency, Event, Portfolio, Security, Transaction, TransactionKind,
 };
 
 // --- Trades ---
@@ -201,15 +201,15 @@ struct IbInterestRecord {
 #[serde(rename_all = "PascalCase")]
 struct IbCorporateActionRecord {
     #[serde(rename = "Asset Category")]
-    asset_category: AssetClass,
-    currency: Currency,
+    _asset_category: AssetClass,
+    _currency: Currency,
     _account: String,
     #[serde(rename = "Report Date", deserialize_with = "de_utils::date_format")]
     _report_date: NaiveDate,
     #[serde(rename = "Date/Time", deserialize_with = "de_utils::datetime_format")]
     date_time: DateTime<Utc>,
     description: String, // e.g., "IBKR(US45841N1072) Split 4 for 1"
-    quantity: Decimal,
+    _quantity: Decimal,
     _proceeds: Decimal,
     _value: Decimal,
     #[serde(rename = "Realized P/L")]
@@ -223,8 +223,9 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
 
     let mut headers: HashMap<String, csv::StringRecord> = HashMap::new();
     let mut current_section: Option<String> = None;
-    let mut transactions: Vec<Transaction> = Vec::new();
+    let mut transactions: BTreeMap<NaiveDate, Vec<Transaction>> = BTreeMap::new();
     let mut withholding_tax_records: Vec<IbWithholdingTaxRecord> = Vec::new();
+    let mut splits: BTreeMap<NaiveDate, Vec<(String, Decimal)>> = BTreeMap::new();
 
     for result in reader.records() {
         let record = result.context("Failed to read record from CSV")?;
@@ -250,28 +251,34 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                     match section.as_str() {
                         "Trades" => {
                             let r = record.deserialize::<IbTradeRecord>(Some(header))?;
-                            transactions.push(r.into());
+                            let t: Transaction = r.into();
+                            transactions.entry(t.datetime.date_naive()).or_default().push(t);
                         }
                         "Grant Activity" => {
                             let r = record.deserialize::<IbGrantActivityRecord>(Some(header))?;
-                            transactions.push(r.into());
+                            let t: Transaction = r.into();
+                            transactions.entry(t.datetime.date_naive()).or_default().push(t);
                         }
                         "Transfers" => {
                             let r = record.deserialize::<IbTransferRecord>(Some(header))?;
-                            transactions.push(r.into());
+                            let t: Transaction = r.into();
+                            transactions.entry(t.datetime.date_naive()).or_default().push(t);
                         }
                         "Deposits & Withdrawals" => {
                             let r =
                                 record.deserialize::<IbDepositWithdrawalRecord>(Some(header))?;
-                            transactions.push(r.into());
+                            let t: Transaction = r.into();
+                            transactions.entry(t.datetime.date_naive()).or_default().push(t);
                         }
                         "Fees" => {
                             let r = record.deserialize::<IbFeeRecord>(Some(header))?;
-                            transactions.push(r.into());
+                            let t: Transaction = r.into();
+                            transactions.entry(t.datetime.date_naive()).or_default().push(t);
                         }
                         "Dividends" => {
                             let r = record.deserialize::<IbDividendRecord>(Some(header))?;
-                            transactions.push(r.into());
+                            let t: Transaction = r.into();
+                            transactions.entry(t.datetime.date_naive()).or_default().push(t);
                         }
                         "Withholding Tax" => {
                             let r = record.deserialize::<IbWithholdingTaxRecord>(Some(header))?;
@@ -279,11 +286,18 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
                         }
                         "Interest" => {
                             let r = record.deserialize::<IbInterestRecord>(Some(header))?;
-                            transactions.push(r.into());
+                            let t: Transaction = r.into();
+                            transactions.entry(t.datetime.date_naive()).or_default().push(t);
                         }
                         "Corporate Actions" => {
                             let r = record.deserialize::<IbCorporateActionRecord>(Some(header))?;
-                            transactions.push(r.into());
+                            if r.description.contains("Split") {
+                                if let Some((symbol, date, ratio)) =
+                                    parse_split(&r.description, r.date_time.date_naive())
+                                {
+                                    splits.entry(date).or_default().push((symbol, ratio));
+                                }
+                            }
                         }
                         _ => {
                             // Ignore other sections
@@ -303,29 +317,29 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
     // Process grouped withholding tax records
     let grouped_withholding_tax = group_withholding_tax_records(withholding_tax_records);
     for tax_record in grouped_withholding_tax {
-        transactions.push(tax_record.into());
+        let t: Transaction = tax_record.into();
+        transactions.entry(t.datetime.date_naive()).or_default().push(t);
     }
 
-    // Sort all transactions by datetime
-    transactions.sort_by_key(|t| t.datetime);
-
-    // Populate portfolio and generate unique IDs
-    for t in transactions {
-        let date = t.datetime.date_naive();
-        portfolio
-            .transactions
-            .entry(date)
-            .and_modify(|ts| ts.push(t.clone()))
-            .or_insert(vec![t.clone()]);
-
-        if !t.symbol.is_empty() {
-            portfolio.securities.entry(t.symbol.clone()).or_insert_with(|| Security {
-                symbol: t.symbol.clone(),
-                description: "".to_string(), /* Description will be updated from Financial
-                                              * Instrument
-                                              * Information later */
-            });
+    // Populate portfolio events with transactions
+    for (d, ts) in transactions {
+        // Update securities map
+        for t in &ts {
+            if !t.symbol.is_empty() {
+                portfolio.securities.entry(t.symbol.clone()).or_insert_with(|| Security {
+                    symbol: t.symbol.clone(),
+                    description: "".to_string(),
+                });
+            }
         }
+        let es = portfolio.events.entry(d).or_insert_with(|| Event::default());
+        es.transactions.extend(ts);
+    }
+
+    // Populate portfolio events with splits
+    for (d, s) in splits {
+        let es = portfolio.events.entry(d).or_insert_with(|| Event::default());
+        es.splits.extend(s);
     }
 
     Ok(())
@@ -608,32 +622,15 @@ impl From<IbInterestRecord> for Transaction {
     }
 }
 
-impl From<IbCorporateActionRecord> for Transaction {
-    fn from(record: IbCorporateActionRecord) -> Self {
-        let _asset_class = record.asset_category;
-        let currency = record.currency;
-        let kind = TransactionKind::CorporateAction;
-        let datetime = record.date_time;
-        let symbol = extract_symbol_from_description(&record.description).unwrap_or_default();
-        let id = format!("{}-{:?}", datetime, kind);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
-
-        Transaction {
-            id,
-            source: Broker::InteractiveBrokers,
-            asset_class: AssetClass::Stocks,
-            symbol,
-            kind,
-            datetime,
-            settle_date: Some(record.date_time.date_naive()),
-            quantity: record.quantity,
-            price: Decimal::ZERO,
-            amount: Decimal::ZERO,
-            commission: Decimal::ZERO,
-            currency,
-            balance: Decimal::ZERO,
-        }
-    }
+fn parse_split(description: &str, date: NaiveDate) -> Option<(String, NaiveDate, Decimal)> {
+    let re = regex::Regex::new(r"([A-Z]+)\(.+\) Split (\d+) for (\d+)").ok()?;
+    re.captures(description).and_then(|caps| {
+        let symbol = caps.get(1)?.as_str().to_string();
+        let to_ratio: u32 = caps.get(2)?.as_str().parse().ok()?;
+        let from_ratio: u32 = caps.get(3)?.as_str().parse().ok()?;
+        let ratio = Decimal::from(to_ratio) / Decimal::from(from_ratio);
+        Some((symbol, date, ratio))
+    })
 }
 
 // Helper to extract symbol from descriptions like "AAPL(US0378331005) Cash

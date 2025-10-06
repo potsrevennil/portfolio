@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::File,
     io::{BufRead, BufReader},
 };
@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::portfolio::portfolio::{
-    AssetClass, Broker, Currency, Portfolio, Security, Transaction, TransactionKind,
+    AssetClass, Broker, Currency, Event, Portfolio, Security, Transaction, TransactionKind,
 };
 
 // Custom deserialization utilities
@@ -91,6 +91,8 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
     let mut csv_reader =
         csv::ReaderBuilder::new().has_headers(true).flexible(true).from_reader(reader);
 
+    let mut transactions: BTreeMap<NaiveDate, Vec<Transaction>> = BTreeMap::new();
+
     for result in csv_reader.deserialize() {
         let record: CathayTradeRecord =
             result.context("Failed to deserialize Cathay trade record")?;
@@ -100,12 +102,10 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
 
         let transaction: Transaction = (record, symbol.to_string()).into();
 
-        let date = transaction.datetime.date_naive();
-        portfolio
-            .transactions
-            .entry(date)
-            .and_modify(|ts| ts.push(transaction.clone()))
-            .or_insert_with(|| vec![transaction.clone()]);
+        transactions
+            .entry(transaction.datetime.date_naive())
+            .or_default()
+            .push(transaction.clone());
 
         if !transaction.symbol.is_empty() {
             portfolio.securities.entry(transaction.symbol.clone()).or_insert_with(|| Security {
@@ -113,6 +113,11 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
                 description: "".to_string(), // Description can be added later if available
             });
         }
+    }
+
+    for (d, ts) in transactions {
+        let es = portfolio.events.entry(d).or_insert_with(|| Event::default());
+        es.transactions.extend(ts);
     }
 
     Ok(())

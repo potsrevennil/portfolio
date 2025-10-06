@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT symbol, date, ratio FROM stock_splits WHERE date >= ? AND date <= ? ORDER BY symbol, date ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "symbol",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "date",
+        "ordinal": 1,
+        "type_info": "Date"
+      },
+      {
+        "name": "ratio",
+        "ordinal": 2,
+        "type_info": "Float"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e52cc604e82e57ed3b48204b862da0ffecce99cbb505314cb2c089267a47a7ba"
+}
