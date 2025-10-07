@@ -119,7 +119,8 @@ pub struct Portfolio {
     pub events: BTreeMap<NaiveDate, Event>,
 
     // Daily snapshots of holdings and cash balances over a calculated range.
-    pub daily_statements: BTreeMap<NaiveDate, (HashMap<String, Holding>, Decimal)>,
+    pub daily_statements:
+        BTreeMap<NaiveDate, (HashMap<String, Holding>, HashMap<Currency, Decimal>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +194,6 @@ impl Portfolio {
         start_date: NaiveDate,
         end_date: NaiveDate,
         prices: &HashMap<String, Vec<StockPrice>>,
-        reporting_currency: Currency,
     ) {
         self.daily_statements.clear();
 
@@ -228,15 +228,8 @@ impl Portfolio {
 
             // Calculate P&L for the current day's snapshot
             let daily_statement = mark_to_market(&mut holdings, &current_prices);
-            let cash_balance = *cash_balances.get(&reporting_currency).unwrap_or(&Decimal::ZERO);
 
-            self.daily_statements
-                .entry(*d)
-                .and_modify(|(h, c)| {
-                    *h = daily_statement.clone();
-                    *c = cash_balance;
-                })
-                .or_insert((daily_statement, cash_balance));
+            self.daily_statements.insert(*d, (daily_statement, cash_balances.clone()));
         }
 
         // Handle the case where start_date has no transactions but needs a snapshot
@@ -251,8 +244,7 @@ impl Portfolio {
                 })
                 .collect();
             let daily_statement = mark_to_market(&mut holdings, &current_prices);
-            let cash_balance = *cash_balances.get(&reporting_currency).unwrap_or(&Decimal::ZERO);
-            self.daily_statements.entry(start_date).or_insert((daily_statement, cash_balance));
+            self.daily_statements.insert(start_date, (daily_statement, cash_balances.clone()));
         }
     }
 }
@@ -283,47 +275,49 @@ impl fmt::Display for PortfolioDisplay<'_> {
         let sort_by = self.sort_by;
         let order = self.order;
         let prices = self.prices;
-        let reporting_currency = self.reporting_currency;
 
         if portfolio.daily_statements.is_empty() {
             writeln!(f, "No portfolio data available for the selected period.")?;
             return Ok(());
         }
 
-        for (date, (holdings, cash_balance)) in &portfolio.daily_statements {
+        for (date, (holdings, cash_balances)) in &portfolio.daily_statements {
             writeln!(f, "\n======================================================================================================================================================================================================")?;
-            writeln!(f, "--- Account Summary as of {} ({}) ---", date, reporting_currency)?;
+            writeln!(f, "--- Account Summary as of {} ---", date)?;
 
             let total_holdings_market_value: Decimal =
                 holdings.values().map(|h| h.market_value).sum();
-            let total_cash = *cash_balance;
+            let total_cash: Decimal = cash_balances.values().sum();
             let total_assets = total_holdings_market_value + total_cash;
 
             let total_unrealized_pnl: Decimal =
                 holdings.values().map(|h| h.unrealized_pnl_value).sum();
             let total_realized_pnl: Decimal = holdings.values().map(|h| h.realized_pnl_value).sum();
 
-            let total_unrealized_pnl_percentage =
+            let total_unrealized_pnl_percentage = if total_assets.is_zero() {
+                Decimal::ZERO
+            } else {
                 total_unrealized_pnl.checked_div(total_assets).unwrap_or_default()
-                    * Decimal::from(100);
+                    * Decimal::from(100)
+            };
 
             writeln!(
                 f,
                 "{:<25}: {:>10.2} {}",
-                "Total Portfolio Value", total_assets, reporting_currency
+                "Total Portfolio Value", total_assets, self.reporting_currency
             )?;
             writeln!(
                 f,
                 "{:<25}: {:>10.2} {} ({:>6.2}%)",
                 "Total Unrealized P&L",
                 total_unrealized_pnl,
-                reporting_currency,
+                self.reporting_currency,
                 total_unrealized_pnl_percentage
             )?;
             writeln!(
                 f,
                 "{:<25}: {:>10.2} {}",
-                "Total Realized P&L", total_realized_pnl, reporting_currency,
+                "Total Realized P&L", total_realized_pnl, self.reporting_currency,
             )?;
             writeln!(f, "")?;
 
@@ -344,7 +338,7 @@ impl fmt::Display for PortfolioDisplay<'_> {
                 "Ticker",
                 "Name",
                 "Quantity",
-                format!("Cost ({})", reporting_currency),
+                format!("Cost ({})", self.reporting_currency),
                 "Market Value",
                 "Unrealized P&L",
                 "Unrealized %",
@@ -363,13 +357,21 @@ impl fmt::Display for PortfolioDisplay<'_> {
                     total_market_value: total_assets,
                     prices,
                     name_col_width,
-                    reporting_currency,
+                    reporting_currency: self.reporting_currency,
                 };
                 writeln!(f, "{}", holding_display)?;
             }
             writeln!(f, "")?;
             writeln!(f, "--- Cash Balance ---")?;
-            writeln!(f, "{:<25}: {:>10.2} {}", "Total Cash", total_cash, reporting_currency)?;
+            for (currency, balance) in cash_balances {
+                writeln!(
+                    f,
+                    "{:<25}: {:>10.2} {}",
+                    format!("Total Cash ({})", currency),
+                    balance,
+                    currency
+                )?;
+            }
         }
         Ok(())
     }

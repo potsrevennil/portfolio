@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
     let (shared_args, input_files, output_file, broker_type, reporting_currency) = match cli.command
     {
         Some(Command::Init(init_args)) => {
-            let (input_files, broker_type, current_reporting_currency) = match init_args.broker {
+            let (input_files, broker_type, reporting_currency) = match init_args.broker {
                 BrokerCommand::Ib { files } => {
                     (files, Some(Broker::InteractiveBrokers), Currency::USD)
                 }
@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
                 input_files,
                 Some(init_args.transactions_file),
                 broker_type,
-                current_reporting_currency,
+                reporting_currency,
             )
         }
         None => (
@@ -156,7 +156,7 @@ async fn main() -> Result<()> {
             vec![cli.calculate.transactions_file.clone()],
             None,
             None,
-            Currency::USD,
+            Currency::TWD,
         ),
     };
     let (events, securities) =
@@ -199,7 +199,7 @@ async fn main() -> Result<()> {
     let symbols: Vec<&str> = portfolio.securities.keys().map(|s| s.as_str()).collect();
     let prices = price_service.get_prices(&symbols, fetch_start, end).await?;
 
-    portfolio.generate_daily_statements(start, end, &prices, reporting_currency);
+    portfolio.generate_daily_statements(start, end, &prices);
 
     let display = PortfolioDisplay {
         portfolio: &portfolio,
