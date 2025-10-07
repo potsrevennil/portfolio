@@ -121,6 +121,8 @@ pub struct Portfolio {
     // Daily snapshots of holdings and cash balances over a calculated range.
     pub daily_statements:
         BTreeMap<NaiveDate, (HashMap<String, Holding>, HashMap<Currency, Decimal>)>,
+
+    pub reporting_currency: Currency,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,7 +149,12 @@ impl Default for Portfolio {
 
 impl Portfolio {
     pub fn new(events: BTreeMap<NaiveDate, Event>, securities: HashMap<String, Security>) -> Self {
-        Portfolio { securities, events, daily_statements: BTreeMap::new() }
+        Portfolio {
+            securities,
+            events,
+            daily_statements: BTreeMap::new(),
+            reporting_currency: Currency::USD,
+        }
     }
 
     pub fn to_csv_file(&self, file_path: &str) -> Result<()> {

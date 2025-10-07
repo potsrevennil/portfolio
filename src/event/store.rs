@@ -9,10 +9,8 @@ use crate::{
     split::{service::StockSplits, store::SplitStore},
 };
 
-pub async fn store(
+pub async fn store_splits(
     events: &BTreeMap<NaiveDate, Event>,
-    securities: &HashMap<String, Security>,
-    output_file: Option<String>,
     split_store: &SplitStore,
 ) -> Result<()> {
     // Extract all splits from events and save them
@@ -23,7 +21,14 @@ pub async fn store(
         }
     }
     split_store.save_splits(&all_splits).await?;
+    Ok(())
+}
 
+pub async fn store_transactions(
+    events: &BTreeMap<NaiveDate, Event>,
+    securities: &HashMap<String, Security>,
+    output_file: Option<String>,
+) -> Result<()> {
     // Write transactions to CSV if path is provided
     if let Some(file_path) = output_file {
         let mut writer = csv::Writer::from_path(file_path)?;
