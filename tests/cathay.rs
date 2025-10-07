@@ -1,14 +1,22 @@
-use std::io::Write;
+use std::{
+    collections::{BTreeMap, HashMap},
+    io::Write,
+};
 
-use portfolio::{cathay, Portfolio};
-use portfolio::portfolio::TransactionKind;
+use chrono::NaiveDate;
+use portfolio::{
+    cathay,
+    portfolio::{Event, Security, TransactionKind},
+    Portfolio,
+};
 use tempfile::NamedTempFile;
 
 #[test]
 fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
-    let mut portfolio = Portfolio::new();
+    let mut aggregated_events: BTreeMap<NaiveDate, Event> = BTreeMap::new();
+    let mut aggregated_securities: HashMap<String, Security> = HashMap::new();
 
-    // Create a temporary CSV file for 2022 data (Buy)
+    // Create temporary CSV files
     let csv_content_2022 = r#"根據您篩選的結果，總計有1筆資料，當前資料為1-1筆，看更多請至國泰證券app查詢
 股名,日期,成交股數,淨收付金額,買賣別,成交價,成本,手續費,交易稅,融資金額/券擔保品,資自備款/券保證金,利息,稅款,券手續費/標借費,委託書號
 範例證券01,2022/03/02,10,"-1,001",現買,100.00,"1,000",1,0,0,0,0,0,0,A0001"#;
@@ -16,7 +24,6 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
     file_2022.write_all(csv_content_2022.as_bytes())?;
     let path_2022 = file_2022.path().to_str().unwrap();
 
-    // Create a temporary CSV file for 2024 data (Buy)
     let csv_content_2024 = r#"根據您篩選的結果，總計有1筆資料，當前資料為1-1筆，看更多請至國泰證券app查詢
 股名,日期,成交股數,淨收付金額,買賣別,成交價,成本,手續費,交易稅,融資金額/券擔保品,資自備款/券保證金,利息,稅款,券手續費/標借費,委託書號
 範例證券08,2024/01/01,100,"-2,000",現買,20.00,"2,000",0,0,0,0,0,0,0,p00XX"#;
@@ -24,7 +31,6 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
     file_2024.write_all(csv_content_2024.as_bytes())?;
     let path_2024 = file_2024.path().to_str().unwrap();
 
-    // Create a temporary CSV file for 2025 data (Sell)
     let csv_content_2025 = r#"根據您篩選的結果，總計有1筆資料，當前資料為1-1筆，看更多請至國泰證券app查詢
 股名,日期,成交股數,淨收付金額,買賣別,成交價,成本,手續費,交易稅,融資金額/券擔保品,資自備款/券保證金,利息,稅款,券手續費/標借費,委託書號
 範例證券11,2025/03/03,"1,000","49,900",現賣,50.00,"50,000",20,80,0,0,0,0,0,A0002"#;
@@ -32,10 +38,20 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
     file_2025.write_all(csv_content_2025.as_bytes())?;
     let path_2025 = file_2025.path().to_str().unwrap();
 
-    // Load transactions from the temporary CSV files.
-    cathay::load_from_cathay_csv(&mut portfolio, path_2022)?;
-    cathay::load_from_cathay_csv(&mut portfolio, path_2024)?;
-    cathay::load_from_cathay_csv(&mut portfolio, path_2025)?;
+    // Load transactions from the temporary CSV files and aggregate
+    let (events_2022, securities_2022) = cathay::load_from_csv(path_2022)?;
+    aggregated_events.extend(events_2022);
+    aggregated_securities.extend(securities_2022);
+
+    let (events_2024, securities_2024) = cathay::load_from_csv(path_2024)?;
+    aggregated_events.extend(events_2024);
+    aggregated_securities.extend(securities_2024);
+
+    let (events_2025, securities_2025) = cathay::load_from_csv(path_2025)?;
+    aggregated_events.extend(events_2025);
+    aggregated_securities.extend(securities_2025);
+
+    let portfolio = Portfolio::new(aggregated_events, aggregated_securities);
 
     let mut total_transactions = 0;
     let mut deposit_count = 0;
@@ -62,12 +78,12 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
                     withdrawal_count += 1;
                     // Assert the amount for the withdrawal from 2025 sell
                     if transaction.datetime.date_naive().to_string() == "2025-03-03" {
-                        assert_eq!(transaction.amount, rust_decimal::Decimal::from(49900));
+                        assert_eq!(transaction.amount, rust_decimal::Decimal::from(-49900));
                     }
                 }
                 TransactionKind::Buy => buy_count += 1,
                 TransactionKind::Sell => sell_count += 1,
-                _ => {},
+                _ => {}
             }
         }
     }
@@ -82,8 +98,14 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
     assert_eq!(withdrawal_count, 1);
 
     // Optional: Check specific transaction details (original buy from 2022)
-    let first_transaction_2022 = portfolio.events.get(&chrono::NaiveDate::from_ymd_opt(2022, 3, 2).unwrap())
-        .unwrap().transactions.iter().find(|t| t.kind == TransactionKind::Buy).unwrap();
+    let first_transaction_2022 = portfolio
+        .events
+        .get(&chrono::NaiveDate::from_ymd_opt(2022, 3, 2).unwrap())
+        .unwrap()
+        .transactions
+        .iter()
+        .find(|t| t.kind == TransactionKind::Buy)
+        .unwrap();
     assert_eq!(first_transaction_2022.symbol, "ZZ01.TW");
     assert_eq!(first_transaction_2022.quantity, rust_decimal::Decimal::from(10));
 

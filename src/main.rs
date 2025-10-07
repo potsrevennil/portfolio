@@ -2,11 +2,11 @@ use anyhow::Result;
 use chrono::{Duration, Months, NaiveDate, Utc};
 use clap::{builder::PossibleValue, Parser, Subcommand};
 use portfolio::{
-    cathay, db, fixed_splits, ib,
-    portfolio::{Currency, PortfolioDisplay},
+    db, event,
+    portfolio::{Broker, Currency, Portfolio, PortfolioDisplay},
     prices::{PriceService, StockPriceStore},
     split::store::SplitStore,
-    Order, Portfolio, SortBy, Splits, StockSplits,
+    Order, SortBy,
 };
 
 #[derive(Debug, Clone)]
@@ -125,8 +125,6 @@ async fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
-    let mut portfolio = Portfolio::new();
-
     // Initialize PriceService and StockPriceStore
     let pool = db::init_db("sqlite:sqlite.db").await?;
     let price_store = StockPriceStore::new(pool.clone());
@@ -134,54 +132,37 @@ async fn main() -> Result<()> {
 
     // Initialize SplitService
     let split_store = SplitStore::new(pool.clone());
-    let split_service = Splits::new(split_store.clone());
 
-    let (shared_args, reporting_currency) = match cli.command {
+    let (shared_args, input_files, output_file, broker_type, reporting_currency) = match cli.command
+    {
         Some(Command::Init(init_args)) => {
-            let current_reporting_currency = match init_args.broker {
+            let (input_files, broker_type, current_reporting_currency) = match init_args.broker {
                 BrokerCommand::Ib { files } => {
-                    for file in files {
-                        ib::load_from_ib_csv(&mut portfolio, &file)?;
-                    }
-                    Currency::USD
+                    (files, Some(Broker::InteractiveBrokers), Currency::USD)
                 }
-                BrokerCommand::Cathay { files } => {
-                    for file in files {
-                        cathay::load_from_cathay_csv(&mut portfolio, &file)?;
-                    }
-
-                    // Add fixed splits
-                    for (date, splits) in fixed_splits() {
-                        portfolio.events.entry(date).or_default().splits.extend(splits);
-                    }
-                    Currency::TWD
-                }
+                BrokerCommand::Cathay { files } => (files, Some(Broker::Cathay), Currency::TWD),
             };
 
-            // Extract splits from portfolio events and save them
-            // let mut all_splits: portfolio::StockSplits = portfolio::StockSplits::new();
-            let all_splits: StockSplits = portfolio
-                .events
-                .iter()
-                .filter_map(|(&date, event)| {
-                    if event.splits.is_empty() {
-                        None
-                    } else {
-                        Some((date, event.splits.clone()))
-                    }
-                })
-                .collect();
-            split_service.save(&all_splits).await?;
-
-            portfolio.to_csv_file(&init_args.transactions_file)?;
-            (init_args.args, current_reporting_currency)
+            (
+                init_args.args,
+                input_files,
+                Some(init_args.transactions_file),
+                broker_type,
+                current_reporting_currency,
+            )
         }
-        None => {
-            portfolio.load_from_csv(&cli.calculate.transactions_file)?;
-            // For calculate command, default to USD for now
-            (cli.calculate.args, Currency::USD)
-        }
+        None => (
+            cli.calculate.args,
+            vec![cli.calculate.transactions_file.clone()],
+            None,
+            None,
+            Currency::USD,
+        ),
     };
+    let (events, securities) =
+        event::load(input_files, output_file, broker_type, &split_store).await?;
+
+    let mut portfolio = Portfolio::new(events, securities);
 
     let end = Utc::now().date_naive();
 

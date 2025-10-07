@@ -6,6 +6,10 @@ use regex;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
+use crate::portfolio::portfolio::{
+    AssetClass, Broker, Currency, Event, Security, Transaction, TransactionKind,
+};
+
 mod de_utils {
     use chrono::{DateTime, NaiveDate, Utc};
     use rust_decimal::Decimal;
@@ -50,10 +54,6 @@ mod de_utils {
         }
     }
 }
-
-use crate::portfolio::portfolio::{
-    AssetClass, Broker, Currency, Event, Portfolio, Security, Transaction, TransactionKind,
-};
 
 // --- Trades ---
 #[derive(Debug, Deserialize)]
@@ -217,7 +217,9 @@ struct IbCorporateActionRecord {
     _code: String,
 }
 
-pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()> {
+pub fn load_from_csv(
+    file_path: &str,
+) -> Result<(BTreeMap<NaiveDate, Event>, HashMap<String, Security>)> {
     let mut reader =
         csv::ReaderBuilder::new().has_headers(false).flexible(true).from_path(file_path)?;
 
@@ -226,6 +228,8 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
     let mut transactions: BTreeMap<NaiveDate, Vec<Transaction>> = BTreeMap::new();
     let mut withholding_tax_records: Vec<IbWithholdingTaxRecord> = Vec::new();
     let mut splits: BTreeMap<NaiveDate, Vec<(String, Decimal)>> = BTreeMap::new();
+    let mut securities: HashMap<String, Security> = HashMap::new();
+    let mut events: BTreeMap<NaiveDate, Event> = BTreeMap::new();
 
     for result in reader.records() {
         let record = result.context("Failed to read record from CSV")?;
@@ -321,28 +325,28 @@ pub fn load_from_ib_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()
         transactions.entry(t.datetime.date_naive()).or_default().push(t);
     }
 
-    // Populate portfolio events with transactions
+    // Populate events with transactions
     for (d, ts) in transactions {
         // Update securities map
         for t in &ts {
             if !t.symbol.is_empty() {
-                portfolio.securities.entry(t.symbol.clone()).or_insert_with(|| Security {
+                securities.entry(t.symbol.clone()).or_insert_with(|| Security {
                     symbol: t.symbol.clone(),
                     description: "".to_string(),
                 });
             }
         }
-        let es = portfolio.events.entry(d).or_insert_with(|| Event::default());
+        let es = events.entry(d).or_insert_with(|| Event::default());
         es.transactions.extend(ts);
     }
 
-    // Populate portfolio events with splits
+    // Populate events with splits
     for (d, s) in splits {
-        let es = portfolio.events.entry(d).or_insert_with(|| Event::default());
+        let es = events.entry(d).or_insert_with(|| Event::default());
         es.splits.extend(s);
     }
 
-    Ok(())
+    Ok((events, securities))
 }
 
 // Helper function to group withholding tax records

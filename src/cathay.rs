@@ -10,7 +10,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use crate::portfolio::portfolio::{
-    AssetClass, Broker, Currency, Event, Portfolio, Security, Transaction, TransactionKind,
+    AssetClass, Broker, Currency, Event, Security, Transaction, TransactionKind,
 };
 
 // Custom deserialization utilities
@@ -87,7 +87,9 @@ fn get_symbol_map() -> HashMap<&'static str, &'static str> {
     map
 }
 
-pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Result<()> {
+pub fn load_from_csv(
+    file_path: &str,
+) -> Result<(BTreeMap<NaiveDate, Event>, HashMap<String, Security>)> {
     let symbol_map = get_symbol_map();
     let file = File::open(file_path)?;
     let mut reader = BufReader::new(file);
@@ -99,7 +101,8 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
     let mut csv_reader =
         csv::ReaderBuilder::new().has_headers(true).flexible(true).from_reader(reader);
 
-    let mut transactions: BTreeMap<NaiveDate, Vec<Transaction>> = BTreeMap::new();
+    let mut events: BTreeMap<NaiveDate, Event> = BTreeMap::new();
+    let mut securities: HashMap<String, Security> = HashMap::new();
 
     for result in csv_reader.deserialize() {
         let record: CathayTradeRecord =
@@ -110,9 +113,10 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
 
         let transaction: Transaction = (record.clone(), symbol.to_string()).into();
 
-        transactions
+        events
             .entry(transaction.datetime.date_naive())
-            .or_default()
+            .or_insert_with(Event::default)
+            .transactions
             .push(transaction.clone());
 
         // Generate implicit deposit/withdrawal transactions for Cathay
@@ -167,23 +171,22 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
         };
 
         if let Some(cash_tx) = cash_flow_transaction {
-            transactions.entry(cash_tx.datetime.date_naive()).or_default().push(cash_tx);
+            events
+                .entry(cash_tx.datetime.date_naive())
+                .or_insert_with(Event::default)
+                .transactions
+                .push(cash_tx);
         }
 
         if !transaction.symbol.is_empty() {
-            portfolio.securities.entry(transaction.symbol.clone()).or_insert_with(|| Security {
+            securities.entry(transaction.symbol.clone()).or_insert_with(|| Security {
                 symbol: transaction.symbol.clone(),
                 description: record.name.clone(), // Use record.name as description
             });
         }
     }
 
-    for (d, ts) in transactions {
-        let es = portfolio.events.entry(d).or_insert_with(|| Event::default());
-        es.transactions.extend(ts);
-    }
-
-    Ok(())
+    Ok((events, securities))
 }
 
 impl From<(CathayTradeRecord, String)> for Transaction {

@@ -1,0 +1,65 @@
+use std::collections::{BTreeMap, HashMap};
+
+use anyhow::Result;
+use chrono::NaiveDate;
+use csv;
+
+use crate::{
+    portfolio::portfolio::{CsvTransactionRecord, Event, Security},
+    split::{service::StockSplits, store::SplitStore},
+};
+
+pub async fn store(
+    events: &BTreeMap<NaiveDate, Event>,
+    securities: &HashMap<String, Security>,
+    output_file: Option<String>,
+    split_store: &SplitStore,
+) -> Result<()> {
+    // Extract all splits from events and save them
+    let mut all_splits: StockSplits = BTreeMap::new();
+    for (date, event) in events {
+        if !event.splits.is_empty() {
+            all_splits.entry(*date).or_default().extend(event.splits.clone());
+        }
+    }
+    split_store.save_splits(&all_splits).await?;
+
+    // Write transactions to CSV if path is provided
+    if let Some(file_path) = output_file {
+        let mut writer = csv::Writer::from_path(file_path)?;
+        for event in events.values() {
+            let mut transactions = event.transactions.clone();
+            transactions.sort_by_key(|t| t.datetime);
+
+            for t in &transactions {
+                let description =
+                    securities.get(&t.symbol).map_or(String::new(), |s| s.description.clone());
+                writer.serialize(CsvTransactionRecord {
+                    id: t.id.clone(),
+                    source: t.source,
+                    asset_class: t.asset_class,
+                    symbol: t.symbol.clone(),
+                    description,
+                    kind: t.kind,
+                    datetime: t.datetime,
+                    settle_date: t.settle_date,
+                    quantity: t.quantity,
+                    price: t.price,
+                    amount: t.amount,
+                    commission: t.commission,
+                    currency: t.currency,
+                    balance: t.balance,
+                })?;
+            }
+        }
+        writer.flush()?;
+    }
+
+    Ok(())
+}
+
+pub async fn load_splits(split_store: &SplitStore) -> Result<StockSplits> {
+    // Load all splits from the database. Assuming NaiveDate::MIN and NaiveDate::MAX
+    // for full range.
+    split_store.get_splits(NaiveDate::MIN, NaiveDate::MAX).await
+}

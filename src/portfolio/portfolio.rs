@@ -141,58 +141,12 @@ pub struct CsvTransactionRecord {
 }
 
 impl Default for Portfolio {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self { Self::new(BTreeMap::new(), HashMap::new()) }
 }
 
 impl Portfolio {
-    pub fn new() -> Self {
-        Portfolio {
-            securities: HashMap::new(),
-            events: BTreeMap::new(),
-            daily_statements: BTreeMap::new(),
-        }
-    }
-
-    pub fn load_from_csv(&mut self, file_path: &str) -> Result<()> {
-        let mut reader = csv::Reader::from_path(file_path)?;
-        let mut transactions: BTreeMap<NaiveDate, Vec<Transaction>> = BTreeMap::new();
-
-        for result in reader.deserialize() {
-            let record: CsvTransactionRecord = result?;
-            let t = Transaction {
-                id: record.id,
-                source: record.source,
-                asset_class: record.asset_class,
-                symbol: record.symbol.clone(),
-                kind: record.kind,
-                datetime: record.datetime,
-                settle_date: record.settle_date,
-                quantity: record.quantity,
-                price: record.price,
-                amount: record.amount,
-                commission: record.commission,
-                currency: record.currency,
-                balance: record.balance,
-            };
-
-            let date = t.datetime.date_naive();
-            transactions.entry(date).or_default().push(t);
-
-            // Only insert into securities map if the symbol is not empty
-            if !record.symbol.is_empty() {
-                self.securities.entry(record.symbol.clone()).or_insert(Security {
-                    symbol: record.symbol.clone(),
-                    description: record.description,
-                });
-            }
-        }
-
-        for (d, ts) in transactions {
-            let es = self.events.entry(d).or_insert_with(|| Event::default());
-            es.transactions.extend(ts);
-        }
-
-        Ok(())
+    pub fn new(events: BTreeMap<NaiveDate, Event>, securities: HashMap<String, Security>) -> Self {
+        Portfolio { securities, events, daily_statements: BTreeMap::new() }
     }
 
     pub fn to_csv_file(&self, file_path: &str) -> Result<()> {
@@ -204,7 +158,7 @@ impl Portfolio {
 
             for t in &transactions {
                 let description =
-                    self.securities.get(&t.symbol).map_or("", |s| &s.description).to_string();
+                    self.securities.get(&t.symbol).map_or(String::new(), |s| s.description.clone());
                 writer.serialize(CsvTransactionRecord {
                     id: t.id.clone(),
                     source: t.source,
