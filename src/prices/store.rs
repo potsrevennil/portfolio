@@ -42,15 +42,13 @@ impl StockPriceStore {
         const BATCH_SIZE: usize = 300;
 
         for chunk in all_prices_to_save.chunks(BATCH_SIZE) {
-            let mut query_builder: QueryBuilder<Sqlite> =
-                QueryBuilder::new("INSERT OR REPLACE INTO stock_prices (symbol, date, close_price) ");
-
-            query_builder.push_values(
-                chunk.iter(),
-                |mut b, (symbol, date, close_price)| {
-                    b.push_bind(symbol).push_bind(date).push_bind(close_price);
-                },
+            let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+                "INSERT OR REPLACE INTO stock_prices (symbol, date, close_price) ",
             );
+
+            query_builder.push_values(chunk.iter(), |mut b, (symbol, date, close_price)| {
+                b.push_bind(symbol).push_bind(date).push_bind(close_price);
+            });
 
             let query = query_builder.build();
             query.execute(&self.pool).await?;

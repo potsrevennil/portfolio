@@ -1,10 +1,10 @@
 pub mod cathay;
 pub mod db;
+pub mod event;
 pub mod ib;
 pub mod portfolio;
 pub mod prices;
 pub mod split;
-pub mod event;
 // Re-export necessary items from db
 pub use db::init_db;
 // Re-export necessary items from portfolio

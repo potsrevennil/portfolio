@@ -67,10 +67,13 @@ impl PriceService {
                             .await;
 
                     match prices_result {
-                        Ok(prices) => Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, prices)),
+                        Ok(prices) => {
+                            Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, prices))
+                        }
                         Err(e) => {
                             log::warn!("Failed to fetch prices for {}: {}", symbol_owned, e);
-                            Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, Vec::new())) // Return empty vec on error
+                            Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, Vec::new()))
+                            // Return empty vec on error
                         }
                     }
                 });

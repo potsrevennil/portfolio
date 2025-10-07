@@ -46,20 +46,18 @@ impl SplitStore {
         const BATCH_SIZE: usize = 300;
 
         for chunk in all_splits_to_save.chunks(BATCH_SIZE) {
-            let mut query_builder = String::from(
-                "INSERT INTO stock_splits (symbol, date, ratio) VALUES ",
-            );
-
+            let mut query_builder =
+                String::from("INSERT INTO stock_splits (symbol, date, ratio) VALUES ");
 
             for (i, (_symbol, _date, _ratio)) in chunk.iter().enumerate() {
                 if i > 0 {
                     query_builder.push_str(", ");
                 }
                 query_builder.push_str("(?, ?, ?)");
-
             }
 
-            query_builder.push_str(" ON CONFLICT(symbol, date) DO UPDATE SET ratio = excluded.ratio;");
+            query_builder
+                .push_str(" ON CONFLICT(symbol, date) DO UPDATE SET ratio = excluded.ratio;");
 
             let mut query_exec = sqlx::query(&query_builder);
             for (symbol, date, ratio) in chunk.iter() {
