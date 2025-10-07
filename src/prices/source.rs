@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use rust_decimal::prelude::FromPrimitive;
 use thiserror::Error;
 use yfinance_rs::{core::conversions, Ticker, YfClient, YfError};
+
+use crate::portfolio::portfolio::Currency;
 
 // --- Custom Error Type ---
 #[derive(Error, Debug)]
@@ -31,6 +34,41 @@ pub struct StockPrice {
 pub struct YFinanceSource;
 
 impl YFinanceSource {
+    pub fn get_conversion_rate(
+        from_currency: Currency,
+        to_currency: Currency,
+        prices: &std::collections::HashMap<String, Vec<StockPrice>>,
+    ) -> rust_decimal::Decimal {
+        if from_currency == to_currency {
+            return rust_decimal::Decimal::ONE;
+        }
+
+        if let Some(ticker) = YFinanceSource::get_exchange_rate_ticker(from_currency, to_currency) {
+            if let Some(exchange_prices) = prices.get(&ticker) {
+                if let Some(latest_price) = exchange_prices.last() {
+                    return rust_decimal::Decimal::from_f64(latest_price.close_price)
+                        .unwrap_or_default();
+                }
+            }
+        }
+        rust_decimal::Decimal::ONE // Default to 1 if no conversion rate found
+    }
+
+    pub fn get_exchange_rate_ticker(
+        from_currency: Currency,
+        to_currency: Currency,
+    ) -> Option<String> {
+        if from_currency == to_currency {
+            return None;
+        }
+
+        match (from_currency, to_currency) {
+            (Currency::USD, to) => Some(format!("{}=X", to)),
+            (from, Currency::USD) => Some(format!("{}USD=X", from)),
+            (from, to) => Some(format!("{}{}=X", from, to)),
+        }
+    }
+
     pub async fn fetch_stock_prices(
         symbol: &str,
         start_date: NaiveDate,

@@ -50,7 +50,7 @@ pub enum AssetClass {
     Cash,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Currency {
     USD,
@@ -69,7 +69,6 @@ impl std::fmt::Display for Currency {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Broker {
     InteractiveBrokers,
-    Firstrade,
     Cathay,
 }
 
@@ -77,8 +76,16 @@ impl std::fmt::Display for Broker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Broker::InteractiveBrokers => write!(f, "InteractiveBrokers"),
-            Broker::Firstrade => write!(f, "Firstrade"),
             Broker::Cathay => write!(f, "Cathay"),
+        }
+    }
+}
+
+impl Broker {
+    pub fn reporting_currency(&self) -> Currency {
+        match self {
+            Broker::Cathay => Currency::TWD,
+            Broker::InteractiveBrokers => Currency::USD,
         }
     }
 }
@@ -121,8 +128,6 @@ pub struct Portfolio {
     // Daily snapshots of holdings and cash balances over a calculated range.
     pub daily_statements:
         BTreeMap<NaiveDate, (HashMap<String, Holding>, HashMap<Currency, Decimal>)>,
-
-    pub reporting_currency: Currency,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,12 +154,7 @@ impl Default for Portfolio {
 
 impl Portfolio {
     pub fn new(events: BTreeMap<NaiveDate, Event>, securities: HashMap<String, Security>) -> Self {
-        Portfolio {
-            securities,
-            events,
-            daily_statements: BTreeMap::new(),
-            reporting_currency: Currency::USD,
-        }
+        Portfolio { securities, events, daily_statements: BTreeMap::new() }
     }
 
     pub fn to_csv_file(&self, file_path: &str) -> Result<()> {
@@ -282,6 +282,7 @@ impl fmt::Display for PortfolioDisplay<'_> {
         let sort_by = self.sort_by;
         let order = self.order;
         let prices = self.prices;
+        let reporting_currency = self.reporting_currency;
 
         if portfolio.daily_statements.is_empty() {
             writeln!(f, "No portfolio data available for the selected period.")?;
@@ -311,20 +312,20 @@ impl fmt::Display for PortfolioDisplay<'_> {
             writeln!(
                 f,
                 "{:<25}: {:>10.2} {}",
-                "Total Portfolio Value", total_assets, self.reporting_currency
+                "Total Portfolio Value", total_assets, reporting_currency
             )?;
             writeln!(
                 f,
                 "{:<25}: {:>10.2} {} ({:>6.2}%)",
                 "Total Unrealized P&L",
                 total_unrealized_pnl,
-                self.reporting_currency,
+                reporting_currency,
                 total_unrealized_pnl_percentage
             )?;
             writeln!(
                 f,
                 "{:<25}: {:>10.2} {}",
-                "Total Realized P&L", total_realized_pnl, self.reporting_currency,
+                "Total Realized P&L", total_realized_pnl, reporting_currency,
             )?;
             writeln!(f, "")?;
 
@@ -345,7 +346,7 @@ impl fmt::Display for PortfolioDisplay<'_> {
                 "Ticker",
                 "Name",
                 "Quantity",
-                format!("Cost ({})", self.reporting_currency),
+                format!("Cost ({})", reporting_currency),
                 "Market Value",
                 "Unrealized P&L",
                 "Unrealized %",
@@ -364,7 +365,7 @@ impl fmt::Display for PortfolioDisplay<'_> {
                     total_market_value: total_assets,
                     prices,
                     name_col_width,
-                    reporting_currency: self.reporting_currency,
+                    reporting_currency,
                 };
                 writeln!(f, "{}", holding_display)?;
             }

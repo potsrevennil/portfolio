@@ -6,7 +6,7 @@ use portfolio::{
     event::{self, loader::DataSource},
     portfolio::{
         consolidated::{ConsolidatedPortfolio, ConsolidatedPortfolioDisplay},
-        Broker, Currency, Portfolio,
+        Currency, Portfolio,
     },
     prices::{PriceService, StockPriceStore},
     split::store::SplitStore,
@@ -104,6 +104,9 @@ struct SharedArgs {
 
     #[arg(long, value_parser = parse_time_selector)]
     from: Option<TimeSelector>,
+
+    #[arg(long, value_enum, default_value_t = Currency::USD)]
+    reporting_currency: Currency,
 }
 
 #[tokio::main]
@@ -134,19 +137,9 @@ async fn main() -> Result<()> {
     };
 
     let broker_data = event::load(sources, output_file, &split_store).await?;
-    let mut consolidated_portfolio = ConsolidatedPortfolio::new();
-    let mut all_symbols = vec![];
-
-    for (broker, (events, securities)) in broker_data {
-        let mut portfolio = Portfolio::new(events, securities);
-        portfolio.reporting_currency =
-            if broker == Broker::Cathay { Currency::TWD } else { Currency::USD };
-        all_symbols.extend(portfolio.securities.keys().cloned());
-        consolidated_portfolio.insert(broker, portfolio);
-    }
-
-    all_symbols.sort();
-    all_symbols.dedup();
+    let mut portfolios = ConsolidatedPortfolio::from(
+        broker_data.into_iter().map(|(b, (es, ss))| (b, Portfolio::new(es, ss))).collect(),
+    );
 
     let end = Utc::now().date_naive();
     let start = if let Some(ref from) = shared_args.from {
@@ -169,31 +162,23 @@ async fn main() -> Result<()> {
         end
     };
 
+    let prices =
+        portfolios.get_prices(shared_args.reporting_currency, start, end, &price_service).await?;
+
+    portfolios.generate_daily_statements(start, end, &prices);
+
     let order = match shared_args.order.as_str() {
         "+" => Order::Asc,
         "-" => Order::Desc,
         _ => unreachable!(),
     };
 
-    let fetch_start = consolidated_portfolio
-        .values()
-        .filter_map(|p| p.events.first_key_value())
-        .map(|(d, _)| *d)
-        .min()
-        .map_or(start, |min_date| start.min(min_date));
-
-    let symbols_ref: Vec<&str> = all_symbols.iter().map(|s| s.as_str()).collect();
-    let prices = price_service.get_prices(&symbols_ref, fetch_start, end).await?;
-
-    for portfolio in consolidated_portfolio.values_mut() {
-        portfolio.generate_daily_statements(start, end, &prices);
-    }
-
     let display = ConsolidatedPortfolioDisplay {
-        consolidated_portfolio: &consolidated_portfolio,
+        consolidated_portfolio: &portfolios,
         sort_by: shared_args.sort_by,
         order,
         prices: &prices,
+        reporting_currency: shared_args.reporting_currency,
     };
 
     println!("{}", display);
