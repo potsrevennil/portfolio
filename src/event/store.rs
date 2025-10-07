@@ -64,7 +64,7 @@ pub async fn store_transactions(
 }
 
 pub async fn load_splits(split_store: &SplitStore) -> Result<StockSplits> {
-    // Load all splits from the database. Assuming NaiveDate::MIN and NaiveDate::MAX
-    // for full range.
-    split_store.get_splits(NaiveDate::MIN, NaiveDate::MAX).await
+    let start_date = NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
+    let end_date = NaiveDate::from_ymd_opt(2100, 12, 31).unwrap();
+    split_store.get_splits(start_date, end_date).await
 }
