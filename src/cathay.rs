@@ -44,6 +44,8 @@ mod de_utils {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct CathayTradeRecord {
+    #[serde(rename = "委託書號")]
+    pub id: String,
     #[serde(rename = "股名")]
     pub name: String,
     #[serde(rename = "日期", deserialize_with = "de_utils::date_format")]
@@ -116,7 +118,15 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
         // Generate implicit deposit/withdrawal transactions for Cathay
         let cash_flow_transaction = match transaction.kind {
             TransactionKind::Buy => Some(Transaction {
-                id: String::new(), // Will be generated later
+                id: format!(
+                    "{:x}",
+                    gxhash::gxhash64(
+                        format!("{:?}-{:?}", transaction.datetime, TransactionKind::Deposit)
+                            .as_bytes(),
+                        0
+                    )
+                )[..5]
+                    .to_string(),
                 source: Broker::Cathay,
                 asset_class: AssetClass::Cash, // This is a cash movement
                 symbol: "CASH".to_string(),    // Use a generic symbol for cash
@@ -131,7 +141,15 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
                 balance: Decimal::ZERO, // Will be calculated later
             }),
             TransactionKind::Sell => Some(Transaction {
-                id: String::new(), // Will be generated later
+                id: format!(
+                    "{:x}",
+                    gxhash::gxhash64(
+                        format!("{:?}-{:?}", transaction.datetime, TransactionKind::Withdrawal)
+                            .as_bytes(),
+                        0
+                    )
+                )[..5]
+                    .to_string(),
                 source: Broker::Cathay,
                 asset_class: AssetClass::Cash, // This is a cash movement
                 symbol: "CASH".to_string(),    // Use a generic symbol for cash
@@ -155,7 +173,7 @@ pub fn load_from_cathay_csv(portfolio: &mut Portfolio, file_path: &str) -> Resul
         if !transaction.symbol.is_empty() {
             portfolio.securities.entry(transaction.symbol.clone()).or_insert_with(|| Security {
                 symbol: transaction.symbol.clone(),
-                description: "".to_string(), // Description can be added later if available
+                description: record.name.clone(), // Use record.name as description
             });
         }
     }
@@ -184,7 +202,7 @@ impl From<(CathayTradeRecord, String)> for Transaction {
         let total_commission = -(record.commission + record.tax);
 
         Transaction {
-            id: String::new(), // Will be generated later
+            id: record.id, // Use transaction_id from record
             source: Broker::Cathay,
             asset_class: AssetClass::Stocks,
             symbol,
