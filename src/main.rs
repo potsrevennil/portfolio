@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
 
     let broker_data = event::load(sources, output_file, &split_store).await?;
     let mut portfolios = ConsolidatedPortfolio::from(
-        broker_data.into_iter().map(|(b, (es, ss))| (b, Portfolio::new(es, ss))).collect(),
+        broker_data.into_iter().map(|(b, (es, ss))| (b, Portfolio::new(b, es, ss))).collect(),
     );
 
     let end = Utc::now().date_naive();
@@ -167,6 +167,8 @@ async fn main() -> Result<()> {
 
     portfolios.generate_daily_statements(start, end, &prices);
 
+    portfolios.calculate_totals(shared_args.reporting_currency, &prices);
+
     let order = match shared_args.order.as_str() {
         "+" => Order::Asc,
         "-" => Order::Desc,
@@ -177,8 +179,6 @@ async fn main() -> Result<()> {
         consolidated_portfolio: &portfolios,
         sort_by: shared_args.sort_by,
         order,
-        prices: &prices,
-        reporting_currency: shared_args.reporting_currency,
     };
 
     println!("{}", display);

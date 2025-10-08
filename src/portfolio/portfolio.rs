@@ -11,8 +11,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    portfolio::holding::{
-        adjust_holdings, mark_to_market, settle_transactions, Holding, HoldingDisplay,
+    portfolio::{
+        holding::{adjust_holdings, mark_to_market, settle_transactions, Holding},
+        statement::Statement,
     },
     prices::StockPrice,
 };
@@ -50,9 +51,10 @@ pub enum AssetClass {
     Cash,
 }
 
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Default)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Currency {
+    #[default]
     USD,
     TWD,
 }
@@ -121,13 +123,13 @@ pub struct Transaction {
 pub struct Portfolio {
     // Static data about all securities ever transacted.
     pub securities: HashMap<String, Security>,
+    pub reporting_currency: Currency,
 
     // The raw, immutable log of all historical events.
     pub events: BTreeMap<NaiveDate, Event>,
 
     // Daily snapshots of holdings and cash balances over a calculated range.
-    pub daily_statements:
-        BTreeMap<NaiveDate, (HashMap<String, Holding>, HashMap<Currency, Decimal>)>,
+    pub daily_statements: BTreeMap<NaiveDate, Statement>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,13 +150,18 @@ pub struct CsvTransactionRecord {
     pub balance: Decimal,
 }
 
-impl Default for Portfolio {
-    fn default() -> Self { Self::new(BTreeMap::new(), HashMap::new()) }
-}
-
 impl Portfolio {
-    pub fn new(events: BTreeMap<NaiveDate, Event>, securities: HashMap<String, Security>) -> Self {
-        Portfolio { securities, events, daily_statements: BTreeMap::new() }
+    pub fn new(
+        broker: Broker,
+        events: BTreeMap<NaiveDate, Event>,
+        securities: HashMap<String, Security>,
+    ) -> Self {
+        Portfolio {
+            securities,
+            events,
+            daily_statements: BTreeMap::new(),
+            reporting_currency: broker.reporting_currency(),
+        }
     }
 
     pub fn to_csv_file(&self, file_path: &str) -> Result<()> {
@@ -224,7 +231,6 @@ impl Portfolio {
             adjust_holdings(&mut holdings, &event.splits);
             settle_transactions(&mut holdings, &mut cash_balances, &event.transactions);
 
-            // Get prices for the current day
             let current_prices: HashMap<String, &StockPrice> = prices
                 .iter()
                 .filter_map(|(s, daily_prices)| {
@@ -233,15 +239,17 @@ impl Portfolio {
                 })
                 .collect();
 
-            // Calculate P&L for the current day's snapshot
-            let daily_statement = mark_to_market(&mut holdings, &current_prices);
+            let daily_holdings = mark_to_market(&mut holdings, &current_prices);
 
-            self.daily_statements.insert(*d, (daily_statement, cash_balances.clone()));
+            let statement = Statement::from(
+                daily_holdings,
+                cash_balances.clone(),
+                prices,
+                self.reporting_currency,
+            );
+            self.daily_statements.insert(*d, statement);
         }
 
-        // Handle the case where start_date has no transactions but needs a snapshot
-        // This ensures a baseline snapshot for start_date if no transactions occurred
-        // on it
         if self.daily_statements.get(&start_date).is_none() && start_date <= end_date {
             let current_prices: HashMap<String, &StockPrice> = prices
                 .iter()
@@ -250,8 +258,14 @@ impl Portfolio {
                     (price_idx > 0).then(|| (s.clone(), &daily_prices[price_idx - 1]))
                 })
                 .collect();
-            let daily_statement = mark_to_market(&mut holdings, &current_prices);
-            self.daily_statements.insert(start_date, (daily_statement, cash_balances.clone()));
+            let daily_holdings = mark_to_market(&mut holdings, &current_prices);
+            let statement = Statement::from(
+                daily_holdings,
+                cash_balances.clone(),
+                prices,
+                self.reporting_currency,
+            );
+            self.daily_statements.insert(start_date, statement);
         }
     }
 }
@@ -272,114 +286,28 @@ pub struct PortfolioDisplay<'a> {
     pub portfolio: &'a Portfolio,
     pub sort_by: SortBy,
     pub order: Order,
-    pub prices: &'a HashMap<String, Vec<StockPrice>>,
     pub reporting_currency: Currency,
 }
 
+use crate::portfolio::statement::StatementDisplay;
+
 impl fmt::Display for PortfolioDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let portfolio = self.portfolio;
-        let sort_by = self.sort_by;
-        let order = self.order;
-        let prices = self.prices;
-        let reporting_currency = self.reporting_currency;
-
-        if portfolio.daily_statements.is_empty() {
+        if self.portfolio.daily_statements.is_empty() {
             writeln!(f, "No portfolio data available for the selected period.")?;
             return Ok(());
         }
 
-        for (date, (holdings, cash_balances)) in &portfolio.daily_statements {
-            writeln!(f, "\n======================================================================================================================================================================================================")?;
-            writeln!(f, "--- Account Summary as of {} ---", date)?;
-
-            let total_holdings_market_value: Decimal =
-                holdings.values().map(|h| h.market_value).sum();
-            let total_cash: Decimal = cash_balances.values().sum();
-            let total_assets = total_holdings_market_value + total_cash;
-
-            let total_unrealized_pnl: Decimal =
-                holdings.values().map(|h| h.unrealized_pnl_value).sum();
-            let total_realized_pnl: Decimal = holdings.values().map(|h| h.realized_pnl_value).sum();
-
-            let total_unrealized_pnl_percentage = if total_assets.is_zero() {
-                Decimal::ZERO
-            } else {
-                total_unrealized_pnl.checked_div(total_assets).unwrap_or_default()
-                    * Decimal::from(100)
+        for (date, statement) in &self.portfolio.daily_statements {
+            let statement_display = StatementDisplay {
+                date: *date,
+                statement,
+                securities: &self.portfolio.securities,
+                sort_by: self.sort_by,
+                order: self.order,
+                reporting_currency: self.reporting_currency,
             };
-
-            writeln!(
-                f,
-                "{:<25}: {:>10.2} {}",
-                "Total Portfolio Value", total_assets, reporting_currency
-            )?;
-            writeln!(
-                f,
-                "{:<25}: {:>10.2} {} ({:>6.2}%)",
-                "Total Unrealized P&L",
-                total_unrealized_pnl,
-                reporting_currency,
-                total_unrealized_pnl_percentage
-            )?;
-            writeln!(
-                f,
-                "{:<25}: {:>10.2} {}",
-                "Total Realized P&L", total_realized_pnl, reporting_currency,
-            )?;
-            writeln!(f, "")?;
-
-            let mut holdings_vec: Vec<_> = holdings.iter().collect();
-            match (sort_by, order) {
-                (SortBy::Name, Order::Asc) => holdings_vec.sort_by(|a, b| a.0.cmp(b.0)),
-                (SortBy::Name, Order::Desc) => holdings_vec.sort_by(|a, b| b.0.cmp(a.0)),
-                (SortBy::Percentage, Order::Asc) => holdings_vec
-                    .sort_by(|a, b| a.1.market_value.partial_cmp(&b.1.market_value).unwrap()),
-                (SortBy::Percentage, Order::Desc) => holdings_vec
-                    .sort_by(|a, b| b.1.market_value.partial_cmp(&a.1.market_value).unwrap()),
-            }
-
-            let name_col_width = 35;
-            writeln!(
-                f,
-                "{:<15} {:<width$} {:>12} {:>18} {:>18} {:>15} {:>15} {:>15} {:>14} {:>12}",
-                "Ticker",
-                "Name",
-                "Quantity",
-                format!("Cost ({})", reporting_currency),
-                "Market Value",
-                "Unrealized P&L",
-                "Unrealized %",
-                "Realized P&L",
-                "Portfolio %",
-                "Mkt Price",
-                width = name_col_width,
-            )?;
-            writeln!(f, "{}", "=".repeat(190))?;
-
-            for (symbol, holding) in holdings_vec {
-                let holding_display = HoldingDisplay {
-                    symbol,
-                    holding,
-                    securities: &portfolio.securities,
-                    total_market_value: total_assets,
-                    prices,
-                    name_col_width,
-                    reporting_currency,
-                };
-                writeln!(f, "{}", holding_display)?;
-            }
-            writeln!(f, "")?;
-            writeln!(f, "--- Cash Balance ---")?;
-            for (currency, balance) in cash_balances {
-                writeln!(
-                    f,
-                    "{:<25}: {:>10.2} {}",
-                    format!("Total Cash ({})", currency),
-                    balance,
-                    currency
-                )?;
-            }
+            write!(f, "{}", statement_display)?;
         }
         Ok(())
     }

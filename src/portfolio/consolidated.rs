@@ -15,12 +15,65 @@ use crate::{
 };
 
 #[derive(Debug, Default)]
-pub struct ConsolidatedPortfolio(HashMap<Broker, Portfolio>);
+pub struct ConsolidatedPortfolio {
+    portfolios: HashMap<Broker, Portfolio>,
+    pub total_value: Decimal,
+    pub total_unrealized_pnl: Decimal,
+    pub total_realized_pnl: Decimal,
+    pub reporting_currency: Currency,
+}
 
 impl ConsolidatedPortfolio {
-    pub fn new() -> Self { ConsolidatedPortfolio(HashMap::new()) }
+    pub fn new() -> Self {
+        Self {
+            portfolios: HashMap::new(),
+            total_value: Decimal::ZERO,
+            total_unrealized_pnl: Decimal::ZERO,
+            total_realized_pnl: Decimal::ZERO,
+            reporting_currency: Currency::USD, // Default, will be overwritten
+        }
+    }
 
-    pub fn from(ps: HashMap<Broker, Portfolio>) -> Self { ConsolidatedPortfolio(ps) }
+    pub fn from(ps: HashMap<Broker, Portfolio>) -> Self {
+        Self {
+            portfolios: ps,
+            total_value: Decimal::ZERO,
+            total_unrealized_pnl: Decimal::ZERO,
+            total_realized_pnl: Decimal::ZERO,
+            reporting_currency: Currency::USD, // Default, will be overwritten
+        }
+    }
+
+    pub fn calculate_totals(
+        &mut self,
+        reporting_currency: Currency,
+        prices: &HashMap<String, Vec<StockPrice>>,
+    ) {
+        let mut total_value = Decimal::ZERO;
+        let mut total_unrealized_pnl = Decimal::ZERO;
+        let mut total_realized_pnl = Decimal::ZERO;
+
+        for (broker, portfolio) in self.portfolios.iter() {
+            if let Some((_date, statement)) = portfolio.daily_statements.last_key_value() {
+                let broker_reporting_currency = broker.reporting_currency();
+
+                let conversion_rate = YFinanceSource::get_conversion_rate(
+                    broker_reporting_currency,
+                    reporting_currency,
+                    prices,
+                );
+
+                total_value += statement.total_value * conversion_rate;
+                total_unrealized_pnl += statement.total_unrealized_pnl_value * conversion_rate;
+                total_realized_pnl += statement.total_realized_pnl_value * conversion_rate;
+            }
+        }
+
+        self.total_value = total_value;
+        self.total_unrealized_pnl = total_unrealized_pnl;
+        self.total_realized_pnl = total_realized_pnl;
+        self.reporting_currency = reporting_currency;
+    }
 
     pub async fn get_prices(
         &self,
@@ -85,96 +138,54 @@ impl ConsolidatedPortfolio {
 impl Deref for ConsolidatedPortfolio {
     type Target = HashMap<Broker, Portfolio>;
 
-    fn deref(&self) -> &Self::Target { &self.0 }
+    fn deref(&self) -> &Self::Target { &self.portfolios }
 }
 
 impl DerefMut for ConsolidatedPortfolio {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.portfolios }
 }
 
 pub struct ConsolidatedPortfolioDisplay<'a> {
     pub consolidated_portfolio: &'a ConsolidatedPortfolio,
     pub sort_by: SortBy,
     pub order: Order,
-    pub prices: &'a HashMap<String, Vec<StockPrice>>,
-    pub reporting_currency: Currency,
 }
 
 impl fmt::Display for ConsolidatedPortfolioDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut total_consolidated_value = Decimal::ZERO;
-        let mut total_consolidated_unrealized_pnl = Decimal::ZERO;
-        let mut total_consolidated_realized_pnl = Decimal::ZERO;
-
-        // Calculate consolidated totals
-        for (broker, portfolio) in self.consolidated_portfolio.iter() {
-            if let Some((_date, (holdings, cash_balances))) =
-                portfolio.daily_statements.last_key_value()
-            {
-                let broker_reporting_currency = broker.reporting_currency();
-
-                let mut broker_total_assets = Decimal::ZERO;
-                let mut broker_total_unrealized_pnl = Decimal::ZERO;
-                let mut broker_total_realized_pnl = Decimal::ZERO;
-
-                // Sum holdings in broker's reporting currency
-                for (_symbol, holding) in holdings.iter() {
-                    broker_total_assets += holding.market_value;
-                    broker_total_unrealized_pnl += holding.unrealized_pnl_value;
-                    broker_total_realized_pnl += holding.realized_pnl_value;
-                }
-
-                // Sum cash balances in broker's reporting currency
-                for (_currency, balance) in cash_balances.iter() {
-                    broker_total_assets += balance;
-                }
-
-                // Convert broker totals to overall reporting currency
-                let conversion_rate = YFinanceSource::get_conversion_rate(
-                    broker_reporting_currency,
-                    self.reporting_currency,
-                    self.prices,
-                );
-
-                total_consolidated_value += broker_total_assets * conversion_rate;
-                total_consolidated_unrealized_pnl += broker_total_unrealized_pnl * conversion_rate;
-                total_consolidated_realized_pnl += broker_total_realized_pnl * conversion_rate;
-            }
-        }
+        let consolidated_portfolio = self.consolidated_portfolio;
+        let reporting_currency = consolidated_portfolio.reporting_currency;
 
         // Display Consolidated Summary
         writeln!(f, "======================================================================================================================================================================================================")?;
-        writeln!(f, "--- Consolidated Portfolio Summary (in {}) ---", self.reporting_currency)?;
+        writeln!(f, "--- Consolidated Portfolio Summary (in {}) ---", reporting_currency)?;
         writeln!(
             f,
             "{:<25}: {:>10.2} {}",
-            "Total Portfolio Value", total_consolidated_value, self.reporting_currency
+            "Total Portfolio Value", consolidated_portfolio.total_value, reporting_currency
         )?;
         writeln!(
             f,
             "{:<25}: {:>10.2} {}",
-            "Total Unrealized P&L", total_consolidated_unrealized_pnl, self.reporting_currency
+            "Total Unrealized P&L", consolidated_portfolio.total_unrealized_pnl, reporting_currency
         )?;
         writeln!(
             f,
             "{:<25}: {:>10.2} {}",
-            "Total Realized P&L", total_consolidated_realized_pnl, self.reporting_currency
+            "Total Realized P&L", consolidated_portfolio.total_realized_pnl, reporting_currency
         )?;
         writeln!(f, "")?;
 
-        for (broker, portfolio) in self.consolidated_portfolio.iter() {
+        for (broker, portfolio) in self.consolidated_portfolio.portfolios.iter() {
             writeln!(
                 f,
-                "
-
---- Portfolio for Broker: {} ---",
+                "\n--- Portfolio for Broker: {} ---",
                 broker
             )?;
             let display = PortfolioDisplay {
                 portfolio,
                 sort_by: self.sort_by,
                 order: self.order,
-                prices: self.prices,
                 reporting_currency: broker.reporting_currency(),
             };
             write!(f, "{}", display)?;

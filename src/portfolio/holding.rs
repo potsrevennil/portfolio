@@ -19,6 +19,7 @@ pub struct Holding {
     pub unrealized_pnl_value: Decimal, // Unrealized profit/loss in currency
     pub unrealized_pnl_percentage: Decimal, // Unrealized profit/loss as a percentage
     pub realized_pnl_value: Decimal, // Overall realized profit/loss in currency
+    pub market_price: Decimal,
 }
 
 pub fn settle_transactions(
@@ -91,10 +92,10 @@ pub fn mark_to_market(
     prices: &HashMap<String, &StockPrice>,
 ) -> HashMap<String, Holding> {
     for (symbol, h) in holdings.iter_mut() {
-        let market_price = prices
+        h.market_price = prices
             .get(symbol)
             .map_or(Decimal::ZERO, |p| Decimal::from_f64(p.close_price).unwrap_or_default());
-        h.market_value = h.quantity * market_price;
+        h.market_value = h.quantity * h.market_price;
         h.unrealized_pnl_value = h.market_value - h.total_cost;
         h.unrealized_pnl_percentage =
             h.unrealized_pnl_value.checked_div(h.total_cost).unwrap_or_default()
@@ -123,7 +124,6 @@ pub struct HoldingDisplay<'a> {
     pub holding: &'a Holding,
     pub securities: &'a HashMap<String, Security>,
     pub total_market_value: Decimal,
-    pub prices: &'a HashMap<String, Vec<StockPrice>>,
     pub name_col_width: usize,
     pub reporting_currency: Currency,
 }
@@ -138,11 +138,6 @@ impl fmt::Display for HoldingDisplay<'_> {
         let padding = self.name_col_width.saturating_sub(name_width);
         let name_part = format!("{}{}", name, " ".repeat(padding));
 
-        let market_price = self.prices
-            .get(self.symbol)
-            .and_then(|p| p.last()) // Get the latest price (assuming sorted by date)
-            .map_or(Decimal::ZERO, |p| Decimal::from_f64(p.close_price).unwrap_or_default());
-
         write!(
             f,
             "{:<15} {} {:>12.4} {:>18.2} {:>18.2} {:>15.2} {:>14.2}% {:>15.2} {:>13.2}% {:>11.2}", /* Added {:>11.2} for Market Price */
@@ -155,7 +150,7 @@ impl fmt::Display for HoldingDisplay<'_> {
             self.holding.unrealized_pnl_percentage,
             self.holding.realized_pnl_value,
             percentage,
-            market_price, // Use direct market price
+            self.holding.market_price, // Use direct market price
         )
     }
 }
