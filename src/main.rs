@@ -179,6 +179,7 @@ async fn main() -> Result<()> {
         consolidated_portfolio: &portfolios,
         sort_by: shared_args.sort_by,
         order,
+        prices: &prices,
     };
 
     println!("{}", display);

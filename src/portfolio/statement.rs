@@ -64,9 +64,12 @@ pub struct StatementDisplay<'a> {
     pub date: NaiveDate,
     pub statement: &'a Statement,
     pub securities: &'a HashMap<String, Security>,
+    pub prices: &'a HashMap<String, Vec<StockPrice>>,
     pub sort_by: SortBy,
     pub order: Order,
     pub reporting_currency: Currency,
+    pub total_consolidated_portfolio_value: Decimal,
+    pub consolidated_reporting_currency: Currency,
 }
 
 impl fmt::Display for StatementDisplay<'_> {
@@ -138,7 +141,9 @@ impl fmt::Display for StatementDisplay<'_> {
                 symbol,
                 holding,
                 securities: self.securities,
-                total_market_value: total_value,
+                prices: self.prices,
+                total_consolidated_portfolio_value: self.total_consolidated_portfolio_value,
+                consolidated_reporting_currency: self.consolidated_reporting_currency,
                 name_col_width,
                 reporting_currency: self.reporting_currency,
             };

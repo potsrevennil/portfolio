@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     portfolio::portfolio::{AssetClass, Currency, Security, Transaction, TransactionKind},
-    prices::StockPrice,
+    prices::{source::YFinanceSource, StockPrice},
 };
 
 /// Represents the current holding of a specific security.
@@ -124,16 +124,27 @@ pub struct HoldingDisplay<'a> {
     pub symbol: &'a String,
     pub holding: &'a Holding,
     pub securities: &'a HashMap<String, Security>,
-    pub total_market_value: Decimal,
+    pub prices: &'a HashMap<String, Vec<StockPrice>>,
+    pub total_consolidated_portfolio_value: Decimal,
+    pub consolidated_reporting_currency: Currency,
     pub name_col_width: usize,
     pub reporting_currency: Currency,
 }
 
 impl fmt::Display for HoldingDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let percentage =
-            self.holding.market_value.checked_div(self.total_market_value).unwrap_or_default()
-                * Decimal::from(100);
+        let conversion_rate = YFinanceSource::get_conversion_rate(
+            self.holding.currency,
+            self.consolidated_reporting_currency,
+            self.prices,
+        );
+        let holding_market_value_in_consolidated_currency =
+            self.holding.market_value * conversion_rate;
+
+        let percentage = holding_market_value_in_consolidated_currency
+            .checked_div(self.total_consolidated_portfolio_value)
+            .unwrap_or_default()
+            * Decimal::from(100);
         let name = self.securities.get(self.symbol).map_or("", |s| &s.description);
         let name_width = unicode_width::UnicodeWidthStr::width(name);
         let padding = self.name_col_width.saturating_sub(name_width);

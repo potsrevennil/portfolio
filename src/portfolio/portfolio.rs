@@ -286,7 +286,10 @@ pub struct PortfolioDisplay<'a> {
     pub portfolio: &'a Portfolio,
     pub sort_by: SortBy,
     pub order: Order,
+    pub prices: &'a HashMap<String, Vec<StockPrice>>,
     pub reporting_currency: Currency,
+    pub total_consolidated_portfolio_value: Decimal,
+    pub consolidated_reporting_currency: Currency,
 }
 
 use crate::portfolio::statement::StatementDisplay;
@@ -303,9 +306,12 @@ impl fmt::Display for PortfolioDisplay<'_> {
                 date: *date,
                 statement,
                 securities: &self.portfolio.securities,
+                prices: self.prices,
                 sort_by: self.sort_by,
                 order: self.order,
                 reporting_currency: self.reporting_currency,
+                total_consolidated_portfolio_value: self.total_consolidated_portfolio_value,
+                consolidated_reporting_currency: self.consolidated_reporting_currency,
             };
             write!(f, "{}", statement_display)?;
         }

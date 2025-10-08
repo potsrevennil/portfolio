@@ -149,6 +149,7 @@ pub struct ConsolidatedPortfolioDisplay<'a> {
     pub consolidated_portfolio: &'a ConsolidatedPortfolio,
     pub sort_by: SortBy,
     pub order: Order,
+    pub prices: &'a HashMap<String, Vec<StockPrice>>,
 }
 
 impl fmt::Display for ConsolidatedPortfolioDisplay<'_> {
@@ -186,7 +187,10 @@ impl fmt::Display for ConsolidatedPortfolioDisplay<'_> {
                 portfolio,
                 sort_by: self.sort_by,
                 order: self.order,
+                prices: self.prices,
                 reporting_currency: broker.reporting_currency(),
+                total_consolidated_portfolio_value: consolidated_portfolio.total_value,
+                consolidated_reporting_currency: consolidated_portfolio.reporting_currency,
             };
             write!(f, "{}", display)?;
         }
