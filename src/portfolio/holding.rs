@@ -12,6 +12,7 @@ use crate::{
 /// Represents the current holding of a specific security.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Holding {
+    pub currency: Currency,
     pub quantity: Decimal,
     pub total_cost: Decimal,
     pub average_cost: Decimal,
@@ -50,7 +51,9 @@ pub fn settle_transactions(
 
         // Update holdings for stock-related transactions
         if t.asset_class == AssetClass::Stocks {
-            let h = holdings.entry(t.symbol.clone()).or_insert(Holding::default());
+            let h = holdings
+                .entry(t.symbol.clone())
+                .or_insert_with(|| Holding { currency: t.currency, ..Default::default() });
             match t.kind {
                 TransactionKind::Buy => {
                     h.quantity += t.quantity;
@@ -70,13 +73,11 @@ pub fn settle_transactions(
                     h.quantity += t.quantity;
                     // For deposits (e.g., from transfers), the cost is the market value at the time
                     h.total_cost += t.amount;
+                    h.average_cost = h.total_cost.checked_div(h.quantity).unwrap_or_default();
                 }
                 TransactionKind::Withdrawal => {
-                    let cost_basis_per_share =
-                        h.total_cost.checked_div(h.quantity).unwrap_or_default();
-                    let cost_of_withdrawn_shares = t.quantity * cost_basis_per_share;
                     h.quantity -= t.quantity;
-                    h.total_cost -= cost_of_withdrawn_shares;
+                    h.total_cost -= t.quantity * h.average_cost;
                 }
                 TransactionKind::CorporateAction => {
                     h.quantity += t.quantity;
