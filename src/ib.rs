@@ -383,11 +383,8 @@ impl From<IbTradeRecord> for Transaction {
         let datetime = record.date_time;
         let symbol = record.symbol;
 
-        let id = format!("{}-{:?}-{}", datetime, kind, symbol);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
-
-        Transaction {
-            id,
+        let mut transaction = Transaction {
+            id: String::new(),
             source: Broker::InteractiveBrokers,
             asset_class,
             symbol,
@@ -401,7 +398,9 @@ impl From<IbTradeRecord> for Transaction {
             commission: record.comm_fee,
             currency,
             balance: Decimal::ZERO, // Balance will be calculated later
-        }
+        };
+        transaction.generate_id();
+        transaction
     }
 }
 
@@ -413,11 +412,9 @@ impl From<IbGrantActivityRecord> for Transaction {
             Utc,
         );
         let symbol = record.symbol;
-        let id = format!("{}-{:?}-{}", datetime.to_rfc3339(), kind, symbol);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
-        Transaction {
-            id,
+        let mut transaction = Transaction {
+            id: String::new(),
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Stocks,
             symbol,
@@ -430,7 +427,9 @@ impl From<IbGrantActivityRecord> for Transaction {
             commission: Decimal::ZERO,
             currency: Currency::USD, // Assuming USD for grant activity
             balance: Decimal::ZERO,
-        }
+        };
+        transaction.generate_id();
+        transaction
     }
 }
 
@@ -449,11 +448,8 @@ impl From<IbTransferRecord> for Transaction {
         let asset_class = record.asset_category;
         let currency = record.currency;
 
-        let id = format!("{}-{:?}-{}", datetime, kind, symbol);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
-
-        Transaction {
-            id,
+        let mut transaction = Transaction {
+            id: String::new(),
             source: Broker::InteractiveBrokers,
             asset_class,
             symbol,
@@ -466,7 +462,9 @@ impl From<IbTransferRecord> for Transaction {
             commission: Decimal::ZERO,
             currency,
             balance: Decimal::ZERO,
-        }
+        };
+        transaction.generate_id();
+        transaction
     }
 }
 
@@ -483,11 +481,9 @@ impl From<IbDepositWithdrawalRecord> for Transaction {
         );
 
         let currency = record.currency;
-        let id = format!("{}-{:?}", datetime, kind);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
-        Transaction {
-            id,
+        let mut transaction = Transaction {
+            id: String::new(),
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol: String::new(), // No symbol for cash transactions
@@ -500,7 +496,9 @@ impl From<IbDepositWithdrawalRecord> for Transaction {
             commission: Decimal::ZERO,
             currency,
             balance: Decimal::ZERO,
-        }
+        };
+        transaction.generate_id();
+        transaction
     }
 }
 
@@ -513,11 +511,9 @@ impl From<IbFeeRecord> for Transaction {
             Utc,
         );
         let symbol = extract_symbol_from_description(&record.description).unwrap_or_default();
-        let id = format!("{}-{:?}", datetime, kind);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
-        Transaction {
-            id,
+        let mut transaction = Transaction {
+            id: String::new(),
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol,
@@ -530,7 +526,9 @@ impl From<IbFeeRecord> for Transaction {
             commission: Decimal::ZERO,
             currency,
             balance: Decimal::ZERO,
-        }
+        };
+        transaction.generate_id();
+        transaction
     }
 }
 
@@ -543,11 +541,9 @@ impl From<IbDividendRecord> for Transaction {
             record.date.and_hms_opt(0, 0, 0).unwrap(),
             Utc,
         );
-        let id = format!("{}-{:?}", datetime, kind);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
-        Transaction {
-            id,
+        let mut transaction = Transaction {
+            id: String::new(),
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol,
@@ -560,7 +556,9 @@ impl From<IbDividendRecord> for Transaction {
             commission: Decimal::ZERO,
             currency,
             balance: Decimal::ZERO,
-        }
+        };
+        transaction.generate_id();
+        transaction
     }
 }
 
@@ -573,19 +571,14 @@ impl From<IbWithholdingTaxRecord> for Transaction {
             Utc,
         );
         let symbol = extract_symbol_from_description(&record.description).unwrap_or_default();
-        let id = format!("{}-{:?}", datetime, kind);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
-        Transaction {
-            id,
+        let mut transaction = Transaction {
+            id: String::new(),
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol,
             kind,
-            datetime: DateTime::<Utc>::from_naive_utc_and_offset(
-                record.date.and_hms_opt(0, 0, 0).unwrap(),
-                Utc,
-            ),
+            datetime,
             settle_date: Some(record.date),
             quantity: Decimal::ZERO,
             price: Decimal::ZERO,
@@ -593,7 +586,9 @@ impl From<IbWithholdingTaxRecord> for Transaction {
             commission: Decimal::ZERO,
             currency,
             balance: Decimal::ZERO,
-        }
+        };
+        transaction.generate_id();
+        transaction
     }
 }
 
@@ -605,11 +600,9 @@ impl From<IbInterestRecord> for Transaction {
             record.date.and_hms_opt(0, 0, 0).unwrap(),
             Utc,
         );
-        let id = format!("{}-{:?}", datetime, kind);
-        let id = format!("{:x}", gxhash::gxhash64(id.as_bytes(), 0));
 
-        Transaction {
-            id,
+        let mut transaction = Transaction {
+            id: String::new(),
             source: Broker::InteractiveBrokers,
             asset_class: AssetClass::Cash,
             symbol: String::new(), // No symbol for general interest
@@ -622,7 +615,9 @@ impl From<IbInterestRecord> for Transaction {
             commission: Decimal::ZERO,
             currency,
             balance: Decimal::ZERO,
-        }
+        };
+        transaction.generate_id();
+        transaction
     }
 }
 

@@ -119,6 +119,13 @@ pub struct Transaction {
     pub balance: Decimal,
 }
 
+impl Transaction {
+    pub fn generate_id(&mut self) {
+        let id_string = format!("{}-{:?}-{}", self.datetime, self.kind, self.symbol);
+        self.id = format!("{:x}", gxhash::gxhash64(id_string.as_bytes(), 0));
+    }
+}
+
 #[derive(Debug)]
 pub struct Portfolio {
     // Static data about all securities ever transacted.

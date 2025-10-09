@@ -121,52 +121,44 @@ pub fn load_from_csv(
 
         // Generate implicit deposit/withdrawal transactions for Cathay
         let cash_flow_transaction = match transaction.kind {
-            TransactionKind::Buy => Some(Transaction {
-                id: format!(
-                    "{:x}",
-                    gxhash::gxhash64(
-                        format!("{:?}-{:?}", transaction.datetime, TransactionKind::Deposit)
-                            .as_bytes(),
-                        0
-                    )
-                )[..5]
-                    .to_string(),
-                source: Broker::Cathay,
-                asset_class: AssetClass::Cash, // This is a cash movement
-                symbol: "CASH".to_string(),    // Use a generic symbol for cash
-                kind: TransactionKind::Deposit,
-                datetime: transaction.datetime,
-                settle_date: transaction.settle_date,
-                quantity: Decimal::ZERO,         // No quantity for cash
-                price: Decimal::ZERO,            // No price for cash
-                amount: record.net_amount.abs(), // Absolute value of net_amount
-                commission: Decimal::ZERO,       // Commission already accounted for in net_amount
-                currency: Currency::TWD,
-                balance: Decimal::ZERO, // Will be calculated later
-            }),
-            TransactionKind::Sell => Some(Transaction {
-                id: format!(
-                    "{:x}",
-                    gxhash::gxhash64(
-                        format!("{:?}-{:?}", transaction.datetime, TransactionKind::Withdrawal)
-                            .as_bytes(),
-                        0
-                    )
-                )[..5]
-                    .to_string(),
-                source: Broker::Cathay,
-                asset_class: AssetClass::Cash, // This is a cash movement
-                symbol: "CASH".to_string(),    // Use a generic symbol for cash
-                kind: TransactionKind::Withdrawal,
-                datetime: transaction.datetime,
-                settle_date: transaction.settle_date,
-                quantity: Decimal::ZERO, // No quantity for cash
-                price: Decimal::ZERO,    // No price for cash
-                amount: -record.net_amount.abs(),
-                commission: Decimal::ZERO, // Commission already accounted for in net_amount
-                currency: Currency::TWD,
-                balance: Decimal::ZERO, // Will be calculated later
-            }),
+            TransactionKind::Buy => {
+                let mut t = Transaction {
+                    id: String::new(),
+                    source: Broker::Cathay,
+                    asset_class: AssetClass::Cash, // This is a cash movement
+                    symbol: "CASH".to_string(),    // Use a generic symbol for cash
+                    kind: TransactionKind::Deposit,
+                    datetime: transaction.datetime,
+                    settle_date: transaction.settle_date,
+                    quantity: Decimal::ZERO,         // No quantity for cash
+                    price: Decimal::ZERO,            // No price for cash
+                    amount: record.net_amount.abs(), // Absolute value of net_amount
+                    commission: Decimal::ZERO,       // Commission already accounted for in net_amount
+                    currency: Currency::TWD,
+                    balance: Decimal::ZERO, // Will be calculated later
+                };
+                t.generate_id();
+                Some(t)
+            }
+            TransactionKind::Sell => {
+                let mut t = Transaction {
+                    id: String::new(),
+                    source: Broker::Cathay,
+                    asset_class: AssetClass::Cash, // This is a cash movement
+                    symbol: "CASH".to_string(),    // Use a generic symbol for cash
+                    kind: TransactionKind::Withdrawal,
+                    datetime: transaction.datetime,
+                    settle_date: transaction.settle_date,
+                    quantity: Decimal::ZERO, // No quantity for cash
+                    price: Decimal::ZERO,    // No price for cash
+                    amount: -record.net_amount.abs(),
+                    commission: Decimal::ZERO, // Commission already accounted for in net_amount
+                    currency: Currency::TWD,
+                    balance: Decimal::ZERO, // Will be calculated later
+                };
+                t.generate_id();
+                Some(t)
+            }
             _ => None, // Other transaction kinds don't generate implicit cash flow
         };
 
@@ -204,8 +196,8 @@ impl From<(CathayTradeRecord, String)> for Transaction {
         // Commissions and taxes are always costs (negative).
         let total_commission = -(record.commission + record.tax);
 
-        Transaction {
-            id: record.id, // Use transaction_id from record
+        let mut transaction = Transaction {
+            id: String::new(), // Always generate a new ID
             source: Broker::Cathay,
             asset_class: AssetClass::Stocks,
             symbol,
@@ -221,6 +213,9 @@ impl From<(CathayTradeRecord, String)> for Transaction {
             commission: total_commission,
             currency: Currency::TWD,
             balance: Decimal::ZERO, // Will be calculated later
-        }
+        };
+
+        transaction.generate_id();
+        transaction
     }
 }

@@ -30,7 +30,7 @@ pub fn load_from_generic_csv(
         let mut securities: HashMap<String, Security> = HashMap::new();
 
         for record in records {
-            let t = Transaction {
+            let mut t = Transaction {
                 id: record.id,
                 source: record.source,
                 asset_class: record.asset_class,
@@ -45,6 +45,10 @@ pub fn load_from_generic_csv(
                 currency: record.currency,
                 balance: record.balance,
             };
+
+            if t.id.is_empty() {
+                t.generate_id();
+            }
 
             let date = t.datetime.date_naive();
             events.entry(date).or_default().transactions.push(t);
