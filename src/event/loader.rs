@@ -69,7 +69,7 @@ pub async fn load(
     // --- Storing Phase ---
     store::store_splits(&all_events_for_storing, split_store).await?;
     if let Some(output_path) = output_file {
-        store::store_transactions(
+        csv_loader::store_transactions(
             &all_events_for_storing,
             &all_securities_for_storing,
             Some(output_path),

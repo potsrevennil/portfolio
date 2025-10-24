@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use csv;
 
 use crate::{
     cathay, ib,
@@ -97,4 +98,43 @@ pub async fn load_from_csv(
     }
 
     Ok(result_map)
+}
+
+pub async fn store_transactions(
+    events: &BTreeMap<NaiveDate, Event>,
+    securities: &HashMap<String, Security>,
+    output_file: Option<String>,
+) -> Result<()> {
+    // Write transactions to CSV if path is provided
+    if let Some(file_path) = output_file {
+        let mut writer = csv::Writer::from_path(file_path)?;
+        for event in events.values() {
+            let mut transactions = event.transactions.clone();
+            transactions.sort_by_key(|t| t.datetime);
+
+            for t in &transactions {
+                let description =
+                    securities.get(&t.symbol).map_or(String::new(), |s| s.description.clone());
+                writer.serialize(CsvTransactionRecord {
+                    id: t.id.clone(),
+                    source: t.source,
+                    asset_class: t.asset_class,
+                    symbol: t.symbol.clone(),
+                    description,
+                    kind: t.kind,
+                    datetime: t.datetime,
+                    settle_date: t.settle_date,
+                    quantity: t.quantity,
+                    price: t.price,
+                    amount: t.amount,
+                    commission: t.commission,
+                    currency: t.currency,
+                    balance: t.balance,
+                })?;
+            }
+        }
+        writer.flush()?;
+    }
+
+    Ok(())
 }
