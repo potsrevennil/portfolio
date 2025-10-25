@@ -138,8 +138,6 @@ pub async fn run_interactive_record_session(file_path: &str) -> Result<()> {
             },
         )?;
 
-        let description = ask_text(&theme, "Enter description (optional)")?;
-
         // TODO: also ask for this
         let currency = broker.reporting_currency();
 
@@ -162,9 +160,6 @@ pub async fn run_interactive_record_session(file_path: &str) -> Result<()> {
         transaction.generate_id();
 
         println!("\n{}", transaction);
-        if !description.is_empty() {
-            println!("{:<15}: {}", style("Description").bold(), description);
-        }
 
         println!("\n");
 
@@ -178,7 +173,7 @@ pub async fn run_interactive_record_session(file_path: &str) -> Result<()> {
                 source: transaction.source,
                 asset_class: transaction.asset_class,
                 symbol: transaction.symbol,
-                description, // Use transaction's description
+                description: String::new(),
                 kind: transaction.kind,
                 datetime: transaction.datetime,
                 settle_date: transaction.settle_date,
