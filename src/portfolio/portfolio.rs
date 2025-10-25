@@ -7,6 +7,7 @@ use chrono::{DateTime, NaiveDate};
 use clap::ValueEnum;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use strum_macros::{Display, EnumIter};
 
 use crate::{
     portfolio::{
@@ -24,7 +25,7 @@ pub struct Event {
     pub splits: Vec<(String, Decimal)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Display, EnumIter)]
 pub enum TransactionKind {
     Buy,
     Sell,
@@ -39,17 +40,26 @@ pub enum TransactionKind {
     Other,
 }
 
-impl std::fmt::Display for TransactionKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{:?}", self) }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Display, EnumIter)]
 pub enum AssetClass {
     Stocks,
     Cash,
 }
 
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Default)]
+#[derive(
+    ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Deserialize,
+    Serialize,
+    Default,
+    Display,
+    EnumIter,
+)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Currency {
     #[default]
@@ -57,28 +67,11 @@ pub enum Currency {
     TWD,
 }
 
-impl std::fmt::Display for Currency {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Currency::USD => write!(f, "USD"),
-            Currency::TWD => write!(f, "TWD"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Display, EnumIter)]
 pub enum Broker {
     InteractiveBrokers,
     Cathay,
-}
-
-impl std::fmt::Display for Broker {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Broker::InteractiveBrokers => write!(f, "InteractiveBrokers"),
-            Broker::Cathay => write!(f, "Cathay"),
-        }
-    }
+    Pionex,
 }
 
 impl Broker {
@@ -86,6 +79,7 @@ impl Broker {
         match self {
             Broker::Cathay => Currency::TWD,
             Broker::InteractiveBrokers => Currency::USD,
+            Broker::Pionex => Currency::USD,
         }
     }
 }
@@ -119,8 +113,29 @@ pub struct Transaction {
 
 impl Transaction {
     pub fn generate_id(&mut self) {
-        let id_string = format!("{}-{:?}-{}", self.datetime, self.kind, self.symbol);
+        let id_string = format!("{}-{}-{}", self.datetime, self.kind, self.symbol);
         self.id = format!("{:x}", gxhash::gxhash64(id_string.as_bytes(), 0));
+    }
+}
+
+impl fmt::Display for Transaction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "--- Transaction Details ---")?;
+        writeln!(f, "{:<15}: {}", "ID", self.id)?; // ID is a hash, maybe not always needed for display
+        writeln!(f, "{:<15}: {}", "Source", self.source)?; // Broker
+        writeln!(f, "{:<15}: {}", "Asset Class", self.asset_class)?;
+        writeln!(f, "{:<15}: {}", "Symbol", self.symbol)?;
+        writeln!(f, "{:<15}: {}", "Kind", self.kind)?;
+        writeln!(f, "{:<15}: {}", "Date/Time", self.datetime.to_rfc2822())?;
+        if let Some(settle_date) = self.settle_date {
+            writeln!(f, "{:<15}: {}", "Settle Date", settle_date)?;
+        }
+        writeln!(f, "{:<15}: {}", "Quantity", self.quantity)?;
+        writeln!(f, "{:<15}: {}", "Price", self.price)?;
+        writeln!(f, "{:<15}: {}", "Amount", self.amount)?;
+        writeln!(f, "{:<15}: {}", "Commission", self.commission)?;
+        writeln!(f, "{:<15}: {}", "Currency", self.currency)?;
+        Ok(())
     }
 }
 

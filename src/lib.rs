@@ -4,6 +4,7 @@ pub mod event;
 pub mod ib;
 pub mod portfolio;
 pub mod prices;
+pub mod record;
 pub mod split;
 // Re-export necessary items from db
 pub use db::init_db;

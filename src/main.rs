@@ -9,6 +9,7 @@ use portfolio::{
         Currency, Portfolio,
     },
     prices::{PriceService, StockPriceStore},
+    record,
     split::store::SplitStore,
     Order, SortBy,
 };
@@ -55,9 +56,16 @@ struct Cli {
 enum Command {
     /// Initialize and process broker data
     Init(Init),
+    Record(Record),
 }
 
 #[derive(Parser, Debug)]
+struct Record {
+    #[arg(short, long, default_value = "manual_transactions.csv")]
+    output_file: String,
+}
+
+#[derive(Parser, Debug, Clone)]
 struct Init {
     /// One or more file paths for IB reports
     #[arg(long, num_args = 1..)]
@@ -67,14 +75,17 @@ struct Init {
     #[arg(long, num_args = 1..)]
     cathay_files: Vec<String>,
 
+    #[arg(long, num_args = 1..)]
+    transactions_files: Vec<String>,
+
     #[arg(short, long, default_value = "transactions.csv")]
-    transactions_file: String,
+    output_file: String,
 
     #[command(flatten)]
     args: SharedArgs,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 struct Calculate {
     #[arg(default_value = "transactions.csv", num_args = 1..)]
     transactions_files: Vec<String>,
@@ -83,7 +94,7 @@ struct Calculate {
     args: SharedArgs,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 struct SharedArgs {
     #[arg(short, long, value_enum, default_value_t = SortBy::Percentage)]
     sort_by: SortBy,
@@ -114,24 +125,31 @@ async fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
+    match &cli.command {
+        Some(Command::Record(record_args)) => {
+            record::run_interactive_record_session(&record_args.output_file).await
+        }
+        Some(Command::Init(_)) | None => run_calculation(&cli).await,
+    }
+}
+
+async fn run_calculation(cli: &Cli) -> Result<()> {
     let pool = db::init_db("sqlite:sqlite.db").await?;
     let price_store = StockPriceStore::new(pool.clone());
     let price_service = PriceService::new(price_store.clone());
     let split_store = SplitStore::new(pool.clone());
 
-    let (shared_args, sources, output_file) = if let Some(Command::Init(init_args)) = cli.command {
-        let mut sources = vec![];
-        if !init_args.ib_files.is_empty() {
-            sources.push(DataSource::Ib(init_args.ib_files));
-        }
-        if !init_args.cathay_files.is_empty() {
-            sources.push(DataSource::Cathay(init_args.cathay_files));
-        }
-        (init_args.args, sources, Some(init_args.transactions_file))
+    let (shared_args, sources, output_file) = if let Some(Command::Init(init_args)) = &cli.command {
+        let sources = vec![
+            DataSource::Ib(init_args.ib_files.clone()),
+            DataSource::Cathay(init_args.cathay_files.clone()),
+            DataSource::Generic(init_args.transactions_files.clone()),
+        ];
+        (init_args.args.clone(), sources, Some(init_args.output_file.clone()))
     } else {
         (
-            cli.calculate_args.args,
-            vec![DataSource::Generic(cli.calculate_args.transactions_files)],
+            cli.calculate_args.args.clone(),
+            vec![DataSource::Generic(cli.calculate_args.transactions_files.clone())],
             None,
         )
     };
