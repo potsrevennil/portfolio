@@ -23,8 +23,6 @@ pub async fn store_splits(
     Ok(())
 }
 
-
-
 pub async fn load_splits(split_store: &SplitStore) -> Result<StockSplits> {
     let start_date = NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
     let end_date = NaiveDate::from_ymd_opt(2100, 12, 31).unwrap();

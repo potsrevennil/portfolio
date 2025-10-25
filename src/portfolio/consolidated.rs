@@ -178,11 +178,7 @@ impl fmt::Display for ConsolidatedPortfolioDisplay<'_> {
         writeln!(f, "")?;
 
         for (broker, portfolio) in self.consolidated_portfolio.portfolios.iter() {
-            writeln!(
-                f,
-                "\n--- Portfolio for Broker: {} ---",
-                broker
-            )?;
+            writeln!(f, "\n--- Portfolio for Broker: {} ---", broker)?;
             let display = PortfolioDisplay {
                 portfolio,
                 sort_by: self.sort_by,

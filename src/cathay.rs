@@ -133,7 +133,8 @@ pub fn load_from_csv(
                     quantity: Decimal::ZERO,         // No quantity for cash
                     price: Decimal::ZERO,            // No price for cash
                     amount: record.net_amount.abs(), // Absolute value of net_amount
-                    commission: Decimal::ZERO,       // Commission already accounted for in net_amount
+                    commission: Decimal::ZERO,       /* Commission already accounted for in
+                                                      * net_amount */
                     currency: Currency::TWD,
                     balance: Decimal::ZERO, // Will be calculated later
                 };

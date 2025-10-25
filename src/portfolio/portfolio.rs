@@ -3,10 +3,8 @@ use std::{
     fmt,
 };
 
-
 use chrono::{DateTime, NaiveDate};
 use clap::ValueEnum;
-
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -170,8 +168,6 @@ impl Portfolio {
             reporting_currency: broker.reporting_currency(),
         }
     }
-
-
 
     /// Calculates the current holdings, including market value, unrealized P&L,
     /// and realized P&L.
