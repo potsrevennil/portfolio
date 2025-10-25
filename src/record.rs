@@ -73,116 +73,137 @@ pub async fn run_interactive_record_session(file_path: &str) -> Result<()> {
     let transaction_kinds: Vec<TransactionKind> = TransactionKind::iter().collect();
     let assets: Vec<AssetClass> = AssetClass::iter().collect();
 
-    let broker_idx = ask_select(&theme, "Broker", &brokers)?;
-    let broker = brokers[broker_idx];
+    loop {
+        let broker_idx = ask_select(&theme, "Broker", &brokers)?;
+        let broker = brokers[broker_idx];
 
-    let kind_idx = ask_select(&theme, "Transaction type", &transaction_kinds)?;
-    let kind = transaction_kinds[kind_idx];
+        let kind_idx = ask_select(&theme, "Transaction type", &transaction_kinds)?;
+        let kind = transaction_kinds[kind_idx];
 
-    let (asset_class, symbol, quantity, price, amount, commission) = match kind {
-        TransactionKind::Buy | TransactionKind::Sell | TransactionKind::CorporateAction => {
-            let symbol = ask_text(&theme, "Symbol")?;
-            let quantity = ask(&theme, "Quantity")?;
-            let price = ask(&theme, "Price")?;
-            let commission = ask(&theme, "Commission")?;
-            let amount = quantity * price;
-            (AssetClass::Stocks, symbol, quantity, price, amount, commission)
-        }
-        TransactionKind::Deposit | TransactionKind::Withdrawal => {
-            let asset_idx = ask_select(&theme, "Asset type", &assets)?;
-            let asset = assets[asset_idx];
-            match asset {
-                AssetClass::Cash => {
-                    let amount = ask(&theme, "Amount")?;
-                    (asset, String::new(), Decimal::ZERO, Decimal::ZERO, amount, Decimal::ZERO)
-                }
-                AssetClass::Stocks => {
-                    let symbol = ask_text(&theme, "Symbol")?;
-                    let quantity = ask(&theme, "Quantity")?;
-                    (asset, symbol, quantity, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO)
+        let (asset_class, symbol, quantity, price, amount, commission) = match kind {
+            TransactionKind::Buy | TransactionKind::Sell | TransactionKind::CorporateAction => {
+                let symbol = ask_text(&theme, "Symbol")?;
+                let quantity = ask(&theme, "Quantity")?;
+                let price = ask(&theme, "Price")?;
+                let commission = ask(&theme, "Commission")?;
+                let amount = quantity * price;
+                (AssetClass::Stocks, symbol, quantity, price, amount, commission)
+            }
+            TransactionKind::Deposit | TransactionKind::Withdrawal => {
+                let asset_idx = ask_select(&theme, "Asset type", &assets)?;
+                let asset = assets[asset_idx];
+                match asset {
+                    AssetClass::Cash => {
+                        let amount = ask(&theme, "Amount")?;
+                        (asset, String::new(), Decimal::ZERO, Decimal::ZERO, amount, Decimal::ZERO)
+                    }
+                    AssetClass::Stocks => {
+                        let symbol = ask_text(&theme, "Symbol")?;
+                        let quantity = ask(&theme, "Quantity")?;
+                        (asset, symbol, quantity, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO)
+                    }
                 }
             }
-        }
-        TransactionKind::Dividend => {
-            let symbol = ask_text(&theme, "Symbol")?;
-            let amount = ask(&theme, "Amount")?;
-            (AssetClass::Cash, symbol, Decimal::ZERO, Decimal::ZERO, amount, Decimal::ZERO)
-        }
-        _ => {
-            let amount = ask(&theme, "Amount")?;
-            (AssetClass::Cash, String::new(), Decimal::ZERO, Decimal::ZERO, amount, Decimal::ZERO)
-        }
-    };
-
-    let datetime = ask_with_parser(
-        &theme,
-        "Date and time",
-        Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string(),
-        |s| {
-            if s.contains(' ') {
-                NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-                    .with_context(|| "Expected format: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS")
-            } else {
-                NaiveDate::parse_from_str(s, "%Y-%m-%d")
-                    .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
-                    .with_context(|| "Expected format: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS")
+            TransactionKind::Dividend => {
+                let symbol = ask_text(&theme, "Symbol")?;
+                let amount = ask(&theme, "Amount")?;
+                (AssetClass::Cash, symbol, Decimal::ZERO, Decimal::ZERO, amount, Decimal::ZERO)
             }
-        },
-    )?;
-
-    let description = ask_text(&theme, "Enter description (optional)")?;
-
-    // TODO: also ask for this
-    let currency = broker.reporting_currency();
-
-    let mut transaction = Transaction {
-        id: String::new(),
-        source: broker,
-        asset_class,
-        symbol: symbol.clone(),
-        kind,
-        datetime: datetime.and_utc(),
-        settle_date: Some(datetime.date()),
-        quantity,
-        price,
-        amount: if kind == TransactionKind::Buy { -amount.abs() } else { amount.abs() },
-        commission,
-        currency,
-        balance: Decimal::ZERO, // Not used when appending
-    };
-
-    transaction.generate_id();
-
-    println!("\n{}", transaction);
-    if !description.is_empty() {
-        println!("{:<15}: {}", style("Description").bold(), description);
-    }
-
-    println!("\n");
-
-    if Confirm::with_theme(&theme).with_prompt("Save this transaction?").default(true).interact()? {
-        let csv_record = CsvTransactionRecord {
-            id: transaction.id,
-            source: transaction.source,
-            asset_class: transaction.asset_class,
-            symbol: transaction.symbol,
-            description, // Use transaction's description
-            kind: transaction.kind,
-            datetime: transaction.datetime,
-            settle_date: transaction.settle_date,
-            quantity: transaction.quantity,
-            price: transaction.price,
-            amount: transaction.amount,
-            commission: transaction.commission,
-            currency: transaction.currency,
-            balance: transaction.balance,
+            _ => {
+                let amount = ask(&theme, "Amount")?;
+                (
+                    AssetClass::Cash,
+                    String::new(),
+                    Decimal::ZERO,
+                    Decimal::ZERO,
+                    amount,
+                    Decimal::ZERO,
+                )
+            }
         };
 
-        append_transaction_to_csv(file_path, csv_record)?;
+        let datetime = ask_with_parser(
+            &theme,
+            "Date and time",
+            Local::now().naive_local().format("%Y-%m-%d %H:%M:%S").to_string(),
+            |s| {
+                if s.contains(' ') {
+                    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                        .with_context(|| "Expected format: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS")
+                } else {
+                    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+                        .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
+                        .with_context(|| "Expected format: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS")
+                }
+            },
+        )?;
 
-        println!("✅ Transaction added to {}.\n", file_path);
-    } else {
-        println!("Transaction not saved.");
+        let description = ask_text(&theme, "Enter description (optional)")?;
+
+        // TODO: also ask for this
+        let currency = broker.reporting_currency();
+
+        let mut transaction = Transaction {
+            id: String::new(),
+            source: broker,
+            asset_class,
+            symbol: symbol.clone(),
+            kind,
+            datetime: datetime.and_utc(),
+            settle_date: Some(datetime.date()),
+            quantity,
+            price,
+            amount: if kind == TransactionKind::Buy { -amount.abs() } else { amount.abs() },
+            commission,
+            currency,
+            balance: Decimal::ZERO, // Not used when appending
+        };
+
+        transaction.generate_id();
+
+        println!("\n{}", transaction);
+        if !description.is_empty() {
+            println!("{:<15}: {}", style("Description").bold(), description);
+        }
+
+        println!("\n");
+
+        if Confirm::with_theme(&theme)
+            .with_prompt("Save this transaction?")
+            .default(true)
+            .interact()?
+        {
+            let csv_record = CsvTransactionRecord {
+                id: transaction.id,
+                source: transaction.source,
+                asset_class: transaction.asset_class,
+                symbol: transaction.symbol,
+                description, // Use transaction's description
+                kind: transaction.kind,
+                datetime: transaction.datetime,
+                settle_date: transaction.settle_date,
+                quantity: transaction.quantity,
+                price: transaction.price,
+                amount: transaction.amount,
+                commission: transaction.commission,
+                currency: transaction.currency,
+                balance: transaction.balance,
+            };
+
+            append_transaction_to_csv(file_path, csv_record)?;
+
+            println!("✅ Transaction added to {}.\n", file_path);
+        } else {
+            println!("Transaction not saved.");
+        }
+
+        if !Confirm::with_theme(&theme)
+            .with_prompt("Add another transaction?")
+            .default(true)
+            .interact()?
+        {
+            break;
+        }
     }
 
     Ok(())
