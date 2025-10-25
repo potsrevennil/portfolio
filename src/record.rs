@@ -84,9 +84,9 @@ pub async fn run_interactive_record_session(file_path: &str) -> Result<()> {
             TransactionKind::Buy | TransactionKind::Sell | TransactionKind::CorporateAction => {
                 let symbol = ask_text(&theme, "Symbol")?;
                 let quantity = ask(&theme, "Quantity")?;
-                let price = ask(&theme, "Price")?;
-                let commission = ask(&theme, "Commission")?;
-                let amount = quantity * price;
+                let amount: Decimal = ask(&theme, "Amount")?;
+                let commission: Decimal = ask(&theme, "Commission")?;
+                let price = (amount + commission).checked_div(quantity).unwrap_or_default().abs();
                 (AssetClass::Stocks, symbol, quantity, price, amount, commission)
             }
             TransactionKind::Deposit | TransactionKind::Withdrawal => {
