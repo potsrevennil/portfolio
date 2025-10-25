@@ -100,7 +100,6 @@ struct SharedArgs {
     sort_by: SortBy,
 
     #[arg(
-        short,
         long,
         default_value = "-",
         value_parser = [
