@@ -16,7 +16,7 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub struct ConsolidatedPortfolio {
-    portfolios: HashMap<Broker, Portfolio>,
+    pub portfolios: HashMap<Broker, Portfolio>,
     pub total_value: Decimal,
     pub total_unrealized_pnl: Decimal,
     pub total_realized_pnl: Decimal,

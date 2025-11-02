@@ -74,20 +74,47 @@ pub async fn load_from_csv(
     let mut result_map: HashMap<Broker, (BTreeMap<NaiveDate, Event>, HashMap<String, Security>)> =
         HashMap::new();
 
+    let mut m: HashMap<Broker, (BTreeMap<NaiveDate, Event>, HashMap<String, Security>)> =
+        HashMap::new();
     for file_path in file_paths {
-        let (events, securities) = match broker_type {
-            Some(Broker::InteractiveBrokers) => ib::load_from_csv(&file_path)?,
-            Some(Broker::Cathay) => cathay::load_from_csv(&file_path)?,
+        match broker_type {
+            Some(Broker::InteractiveBrokers) => {
+                let (events, securities) = ib::load_from_csv(&file_path)?;
+                m.entry(Broker::InteractiveBrokers)
+                    .and_modify(|(e, s)| {
+                        e.extend(events.clone()); // merge BTreeMap
+                        s.extend(securities.clone()); // merge HashMap
+                    })
+                    .or_insert((events, securities));
+            }
+            Some(Broker::Cathay) => {
+                let (events, securities) = cathay::load_from_csv(&file_path)?;
+                m.entry(Broker::Cathay)
+                    .and_modify(|(e, s)| {
+                        e.extend(events.clone()); // merge BTreeMap
+                        s.extend(securities.clone()); // merge HashMap
+                    })
+                    .or_insert((events, securities));
+            }
             _ => {
                 // This case should ideally not be hit if we are loading from a generic CSV
                 // that contains multiple brokers. The logic is now in load_from_generic_csv.
                 // Let's assume a single file load here will be for a generic, single-broker
                 // file if broker_type is None.
-                return load_from_generic_csv(&file_path);
+                let n = load_from_generic_csv(&file_path)?;
+                for (broker, (events, securities)) in n {
+                    m.entry(broker)
+                        .and_modify(|(e, s)| {
+                            e.extend(events.clone()); // merge BTreeMap
+                            s.extend(securities.clone()); // merge HashMap
+                        })
+                        .or_insert((events, securities));
+                }
             }
         };
+    }
 
-        let broker = broker_type.unwrap(); // Safe to unwrap here due to match arms
+    for (broker, (events, securities)) in m {
         let (agg_events, agg_securities) = result_map.entry(broker).or_default();
 
         for (date, event) in events {

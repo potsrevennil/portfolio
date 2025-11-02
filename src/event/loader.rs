@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use strum_macros::{Display, EnumIter};
 
 use crate::{
     event::{csv_loader, store},
@@ -9,6 +10,7 @@ use crate::{
     split::{service::fixed_splits, store::SplitStore},
 };
 
+#[derive(Debug, Display, EnumIter)]
 pub enum DataSource {
     Ib(Vec<String>),
     Cathay(Vec<String>),
