@@ -84,6 +84,7 @@ fn get_symbol_map() -> HashMap<&'static str, &'static str> {
     map.insert("範例證券14", "ZZ14.TW");
     map.insert("範例證券15", "ZZ15.TWO");
     map.insert("範例證券16", "ZZ16.TW");
+    map.insert("範例證券17", "ZZ17.TW");
     map
 }
 
