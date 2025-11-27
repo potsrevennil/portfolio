@@ -106,6 +106,25 @@ impl fmt::Display for StatementDisplay<'_> {
             "{:<25}: {:>10.2} {}",
             "Total Realized P&L", total_realized_pnl, self.reporting_currency,
         )?;
+
+        let conversion_rate_to_consolidated = YFinanceSource::get_conversion_rate(
+            self.reporting_currency,
+            self.consolidated_reporting_currency,
+            self.prices,
+        );
+
+        let total_value_in_consolidated_currency = total_value * conversion_rate_to_consolidated;
+
+        let portfolio_percentage_of_consolidated = total_value_in_consolidated_currency
+            .checked_div(self.total_consolidated_portfolio_value)
+            .unwrap_or_default()
+            * Decimal::from(100);
+
+        writeln!(
+            f,
+            "{:<25}: {:>10.2}%",
+            "Consolidated Portfolio %", portfolio_percentage_of_consolidated
+        )?;
         writeln!(f, "")?;
 
         let mut holdings_vec: Vec<_> = holdings.iter().collect();
