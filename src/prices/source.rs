@@ -31,9 +31,17 @@ pub struct StockPrice {
 }
 
 // --- Layer 1: Yahoo Finance Data Source ---
-pub struct YFinanceSource;
+pub struct YFinanceSource {
+    client: YfClient,
+}
+
+impl Default for YFinanceSource {
+    fn default() -> Self { Self::new() }
+}
 
 impl YFinanceSource {
+    pub fn new() -> Self { Self { client: YfClient::default() } }
+
     pub fn get_conversion_rate(
         from_currency: Currency,
         to_currency: Currency,
@@ -70,12 +78,12 @@ impl YFinanceSource {
     }
 
     pub async fn fetch_stock_prices(
+        &self,
         symbol: &str,
         start_date: NaiveDate,
         end_date: NaiveDate,
     ) -> Result<Vec<StockPrice>, PriceError> {
-        let client = YfClient::default();
-        let ticker = Ticker::new(&client, symbol.to_string());
+        let ticker = Ticker::new(&self.client, symbol.to_string());
 
         let start_datetime = start_date.and_hms_opt(0, 0, 0).unwrap().and_utc();
         let end_datetime = end_date.and_hms_opt(23, 59, 59).unwrap().and_utc();

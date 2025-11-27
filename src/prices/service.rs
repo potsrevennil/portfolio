@@ -13,11 +13,14 @@ use super::{
 /// and data storage/fetching mechanisms.
 pub struct PriceService {
     store: StockPriceStore,
+    source: YFinanceSource,
 }
 
 impl PriceService {
     /// Creates a new `PriceService` instance.
-    pub fn new(store: StockPriceStore) -> Self { Self { store } }
+    pub fn new(pool: sqlx::SqlitePool) -> Self {
+        Self { store: StockPriceStore::new(pool), source: YFinanceSource::new() }
+    }
 
     /// Retrieves stock prices for specified symbols within a given date range.
     ///
@@ -63,8 +66,7 @@ impl PriceService {
                     // due to parsing issues with yfinance-rs. This should be addressed
                     // with a more robust error handling or data source in the future.
                     let prices_result =
-                        YFinanceSource::fetch_stock_prices(&symbol_owned, start_date, end_date)
-                            .await;
+                        self.source.fetch_stock_prices(&symbol_owned, start_date, end_date).await;
 
                     match prices_result {
                         Ok(prices) => {

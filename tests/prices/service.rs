@@ -12,7 +12,7 @@ use common::create_temp_db;
 async fn test_get_prices_fetches_missing_data() -> anyhow::Result<()> {
     let (pool, _db_file) = create_temp_db().await?;
     let price_store = StockPriceStore::new(pool.clone());
-    let price_service = PriceService::new(price_store.clone());
+    let price_service = PriceService::new(pool.clone());
 
     // 1. Pre-populate the DB with a gap
     let symbol = "AAPL";

@@ -8,7 +8,7 @@ use portfolio::{
         consolidated::{ConsolidatedPortfolio, ConsolidatedPortfolioDisplay},
         Currency, Portfolio,
     },
-    prices::{PriceService, StockPriceStore},
+    prices::PriceService,
     record,
     split::store::SplitStore,
     Order, SortBy,
@@ -134,8 +134,7 @@ async fn main() -> Result<()> {
 
 async fn run_calculation(cli: &Cli) -> Result<()> {
     let pool = db::init_db("sqlite:sqlite.db").await?;
-    let price_store = StockPriceStore::new(pool.clone());
-    let price_service = PriceService::new(price_store.clone());
+    let price_service = PriceService::new(pool.clone());
     let split_store = SplitStore::new(pool.clone());
 
     let (shared_args, sources, output_file) = if let Some(Command::Init(init_args)) = &cli.command {
