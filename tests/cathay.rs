@@ -6,7 +6,7 @@ use std::{
 use chrono::NaiveDate;
 use portfolio::{
     cathay,
-    portfolio::{Event, Security, TransactionKind},
+    portfolio::{Broker, Event, Security, TransactionKind},
     Portfolio,
 };
 use tempfile::NamedTempFile;
@@ -51,7 +51,7 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
     aggregated_events.extend(events_2025);
     aggregated_securities.extend(securities_2025);
 
-    let portfolio = Portfolio::new(aggregated_events, aggregated_securities);
+    let portfolio = Portfolio::new(Broker::Cathay, aggregated_events, aggregated_securities);
 
     let mut total_transactions = 0;
     let mut deposit_count = 0;
