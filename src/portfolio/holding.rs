@@ -82,6 +82,9 @@ pub fn settle_transactions(
                 TransactionKind::CorporateAction => {
                     h.quantity += t.quantity;
                 }
+                TransactionKind::Dividend | TransactionKind::Fee | TransactionKind::Tax => {
+                    h.realized_pnl_value += t.amount + t.commission;
+                }
                 _ => {}
             }
         }
