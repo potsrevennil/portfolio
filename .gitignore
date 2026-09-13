@@ -1,5 +1,10 @@
 .direnv
 target
 .gemini
+
+# Your own securities: the names you hold and the splits they had.
+# securities.example.toml ships in its place.
+securities.toml
+
 *.csv
 sqlite.db

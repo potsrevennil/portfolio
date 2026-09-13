@@ -10,6 +10,7 @@ use crate::{
         portfolio::{Broker, Event, Security, Transaction},
         CsvTransactionRecord,
     },
+    securities::Securities,
 };
 
 pub fn load_from_generic_csv(
@@ -70,6 +71,7 @@ pub fn load_from_generic_csv(
 pub async fn load_from_csv(
     file_paths: Vec<String>,
     broker_type: Option<Broker>,
+    securities: &Securities,
 ) -> Result<HashMap<Broker, (BTreeMap<NaiveDate, Event>, HashMap<String, Security>)>> {
     let mut result_map: HashMap<Broker, (BTreeMap<NaiveDate, Event>, HashMap<String, Security>)> =
         HashMap::new();
@@ -88,7 +90,7 @@ pub async fn load_from_csv(
                     .or_insert((events, securities));
             }
             Some(Broker::Cathay) => {
-                let (events, securities) = cathay::load_from_csv(&file_path)?;
+                let (events, securities) = cathay::load_from_csv(&file_path, &securities.symbols)?;
                 m.entry(Broker::Cathay)
                     .and_modify(|(e, s)| {
                         e.extend(events.clone()); // merge BTreeMap

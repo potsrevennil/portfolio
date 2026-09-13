@@ -11,8 +11,18 @@ use portfolio::{
 };
 use tempfile::NamedTempFile;
 
+/// Invented securities. The parser knows no names of its own; it maps whatever
+/// the config gives it.
+fn symbols() -> HashMap<String, String> {
+    [("範例證券01", "ZZ01.TW"), ("範例證券08", "ZZ08.TW"), ("範例證券11", "ZZ11.TW")]
+        .into_iter()
+        .map(|(name, symbol)| (name.to_string(), symbol.to_string()))
+        .collect()
+}
+
 #[test]
 fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
+    let symbols = symbols();
     let mut aggregated_events: BTreeMap<NaiveDate, Event> = BTreeMap::new();
     let mut aggregated_securities: HashMap<String, Security> = HashMap::new();
 
@@ -39,15 +49,15 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
     let path_2025 = file_2025.path().to_str().unwrap();
 
     // Load transactions from the temporary CSV files and aggregate
-    let (events_2022, securities_2022) = cathay::load_from_csv(path_2022)?;
+    let (events_2022, securities_2022) = cathay::load_from_csv(path_2022, &symbols)?;
     aggregated_events.extend(events_2022);
     aggregated_securities.extend(securities_2022);
 
-    let (events_2024, securities_2024) = cathay::load_from_csv(path_2024)?;
+    let (events_2024, securities_2024) = cathay::load_from_csv(path_2024, &symbols)?;
     aggregated_events.extend(events_2024);
     aggregated_securities.extend(securities_2024);
 
-    let (events_2025, securities_2025) = cathay::load_from_csv(path_2025)?;
+    let (events_2025, securities_2025) = cathay::load_from_csv(path_2025, &symbols)?;
     aggregated_events.extend(events_2025);
     aggregated_securities.extend(securities_2025);
 
@@ -109,5 +119,24 @@ fn test_load_multiple_cathay_files() -> anyhow::Result<()> {
     assert_eq!(first_transaction_2022.symbol, "ZZ01.TW");
     assert_eq!(first_transaction_2022.quantity, rust_decimal::Decimal::from(10));
 
+    Ok(())
+}
+
+/// A name the config does not map fails the import and says which name, rather
+/// than importing the trade under no ticker.
+#[test]
+fn an_unmapped_name_is_rejected() -> anyhow::Result<()> {
+    let csv_content = r#"根據您篩選的結果，總計有1筆資料，當前資料為1-1筆，看更多請至國泰證券app查詢
+股名,日期,成交股數,淨收付金額,買賣別,成交價,成本,手續費,交易稅,融資金額/券擔保品,資自備款/券保證金,利息,稅款,券手續費/標借費,委託書號
+未設定證券,2024/01/01,100,"-2,000",現買,20.00,"2,000",0,0,0,0,0,0,0,A0003"#;
+    let mut file = NamedTempFile::new()?;
+    file.write_all(csv_content.as_bytes())?;
+
+    let error = cathay::load_from_csv(file.path().to_str().unwrap(), &symbols())
+        .expect_err("an unmapped name should not import");
+    assert!(
+        format!("{error:#}").contains("未設定證券"),
+        "error should name the security, got: {error:#}"
+    );
     Ok(())
 }

@@ -66,32 +66,12 @@ pub struct CathayTradeRecord {
     pub tax: Decimal,
 }
 
-fn get_symbol_map() -> HashMap<&'static str, &'static str> {
-    let mut map = HashMap::new();
-    map.insert("範例證券01", "ZZ01.TW");
-    map.insert("範例證券02", "ZZ02.TW");
-    map.insert("範例證券03", "ZZ03.TW");
-    map.insert("範例證券04", "ZZ04.TW");
-    map.insert("範例證券05", "ZZ05.TW");
-    map.insert("範例證券06", "ZZ06.TWO");
-    map.insert("範例證券07", "ZZ07.TWO");
-    map.insert("範例證券08", "ZZ08.TW");
-    map.insert("範例證券09", "ZZ09.TWO");
-    map.insert("範例證券10", "ZZ10.TWO");
-    map.insert("範例證券11", "ZZ11.TW");
-    map.insert("範例證券12", "ZZ12.TW");
-    map.insert("範例證券13", "ZZ13.TW");
-    map.insert("範例證券14", "ZZ14.TW");
-    map.insert("範例證券15", "ZZ15.TWO");
-    map.insert("範例證券16", "ZZ16.TW");
-    map.insert("範例證券17", "ZZ17.TW");
-    map
-}
-
+/// `symbols` maps each 股名 in the export to its ticker; see
+/// `securities::Securities::symbols`.
 pub fn load_from_csv(
     file_path: &str,
+    symbols: &HashMap<String, String>,
 ) -> Result<(BTreeMap<NaiveDate, Event>, HashMap<String, Security>)> {
-    let symbol_map = get_symbol_map();
     let file = File::open(file_path)?;
     let mut reader = BufReader::new(file);
 
@@ -108,8 +88,11 @@ pub fn load_from_csv(
     for result in csv_reader.deserialize() {
         let record: CathayTradeRecord =
             result.context("Failed to deserialize Cathay trade record")?;
-        let symbol = symbol_map.get(record.name.as_str()).ok_or_else(|| {
-            anyhow::anyhow!("Symbol not found for Cathay stock name: {}", record.name)
+        let symbol = symbols.get(&record.name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Symbol not found for Cathay stock name: {}; add it under [symbols]",
+                record.name
+            )
         })?;
 
         let transaction: Transaction = (record.clone(), symbol.to_string()).into();

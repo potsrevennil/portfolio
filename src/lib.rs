@@ -5,6 +5,7 @@ pub mod ib;
 pub mod portfolio;
 pub mod prices;
 pub mod record;
+pub mod securities;
 pub mod split;
 // Re-export necessary items from db
 pub use db::init_db;
@@ -12,4 +13,4 @@ pub use db::init_db;
 pub use portfolio::{Order, Portfolio, SortBy};
 // Re-export necessary items from prices
 pub use prices::{PriceError, PriceService, StockPrice, StockPriceStore, YFinanceSource};
-pub use split::service::{fixed_splits, Splits, StockSplits};
+pub use split::service::{Splits, StockSplits};

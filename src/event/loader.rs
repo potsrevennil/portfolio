@@ -7,7 +7,8 @@ use strum_macros::{Display, EnumIter};
 use crate::{
     event::{csv_loader, store},
     portfolio::portfolio::{Broker, Event, Security},
-    split::{service::fixed_splits, store::SplitStore},
+    securities::Securities,
+    split::store::SplitStore,
 };
 
 #[derive(Debug, Display, EnumIter)]
@@ -21,6 +22,7 @@ pub async fn load(
     sources: Vec<DataSource>,
     output_file: Option<String>,
     split_store: &SplitStore,
+    securities: &Securities,
 ) -> Result<HashMap<Broker, (BTreeMap<NaiveDate, Event>, HashMap<String, Security>)>> {
     let mut broker_data: HashMap<Broker, (BTreeMap<NaiveDate, Event>, HashMap<String, Security>)> =
         HashMap::new();
@@ -29,12 +31,15 @@ pub async fn load(
     for source in sources {
         let source_broker_data = match source {
             DataSource::Ib(files) => {
-                csv_loader::load_from_csv(files, Some(Broker::InteractiveBrokers)).await?
+                csv_loader::load_from_csv(files, Some(Broker::InteractiveBrokers), securities)
+                    .await?
             }
             DataSource::Cathay(files) => {
-                csv_loader::load_from_csv(files, Some(Broker::Cathay)).await?
+                csv_loader::load_from_csv(files, Some(Broker::Cathay), securities).await?
             }
-            DataSource::Generic(files) => csv_loader::load_from_csv(files, None).await?,
+            DataSource::Generic(files) => {
+                csv_loader::load_from_csv(files, None, securities).await?
+            }
         };
 
         for (broker, (events, securities)) in source_broker_data {
@@ -48,7 +53,7 @@ pub async fn load(
     }
 
     // --- Prepare for Storing (Transactions and Splits) ---
-    let hardcoded_splits = fixed_splits();
+    let configured_splits = securities.stock_splits();
     let mut all_events_for_storing: BTreeMap<NaiveDate, Event> = BTreeMap::new();
     let mut all_securities_for_storing: HashMap<String, Security> = HashMap::new();
 
@@ -63,8 +68,8 @@ pub async fn load(
         }
         all_securities_for_storing.extend(securities.clone());
     }
-    // Merge hardcoded splits into the collection for storing
-    for (date, splits) in hardcoded_splits {
+    // Merge configured splits into the collection for storing
+    for (date, splits) in configured_splits {
         all_events_for_storing.entry(date).or_default().splits.extend(splits);
     }
 

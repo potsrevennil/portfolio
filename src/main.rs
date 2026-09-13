@@ -10,6 +10,7 @@ use portfolio::{
     },
     prices::PriceService,
     record,
+    securities::Securities,
     split::store::SplitStore,
     Order, SortBy,
 };
@@ -133,6 +134,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_calculation(cli: &Cli) -> Result<()> {
+    let securities = Securities::load(Securities::PATH)?;
     let pool = db::init_db("sqlite:sqlite.db").await?;
     let price_service = PriceService::new(pool.clone());
     let split_store = SplitStore::new(pool.clone());
@@ -152,7 +154,7 @@ async fn run_calculation(cli: &Cli) -> Result<()> {
         )
     };
 
-    let broker_data = event::load(sources, output_file, &split_store).await?;
+    let broker_data = event::load(sources, output_file, &split_store, &securities).await?;
     let mut portfolios = ConsolidatedPortfolio::from(
         broker_data.into_iter().map(|(b, (es, ss))| (b, Portfolio::new(b, es, ss))).collect(),
     );

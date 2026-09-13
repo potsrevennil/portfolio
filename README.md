@@ -42,6 +42,16 @@ All required dependencies are specified in the `flake.nix` configuration for rep
 
 This tool has two main commands: `init` and the default calculation/display command.
 
+### Configure Your Securities
+
+Some exports name a security rather than giving its ticker, and not every split shows up in a broker report. The name-to-ticker mapping and those splits come from `securities.toml` in the working directory, which is read on every run:
+
+```sh
+cp securities.example.toml securities.toml
+```
+
+The example documents the format with invented securities. Your own `securities.toml` is gitignored.
+
 ### Initialize from Broker Data
 
 To process your broker's transaction report for the first time or to incorporate new transactions, use the `init` command.
