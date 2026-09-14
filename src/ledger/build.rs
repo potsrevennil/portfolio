@@ -3,7 +3,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Write as _,
-    path::Path,
 };
 
 use anyhow::{Context, Result};
@@ -61,13 +60,11 @@ fn app_balances(
 }
 
 pub fn build(opts: &Args) -> Result<Summary> {
-    let ledger = Path::new(&opts.ledger_dir);
+    let ledger = opts.ledger_dir.as_path();
     let out_dir = ledger.join("generated");
     std::fs::create_dir_all(&out_dir)?;
 
-    let chart = accounts::Chart::load(
-        ledger.join("mapping.toml").to_str().context("non-utf8 ledger path")?,
-    )?;
+    let chart = accounts::Chart::load(ledger.join("mapping.toml"))?;
     // Accounts the build has to reach by role rather than by name, since the
     // name is the config's to choose.
     let savings: &str = &chart.institution.primary;
@@ -87,7 +84,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
     let statements: Vec<statements::cathay::BankStatement> = opts
         .cathay_statements
         .iter()
-        .map(|p| statements::cathay::load(p))
+        .map(statements::cathay::load)
         .collect::<Result<_>>()?;
 
     // Flatten to (statement index, line index) so lines from both accounts can be
@@ -289,7 +286,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
             statement.account_no,
             statement.account_kind,
             statement.lines.len(),
-            opts.cathay_statements[si]
+            opts.cathay_statements[si].display()
         )?;
         if !backfilling {
             // Dated the day before, so the assertion below still checks something:

@@ -1,19 +1,21 @@
 //! Command-line arguments for building the ledger.
 
+use std::path::PathBuf;
+
 /// What to import, and where the ledger lives.
 #[derive(clap::Parser, Debug)]
 pub struct Args {
     /// Cathay bank statement exports (活存 / 投資)
     #[arg(long, num_args = 1..)]
-    pub cathay_statements: Vec<String>,
+    pub cathay_statements: Vec<PathBuf>,
 
     /// 天天記帳 收支 export (income/expense)
     #[arg(long)]
-    pub daily_income_expense: Option<String>,
+    pub daily_income_expense: Option<PathBuf>,
 
     /// 天天記帳 轉帳 export (transfers)
     #[arg(long)]
-    pub daily_transfers: Option<String>,
+    pub daily_transfers: Option<PathBuf>,
 
     /// Also emit 天天記帳 history from before the statements begin
     #[arg(long = "daily-backfill")]
@@ -21,5 +23,5 @@ pub struct Args {
 
     /// Directory holding the Beancount ledger
     #[arg(long, default_value = "ledger")]
-    pub ledger_dir: String,
+    pub ledger_dir: PathBuf,
 }

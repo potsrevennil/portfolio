@@ -4,6 +4,8 @@
 //! needed — most money movement lives in the transfer file, and a balance cannot
 //! be reconciled from 收支 alone.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -174,14 +176,19 @@ impl Entry {
 ///
 /// 收支: 0日期 1類別 2大類別 3金額 4幣別 5成員 6帳戶 7標籤 8備註 9收支區分 10上次更新 11UUID
 /// 轉帳: 0日期 1從帳戶 2轉出金額 3幣別 4到帳戶 5轉入金額 6幣別 7標籤 8備註 9上次更新 10UUID
-pub fn load_entries(income_expense: &str, transfers: &str) -> Result<Vec<Entry>> {
+pub fn load_entries(
+    income_expense: impl AsRef<Path>,
+    transfers: impl AsRef<Path>,
+) -> Result<Vec<Entry>> {
+    let income_expense = income_expense.as_ref();
+    let transfers = transfers.as_ref();
     let mut out = Vec::new();
 
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(true)
         .from_path(income_expense)
-        .with_context(|| format!("opening {}", income_expense))?;
+        .with_context(|| format!("opening {}", income_expense.display()))?;
     for result in rdr.records() {
         let rec = result?;
         let account = rec.get(6).unwrap_or("").trim();
@@ -205,7 +212,7 @@ pub fn load_entries(income_expense: &str, transfers: &str) -> Result<Vec<Entry>>
         .has_headers(true)
         .flexible(true)
         .from_path(transfers)
-        .with_context(|| format!("opening {}", transfers))?;
+        .with_context(|| format!("opening {}", transfers.display()))?;
     for result in rdr.records() {
         let rec = result?;
         let date = match rec.get(0).map(str::trim) {

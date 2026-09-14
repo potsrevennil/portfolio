@@ -7,6 +7,8 @@
 //! One row per cash movement, with a running 餘額 column. That running balance
 //! is what lets the ledger assert a figure the transactions must agree with.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -119,12 +121,13 @@ pub fn info_names_account(info: &str, account_no: &str) -> bool {
     false
 }
 
-pub fn load(file_path: &str) -> Result<BankStatement> {
+pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
+    let file_path = file_path.as_ref();
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(false)
         .flexible(true)
         .from_path(file_path)
-        .with_context(|| format!("opening {}", file_path))?;
+        .with_context(|| format!("opening {}", file_path.display()))?;
 
     let mut account_no = String::new();
     let mut account_kind = String::new();
@@ -174,7 +177,7 @@ pub fn load(file_path: &str) -> Result<BankStatement> {
     }
 
     if lines.is_empty() {
-        anyhow::bail!("no statement rows found in {}", file_path);
+        anyhow::bail!("no statement rows found in {}", file_path.display());
     }
 
     // The export is newest-first.

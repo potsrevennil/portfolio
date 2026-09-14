@@ -7,6 +7,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     fs,
     ops::Deref,
+    path::Path,
     str::FromStr,
 };
 
@@ -217,10 +218,13 @@ pub struct Chart {
 }
 
 impl Chart {
-    pub fn load(path: &str) -> Result<Self> {
-        let text = fs::read_to_string(path).with_context(|| format!("reading {}", path))?;
-        let chart: Self = toml::from_str(&text).with_context(|| format!("parsing {}", path))?;
-        chart.validate().with_context(|| format!("in {}", path))?;
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let text =
+            fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let chart: Self =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        chart.validate().with_context(|| format!("in {}", path.display()))?;
         Ok(chart)
     }
 

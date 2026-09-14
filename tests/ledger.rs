@@ -41,10 +41,7 @@ fn flow_records_carry_their_app_uuid() -> anyhow::Result<()> {
     ))?;
     let transfers = temp("日期,從帳戶,轉出金額,幣別,到帳戶,轉入金額,幣別,標籤,備註,上次更新,UUID\n")?;
 
-    let entries = daily::load_entries(
-        income_expense.path().to_str().unwrap(),
-        transfers.path().to_str().unwrap(),
-    )?;
+    let entries = daily::load_entries(income_expense.path(), transfers.path())?;
 
     let [daily::Entry::Flow { id, category, .. }] = entries.as_slice() else {
         panic!("expected one 收支 record, got {:?}", entries);
@@ -69,10 +66,7 @@ fn the_subject_view_keeps_each_side_in_its_own_currency() -> anyhow::Result<()> 
         "20240417,銀行,3000,TWD,交易所,100.00,USD,,,2024-04-17 00:00:00,B\n",
     ))?;
 
-    let entries = daily::load_entries(
-        income_expense.path().to_str().unwrap(),
-        transfers.path().to_str().unwrap(),
-    )?;
+    let entries = daily::load_entries(income_expense.path(), transfers.path())?;
 
     let bank = daily::view(&entries, "銀行");
     let [flow, sent] = &bank[..] else {
@@ -105,7 +99,7 @@ fn blank_override_account_is_ignored() -> anyhow::Result<()> {
          \"DROP\" = {{ account = \"\" }}\n"
     ))?;
 
-    let chart = Chart::load(mapping.path().to_str().unwrap())?;
+    let chart = Chart::load(mapping.path())?;
     let kept = chart.override_for("KEEP").expect("KEEP is corrected");
     assert_eq!(&*kept.account, "Expenses:Investment:Loss");
     assert_eq!(kept.narration, "虧損");
@@ -119,7 +113,7 @@ fn blank_override_account_is_ignored() -> anyhow::Result<()> {
 #[test]
 fn a_config_missing_required_accounts_is_rejected() -> anyhow::Result<()> {
     let mapping = temp("[expenses]\n\"飲食\" = \"Expenses:Food\"\n")?;
-    let error = Chart::load(mapping.path().to_str().unwrap())
+    let error = Chart::load(mapping.path())
         .expect_err("a config with no institution should not load");
     assert!(
         format!("{error:#}").contains("institution.app_account"),
@@ -137,7 +131,7 @@ fn a_non_beancount_account_is_rejected_at_load() -> anyhow::Result<()> {
         r#"expense = "Expenses:Uncategorized""#,
         r#"expense = "Spending:Uncategorized""#,
     ))?;
-    let error = Chart::load(mapping.path().to_str().unwrap())
+    let error = Chart::load(mapping.path())
         .expect_err("a non-Beancount root should not load");
     let shown = format!("{error:#}");
     assert!(shown.contains("Spending:Uncategorized"), "error should name the value, got: {shown}");
