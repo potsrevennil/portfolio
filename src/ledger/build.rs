@@ -11,7 +11,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
 use super::{
-    accounts::{self, Account, AccountType},
+    accounts::{self, AccountType},
     args::Args,
     daily,
     emit::{contra_posting, emit_daily_accounts, narration_for, resolve},
@@ -70,9 +70,9 @@ pub fn build(opts: &Args) -> Result<Summary> {
     )?;
     // Accounts the build has to reach by role rather than by name, since the
     // name is the config's to choose.
-    let savings = chart.institution.primary.as_str();
-    let investment = chart.institution.settlement.as_str();
-    let clearing = chart.institution.clearing.as_str();
+    let savings: &str = &chart.institution.primary;
+    let investment: &str = &chart.institution.settlement;
+    let clearing: &str = &chart.institution.clearing;
     let settlement_source = chart.institution.settlement_app_account.clone();
 
     // Both exports are read once, here. 天天記帳 lumps the two Cathay accounts
@@ -199,7 +199,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
             let opening_of = |want: &str| -> Decimal {
                 statements
                     .iter()
-                    .find(|s| statement_account(&chart, &s.account_no).map(|a| a.as_str() == want).unwrap_or(false))
+                    .find(|s| statement_account(&chart, &s.account_no).map(|a| a.as_ref() == want).unwrap_or(false))
                     .map(|s| s.opening_balance())
                     .unwrap_or_default()
             };
@@ -278,7 +278,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
     }
 
     for (si, statement) in statements.iter().enumerate() {
-        let account = statement_account(&chart, &statement.account_no)?.as_str();
+        let account: &str = statement_account(&chart, &statement.account_no)?;
         let currency = &statement.currency;
         used_accounts.insert(account.to_string());
         let first = statement.lines.first().expect("load_bank_statement rejects empty statements");
@@ -326,7 +326,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
 
             if let Some(&(psi, pli)) = partner.get(&(si, li)) {
                 n_internal += 1;
-                let far_account = statement_account(&chart, &statements[psi].account_no)?.as_str();
+                let far_account: &str = statement_account(&chart, &statements[psi].account_no)?;
                 used_accounts.insert(far_account.to_string());
                 postings.push(writer::Posting::new(
                     far_account,
@@ -353,7 +353,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
                 }
             } else {
                 n_fallback += 1;
-                let target = fallback_account(&chart, &line.description, line.delta()).as_str();
+                let target: &str = fallback_account(&chart, &line.description, line.delta());
                 used_accounts.insert(target.to_string());
                 postings.push(writer::Posting::new(target, -line.delta(), currency));
             }
@@ -432,7 +432,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
         .unwrap_or(anchor);
     let assert_date = last_date.succ_opt().unwrap_or(last_date);
     let bank_asserted: BTreeSet<&str> =
-        chart.institution.accounts.values().map(Account::as_str).collect();
+        chart.institution.accounts.values().map(|a| a.as_ref()).collect();
     let leaf_bal = app_balances(&entries, &chart);
     let accounts: BTreeSet<&str> = leaf_bal.keys().map(|(a, _)| a.as_str()).collect();
     let mut asserts = String::new();

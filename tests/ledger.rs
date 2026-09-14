@@ -107,7 +107,7 @@ fn blank_override_account_is_ignored() -> anyhow::Result<()> {
 
     let chart = Chart::load(mapping.path().to_str().unwrap())?;
     let kept = chart.override_for("KEEP").expect("KEEP is corrected");
-    assert_eq!(kept.account.as_str(), "Expenses:Investment:Loss");
+    assert_eq!(&*kept.account, "Expenses:Investment:Loss");
     assert_eq!(kept.narration, "虧損");
     assert!(chart.override_for("DROP").is_none());
     assert!(chart.override_for("ABSENT").is_none());

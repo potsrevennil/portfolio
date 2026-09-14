@@ -13,10 +13,8 @@ use std::{
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// One of Beancount's five account roots. The root is the part of an account
-/// name that carries meaning beyond naming — it fixes the sign convention and
-/// which statement the account lands on — so it is worth lifting out of the
-/// string rather than re-deriving with `split(':')` at each use.
+/// One of Beancount's five account roots — the part of an account name that
+/// fixes its sign convention and which statement it lands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountType {
     Assets,
@@ -44,31 +42,18 @@ impl FromStr for AccountType {
 
 /// A Beancount account name, e.g. `Assets:Bank:Savings`.
 ///
-/// Its own type rather than a bare `String` so a field that holds an account
-/// cannot be mixed up with one holding an app-side account name or a bank's own
-/// wording, and so its [`AccountType`] is available without re-splitting the
-/// string. It parses through `FromStr`, which is also how it deserializes and
-/// displays: an empty value is allowed and means "deliberately unmapped"; any
-/// non-empty value must be a colon path whose first segment is one of the five
-/// roots, or it is rejected at load with the offending name.
+/// Its own type rather than a bare `String` so a field holding an account cannot
+/// be mixed up with one holding an app-side name or a bank's wording. It parses
+/// through `FromStr` (also how it deserializes): an empty value is allowed and
+/// means "deliberately unmapped"; any non-empty value must be a colon path whose
+/// first segment is one of the five roots, or it is rejected with the name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "String")]
 pub struct Account(String);
 
-impl Account {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// The root this account hangs off, or `None` for the empty "unmapped" one.
-    pub fn account_type(&self) -> Option<AccountType> {
-        self.split(':').next().unwrap_or("").parse().ok()
-    }
-}
-
-/// An `Account` is a `str` wherever one is wanted — `is_empty`, `split`,
-/// `to_string`, `== "Assets:…"` — so no wrapper method or inherent `Display` is
-/// needed for each. `AsRef<str>` is its companion for the `AsRef`-bound APIs.
+/// `Deref` and `AsRef` let an `Account` stand in for a `str` — `is_empty`,
+/// `split`, `to_string`, comparison — so it carries no accessor or `Display` of
+/// its own.
 impl Deref for Account {
     type Target = str;
 
