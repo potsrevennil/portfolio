@@ -23,8 +23,8 @@ pub(super) fn statement_account<'a>(chart: &'a Chart, account_no: &str) -> Resul
 ///
 /// A bank prints its own wording for interest and fees, so the descriptions
 /// worth recognising differ per institution and are configured rather than
-/// compiled in. Anything unrecognised is bucketed by direction, which is all the
-/// statement alone can tell us.
+/// compiled in. Anything unrecognised is bucketed by direction, which is all
+/// the statement alone can tell us.
 pub(super) fn fallback_account<'a>(
     chart: &'a Chart,
     description: &str,

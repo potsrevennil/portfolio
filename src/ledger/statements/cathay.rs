@@ -66,16 +66,14 @@ impl BankStatement {
     }
 }
 
-/// `−` (U+2212) is the export's placeholder for an absent value. A real negative
-/// uses an ASCII hyphen, so only the bare placeholder maps to zero.
+/// `−` (U+2212) is the export's placeholder for an absent value. A real
+/// negative uses an ASCII hyphen, so only the bare placeholder maps to zero.
 fn parse_amount(s: &str) -> Result<Decimal> {
     let t = s.trim();
     if t.is_empty() || t == "−" || t == "-" {
         return Ok(Decimal::ZERO);
     }
-    t.replace(',', "")
-        .parse::<Decimal>()
-        .with_context(|| format!("unparseable amount {:?}", t))
+    t.replace(',', "").parse::<Decimal>().with_context(|| format!("unparseable amount {:?}", t))
 }
 
 fn parse_slash_date(s: &str) -> Result<NaiveDate> {
@@ -87,16 +85,20 @@ fn parse_slash_date(s: &str) -> Result<NaiveDate> {
 fn clean(s: &str) -> String {
     let t = s.replace(['\n', '\r'], " ");
     let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
-    if t == "−" { String::new() } else { t }
+    if t == "−" {
+        String::new()
+    } else {
+        t
+    }
 }
 
 /// Does 交易資訊 name this account?
 ///
 /// Outgoing rows carry the counterparty in full (`(013)0000123456789012`) but
-/// incoming rows mask the middle (`(013)0000123***789012`), so a plain substring
-/// test only ever sees one side of an internal transfer. Compare digit runs
-/// positionally instead, treating `*` as a wildcard, with leading zeros stripped
-/// from both sides since the export zero-pads inconsistently.
+/// incoming rows mask the middle (`(013)0000123***789012`), so a plain
+/// substring test only ever sees one side of an internal transfer. Compare
+/// digit runs positionally instead, treating `*` as a wildcard, with leading
+/// zeros stripped from both sides since the export zero-pads inconsistently.
 pub fn info_names_account(info: &str, account_no: &str) -> bool {
     let want = account_no.trim_start_matches('0');
     if want.is_empty() {

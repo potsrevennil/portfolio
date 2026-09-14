@@ -42,8 +42,8 @@ impl fmt::Display for Summary {
         }
         writeln!(
             f,
-            "  {} categorised from 天天記帳, {} internal transfers paired, {} in transit \
-             via clearing, {} uncategorised",
+            "  {} categorised from 天天記帳, {} internal transfers paired, {} in transit via \
+             clearing, {} uncategorised",
             self.categorised, self.internal, self.in_transit, self.uncategorised
         )?;
         if self.other_accounts > 0 {
@@ -63,8 +63,8 @@ impl fmt::Display for Summary {
         if self.unmatched_records > 0 {
             writeln!(
                 f,
-                "  {} 天天記帳 records matched no statement line (far side kept, \
-                 near side uncategorised)",
+                "  {} 天天記帳 records matched no statement line (far side kept, near side \
+                 uncategorised)",
                 self.unmatched_records
             )?;
         }

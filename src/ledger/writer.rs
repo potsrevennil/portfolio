@@ -32,12 +32,7 @@ impl Posting {
     }
 
     pub fn inferred(account: impl Into<String>) -> Self {
-        Posting {
-            account: account.into(),
-            amount: None,
-            currency: String::new(),
-            price: None,
-        }
+        Posting { account: account.into(), amount: None, currency: String::new(), price: None }
     }
 }
 

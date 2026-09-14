@@ -2,11 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use super::{
-    accounts, daily,
-    names::fallback_account,
-    writer,
-};
+use super::{accounts, daily, names::fallback_account, writer};
 
 /// A per-record correction, when mapping.toml names this record.
 ///
@@ -28,13 +24,10 @@ fn corrected(
 
 /// What to narrate a corrected record as, falling back to the app's own 備註.
 ///
-/// Only for paths where one record becomes one transaction. A statement line can
-/// match several records at once, and there the narration describes the line.
-pub(super) fn narration_for<'a>(
-    chart: &'a accounts::Chart,
-    id: &str,
-    memo: &'a str,
-) -> &'a str {
+/// Only for paths where one record becomes one transaction. A statement line
+/// can match several records at once, and there the narration describes the
+/// line.
+pub(super) fn narration_for<'a>(chart: &'a accounts::Chart, id: &str, memo: &'a str) -> &'a str {
     match chart.override_for(id) {
         Some(found) if !found.narration.is_empty() => found.narration.as_str(),
         _ => memo,
@@ -53,15 +46,11 @@ pub(super) fn resolve(
         return found;
     }
     let found = match &event.contra {
-        daily::Contra::Category(name) => {
-            chart.category(name, event.delta.is_sign_positive())
-        }
+        daily::Contra::Category(name) => chart.category(name, event.delta.is_sign_positive()),
         daily::Contra::Account(name) => chart.account(name),
     };
     match found {
-        Some(t) => {
-            (t.account.to_string(), t.tags.iter().map(|s| writer::tag_name(s)).collect())
-        }
+        Some(t) => (t.account.to_string(), t.tags.iter().map(|s| writer::tag_name(s)).collect()),
         None => {
             let raw = match &event.contra {
                 daily::Contra::Category(n) | daily::Contra::Account(n) => n,
@@ -166,16 +155,10 @@ pub(super) fn emit_daily_accounts(
                     },
                 };
                 let narration = narration_for(chart, id, memo);
-                out.push_str(&writer::transaction(
-                    *date,
-                    category,
-                    narration,
-                    &tags,
-                    &[
-                        writer::Posting::new(asset, *amount, currency),
-                        writer::Posting::new(contra, -amount, currency),
-                    ],
-                ));
+                out.push_str(&writer::transaction(*date, category, narration, &tags, &[
+                    writer::Posting::new(asset, *amount, currency),
+                    writer::Posting::new(contra, -amount, currency),
+                ]));
                 out.push('\n');
                 count += 1;
             }
@@ -204,13 +187,10 @@ pub(super) fn emit_daily_accounts(
                 } else {
                     credit
                 };
-                out.push_str(&writer::transaction(
-                    *date,
-                    "轉帳",
-                    memo,
-                    &[],
-                    &[writer::Posting::new(source, -sent, out_currency), credit],
-                ));
+                out.push_str(&writer::transaction(*date, "轉帳", memo, &[], &[
+                    writer::Posting::new(source, -sent, out_currency),
+                    credit,
+                ]));
                 out.push('\n');
                 count += 1;
             }
@@ -253,13 +233,19 @@ mod tests {
         }
     }
 
-    /// The correction has to reach the emitted postings, not just parse. Without
-    /// this, the two halves are each tested and the join between them is not.
+    /// The correction has to reach the emitted postings, not just parse.
+    /// Without this, the two halves are each tested and the join between
+    /// them is not.
     #[test]
     fn an_override_replaces_the_account_tag_and_narration() {
         let (mut used, mut unmapped, mut overrides) = Default::default();
-        let (out, count) =
-            emit_daily_accounts(&[flow("LOSS")], &chart(), &mut used, &mut unmapped, &mut overrides);
+        let (out, count) = emit_daily_accounts(
+            &[flow("LOSS")],
+            &chart(),
+            &mut used,
+            &mut unmapped,
+            &mut overrides,
+        );
 
         assert_eq!(count, 1);
         assert!(out.contains("Expenses:Investment:Loss"), "override account missing:\n{out}");

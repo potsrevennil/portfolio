@@ -1,8 +1,8 @@
 //! Parser for 天天記帳 ("daily bookkeeping") exports.
 //!
-//! The app exports two files: 收支 (income/expense) and 轉帳 (transfers). Both are
-//! needed — most money movement lives in the transfer file, and a balance cannot
-//! be reconciled from 收支 alone.
+//! The app exports two files: 收支 (income/expense) and 轉帳 (transfers). Both
+//! are needed — most money movement lives in the transfer file, and a balance
+//! cannot be reconciled from 收支 alone.
 
 use std::path::Path;
 
@@ -80,16 +80,7 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
             }
             // A transfer between two of the subject's own accounts is recorded
             // once but seen twice, from each side.
-            Entry::Transfer {
-                date,
-                from,
-                out: sent,
-                out_currency,
-                to,
-                inn,
-                in_currency,
-                memo,
-            } => {
+            Entry::Transfer { date, from, out: sent, out_currency, to, inn, in_currency, memo } => {
                 if from == subject {
                     out.push(AppEvent {
                         date: *date,
@@ -172,10 +163,12 @@ impl Entry {
 ///
 /// The only place either file's layout is written down. Both are read
 /// positionally rather than by header: 幣別 appears twice in the 轉帳 file, and
-/// any header-keyed parser silently collapses the two currency columns into one.
+/// any header-keyed parser silently collapses the two currency columns into
+/// one.
 ///
-/// 收支: 0日期 1類別 2大類別 3金額 4幣別 5成員 6帳戶 7標籤 8備註 9收支區分 10上次更新 11UUID
-/// 轉帳: 0日期 1從帳戶 2轉出金額 3幣別 4到帳戶 5轉入金額 6幣別 7標籤 8備註 9上次更新 10UUID
+/// 收支: 0日期 1類別 2大類別 3金額 4幣別 5成員 6帳戶 7標籤 8備註 9收支區分
+/// 10上次更新 11UUID 轉帳: 0日期 1從帳戶 2轉出金額 3幣別 4到帳戶 5轉入金額
+/// 6幣別 7標籤 8備註 9上次更新 10UUID
 pub fn load_entries(
     income_expense: impl AsRef<Path>,
     transfers: impl AsRef<Path>,

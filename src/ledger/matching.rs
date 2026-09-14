@@ -43,11 +43,9 @@ fn search(
 }
 
 /// For each line, the app records that account for it. `None` means the line
-/// has no counterpart in 天天記帳 and must fall back to an uncategorised posting.
-pub fn match_lines(
-    lines: &[(NaiveDate, Decimal)],
-    events: &[AppEvent],
-) -> Vec<Option<Vec<usize>>> {
+/// has no counterpart in 天天記帳 and must fall back to an uncategorised
+/// posting.
+pub fn match_lines(lines: &[(NaiveDate, Decimal)], events: &[AppEvent]) -> Vec<Option<Vec<usize>>> {
     let mut assigned: Vec<Option<Vec<usize>>> = vec![None; lines.len()];
     let mut used = vec![false; events.len()];
 

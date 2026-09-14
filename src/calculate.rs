@@ -152,8 +152,7 @@ async fn report(
     let end = Utc::now().date_naive();
     let start = args.from.as_ref().map_or(end, |from| from.start_from(end));
 
-    let prices =
-        portfolios.get_prices(args.reporting_currency, start, end, &price_service).await?;
+    let prices = portfolios.get_prices(args.reporting_currency, start, end, &price_service).await?;
     portfolios.generate_daily_statements(start, end, &prices);
     portfolios.calculate_totals(args.reporting_currency, &prices);
 
@@ -163,14 +162,11 @@ async fn report(
         _ => unreachable!("clap accepts only + or -"),
     };
 
-    println!(
-        "{}",
-        ConsolidatedPortfolioDisplay {
-            consolidated_portfolio: &portfolios,
-            sort_by: args.sort_by,
-            order,
-            prices: &prices,
-        }
-    );
+    println!("{}", ConsolidatedPortfolioDisplay {
+        consolidated_portfolio: &portfolios,
+        sort_by: args.sort_by,
+        order,
+        prices: &prices,
+    });
     Ok(())
 }

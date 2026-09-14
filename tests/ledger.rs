@@ -39,7 +39,8 @@ fn flow_records_carry_their_app_uuid() -> anyhow::Result<()> {
         "20240101,其他,,250,USD,自己,交易所,,,收,2024-01-01 00:00:00,",
         "00000000-0000-4000-8000-000000000001\n",
     ))?;
-    let transfers = temp("日期,從帳戶,轉出金額,幣別,到帳戶,轉入金額,幣別,標籤,備註,上次更新,UUID\n")?;
+    let transfers =
+        temp("日期,從帳戶,轉出金額,幣別,到帳戶,轉入金額,幣別,標籤,備註,上次更新,UUID\n")?;
 
     let entries = daily::load_entries(income_expense.path(), transfers.path())?;
 
@@ -93,10 +94,8 @@ fn the_subject_view_keeps_each_side_in_its_own_currency() -> anyhow::Result<()> 
 #[test]
 fn blank_override_account_is_ignored() -> anyhow::Result<()> {
     let mapping = temp(&format!(
-        "{REQUIRED}\n\
-         [overrides]\n\
-         \"KEEP\" = {{ account = \"Expenses:Investment:Loss\", narration = \"虧損\" }}\n\
-         \"DROP\" = {{ account = \"\" }}\n"
+        "{REQUIRED}\n[overrides]\n\"KEEP\" = {{ account = \"Expenses:Investment:Loss\", narration \
+         = \"虧損\" }}\n\"DROP\" = {{ account = \"\" }}\n"
     ))?;
 
     let chart = Chart::load(mapping.path())?;
@@ -113,8 +112,8 @@ fn blank_override_account_is_ignored() -> anyhow::Result<()> {
 #[test]
 fn a_config_missing_required_accounts_is_rejected() -> anyhow::Result<()> {
     let mapping = temp("[expenses]\n\"飲食\" = \"Expenses:Food\"\n")?;
-    let error = Chart::load(mapping.path())
-        .expect_err("a config with no institution should not load");
+    let error =
+        Chart::load(mapping.path()).expect_err("a config with no institution should not load");
     assert!(
         format!("{error:#}").contains("institution.app_account"),
         "error should name the missing field, got: {error:#}"
@@ -131,8 +130,7 @@ fn a_non_beancount_account_is_rejected_at_load() -> anyhow::Result<()> {
         r#"expense = "Expenses:Uncategorized""#,
         r#"expense = "Spending:Uncategorized""#,
     ))?;
-    let error = Chart::load(mapping.path())
-        .expect_err("a non-Beancount root should not load");
+    let error = Chart::load(mapping.path()).expect_err("a non-Beancount root should not load");
     let shown = format!("{error:#}");
     assert!(shown.contains("Spending:Uncategorized"), "error should name the value, got: {shown}");
     assert!(shown.contains("Assets"), "error should name the roots allowed, got: {shown}");

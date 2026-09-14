@@ -43,11 +43,12 @@ impl FromStr for AccountType {
 
 /// A Beancount account name, e.g. `Assets:Bank:Savings`.
 ///
-/// Its own type rather than a bare `String` so a field holding an account cannot
-/// be mixed up with one holding an app-side name or a bank's wording. It parses
-/// through `FromStr` (also how it deserializes): an empty value is allowed and
-/// means "deliberately unmapped"; any non-empty value must be a colon path whose
-/// first segment is one of the five roots, or it is rejected with the name.
+/// Its own type rather than a bare `String` so a field holding an account
+/// cannot be mixed up with one holding an app-side name or a bank's wording. It
+/// parses through `FromStr` (also how it deserializes): an empty value is
+/// allowed and means "deliberately unmapped"; any non-empty value must be a
+/// colon path whose first segment is one of the five roots, or it is rejected
+/// with the name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "String")]
 pub struct Account(String);
@@ -58,15 +59,11 @@ pub struct Account(String);
 impl Deref for Account {
     type Target = str;
 
-    fn deref(&self) -> &str {
-        &self.0
-    }
+    fn deref(&self) -> &str { &self.0 }
 }
 
 impl AsRef<str> for Account {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
+    fn as_ref(&self) -> &str { &self.0 }
 }
 
 impl FromStr for Account {
@@ -82,8 +79,8 @@ impl FromStr for Account {
         }
         if name.split(':').next().unwrap_or("").parse::<AccountType>().is_err() {
             return Err(format!(
-                "{name:?} is not a Beancount account: the first segment must be one of \
-                 Assets, Liabilities, Income, Expenses, Equity"
+                "{name:?} is not a Beancount account: the first segment must be one of Assets, \
+                 Liabilities, Income, Expenses, Equity"
             ));
         }
         if name.split(':').any(str::is_empty) {
@@ -96,15 +93,13 @@ impl FromStr for Account {
 impl TryFrom<String> for Account {
     type Error = String;
 
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.parse()
-    }
+    fn try_from(s: String) -> Result<Self, Self::Error> { s.parse() }
 }
 
 /// An account plus the tags that carry the detail the shallow account tree no
-/// longer encodes. Written in the config as a bare account string when it has no
-/// tags, or as `{ account = "...", tags = [...] }` when it does — one shape to
-/// the code either way.
+/// longer encodes. Written in the config as a bare account string when it has
+/// no tags, or as `{ account = "...", tags = [...] }` when it does — one shape
+/// to the code either way.
 #[derive(Debug, Default, Deserialize)]
 #[serde(from = "Raw")]
 pub struct Mapping {
@@ -112,8 +107,8 @@ pub struct Mapping {
     pub tags: Vec<String>,
 }
 
-/// A mapping as written: a bare account, or an account with tags. Only a parsing
-/// shape — the code sees the flattened `Mapping`, never this.
+/// A mapping as written: a bare account, or an account with tags. Only a
+/// parsing shape — the code sees the flattened `Mapping`, never this.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Raw {
@@ -136,10 +131,11 @@ impl From<Raw> for Mapping {
 
 /// A single record the category mapping gets wrong.
 ///
-/// 天天記帳 offers one category per record, so an event the app can only file as
-/// 投資 or 其他 may really be something the category has no word for. Keyed by the
-/// record's UUID — the export's last column, which is stable across re-exports —
-/// so the correction survives regeneration without editing generated files.
+/// 天天記帳 offers one category per record, so an event the app can only file
+/// as 投資 or 其他 may really be something the category has no word for. Keyed
+/// by the record's UUID — the export's last column, which is stable across
+/// re-exports — so the correction survives regeneration without editing
+/// generated files.
 #[derive(Debug, Deserialize)]
 pub struct Override {
     /// Replaces whatever the category would have resolved to. Empty means the
@@ -156,15 +152,15 @@ pub struct Override {
 /// The bank whose statements drive the ledger.
 ///
 /// Account numbers are the customer's, not the importer's, so they are named
-/// here rather than compiled in. The rest name the accounts and app-side buckets
-/// the build reaches by role — backfilled activity through `primary`, settlement
-/// through `settlement` — since a role cannot be looked up by a name the config
-/// is free to choose.
+/// here rather than compiled in. The rest name the accounts and app-side
+/// buckets the build reaches by role — backfilled activity through `primary`,
+/// settlement through `settlement` — since a role cannot be looked up by a name
+/// the config is free to choose.
 #[derive(Debug, Default, Deserialize)]
 pub struct Institution {
     /// Statement account number → ledger account. The key is the bank's own
-    /// identifier for the account, which is a string and nothing more; the value
-    /// is where its lines are posted.
+    /// identifier for the account, which is a string and nothing more; the
+    /// value is where its lines are posted.
     #[serde(default)]
     pub accounts: HashMap<String, Account>,
     /// What the bookkeeping app calls all of them together, having no notion
@@ -180,8 +176,8 @@ pub struct Institution {
     pub settlement: Account,
     /// The app account whose movements are securities settlement rather than
     /// ordinary spending. Backfilled activity naming it is routed through
-    /// `settlement`; everything else goes through `primary`. App-side name, so a
-    /// plain string like `app_account`.
+    /// `settlement`; everything else goes through `primary`. App-side name, so
+    /// a plain string like `app_account`.
     #[serde(default)]
     pub settlement_app_account: String,
     /// Catches internal transfers whose two halves land on different days, so a
@@ -235,7 +231,10 @@ impl Chart {
             ("institution.app_account", self.institution.app_account.is_empty()),
             ("institution.primary", self.institution.primary.is_empty()),
             ("institution.settlement", self.institution.settlement.is_empty()),
-            ("institution.settlement_app_account", self.institution.settlement_app_account.is_empty()),
+            (
+                "institution.settlement_app_account",
+                self.institution.settlement_app_account.is_empty(),
+            ),
             ("institution.clearing", self.institution.clearing.is_empty()),
             ("fallback.income", self.fallback.income.is_empty()),
             ("fallback.expense", self.fallback.expense.is_empty()),
@@ -250,7 +249,8 @@ impl Chart {
         Ok(())
     }
 
-    /// An empty account means "deliberately unmapped" and is treated as missing.
+    /// An empty account means "deliberately unmapped" and is treated as
+    /// missing.
     fn get<'a>(table: &'a HashMap<String, Mapping>, key: &str) -> Option<&'a Mapping> {
         table.get(key).filter(|t| !t.account.is_empty())
     }

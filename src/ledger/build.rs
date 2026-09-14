@@ -23,13 +23,13 @@ use super::{
 
 /// Each account's balance as the app's own records imply it, per currency.
 ///
-/// Computed straight from 天天記帳, with no knowledge of how the ledger emits its
-/// postings — a 國泰 transfer's far side, a matched statement line, the backfill,
-/// all reach the same account by different code paths above, and this sums none
-/// of that, only the raw records. Asserting these values therefore makes
-/// `bean-check` prove the emitted ledger matches the app, rather than restating
-/// what the importer just wrote. 國泰 itself is excluded: it is driven by the
-/// bank statement, and asserted against it.
+/// Computed straight from 天天記帳, with no knowledge of how the ledger emits
+/// its postings — a 國泰 transfer's far side, a matched statement line, the
+/// backfill, all reach the same account by different code paths above, and this
+/// sums none of that, only the raw records. Asserting these values therefore
+/// makes `bean-check` prove the emitted ledger matches the app, rather than
+/// restating what the importer just wrote. 國泰 itself is excluded: it is
+/// driven by the bank statement, and asserted against it.
 fn app_balances(
     entries: &[daily::Entry],
     chart: &accounts::Chart,
@@ -81,11 +81,8 @@ pub fn build(opts: &Args) -> Result<Summary> {
     };
     let app_events = daily::view(&entries, &chart.institution.app_account);
 
-    let statements: Vec<statements::cathay::BankStatement> = opts
-        .cathay_statements
-        .iter()
-        .map(statements::cathay::load)
-        .collect::<Result<_>>()?;
+    let statements: Vec<statements::cathay::BankStatement> =
+        opts.cathay_statements.iter().map(statements::cathay::load).collect::<Result<_>>()?;
 
     // Flatten to (statement index, line index) so lines from both accounts can be
     // matched against one pool of app records.
@@ -196,7 +193,11 @@ pub fn build(opts: &Args) -> Result<Summary> {
             let opening_of = |want: &str| -> Decimal {
                 statements
                     .iter()
-                    .find(|s| statement_account(&chart, &s.account_no).map(|a| a.as_ref() == want).unwrap_or(false))
+                    .find(|s| {
+                        statement_account(&chart, &s.account_no)
+                            .map(|a| a.as_ref() == want)
+                            .unwrap_or(false)
+                    })
                     .map(|s| s.opening_balance())
                     .unwrap_or_default()
             };
@@ -225,8 +226,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
             used_accounts.insert(investment.to_string());
 
             for event in &pre {
-                let (target, tags) =
-                    resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
+                let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
                 used_accounts.insert(target.clone());
                 let raw = match &event.contra {
                     daily::Contra::Category(n) | daily::Contra::Account(n) => n.as_str(),
@@ -257,16 +257,10 @@ pub fn build(opts: &Args) -> Result<Summary> {
                         ],
                     ));
                 } else {
-                    body.push_str(&writer::transaction(
-                        event.date,
-                        "",
-                        narration,
-                        &tags,
-                        &[
-                            writer::Posting::new(savings, event.delta, &event.currency),
-                            contra_posting(target, event),
-                        ],
-                    ));
+                    body.push_str(&writer::transaction(event.date, "", narration, &tags, &[
+                        writer::Posting::new(savings, event.delta, &event.currency),
+                        contra_posting(target, event),
+                    ]));
                 }
                 body.push('\n');
                 n_backfill += 1;
@@ -317,8 +311,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
                 continue;
             }
 
-            let mut postings =
-                vec![writer::Posting::new(account, line.delta(), currency)];
+            let mut postings = vec![writer::Posting::new(account, line.delta(), currency)];
             let mut tags: Vec<String> = Vec::new();
 
             if let Some(&(psi, pli)) = partner.get(&(si, li)) {
@@ -383,11 +376,12 @@ pub fn build(opts: &Args) -> Result<Summary> {
 
     // 天天記帳 records touching 國泰 that no statement line matched.
     //
-    // Dropping these loses the far side of a real movement — a broker account was short by a
-    // five-figure sum because four transfers never matched. The statement line for the
-    // same movement has already been emitted with an uncategorised contra, so
-    // the near side goes to the same bucket, where the two cancel: the far
-    // account gets its posting and Cathay's asserted balance is untouched.
+    // Dropping these loses the far side of a real movement — a broker account was
+    // short by a five-figure sum because four transfers never matched. The
+    // statement line for the same movement has already been emitted with an
+    // uncategorised contra, so the near side goes to the same bucket, where the
+    // two cancel: the far account gets its posting and Cathay's asserted
+    // balance is untouched.
     let mut n_unmatched_records = 0;
     for (index, event) in app_events.iter().enumerate() {
         if claimed.contains(&index) || event.date < anchor || event.delta.is_zero() {
@@ -406,7 +400,10 @@ pub fn build(opts: &Args) -> Result<Summary> {
             "未對應紀錄",
             narration_for(&chart, &event.id, &event.memo),
             &tags,
-            &[contra_posting(target, event), writer::Posting::new(near, event.delta, &event.currency)],
+            &[
+                contra_posting(target, event),
+                writer::Posting::new(near, event.delta, &event.currency),
+            ],
         ));
         body.push('\n');
         n_unmatched_records += 1;
@@ -415,8 +412,13 @@ pub fn build(opts: &Args) -> Result<Summary> {
     used_accounts.insert(clearing.to_string());
 
     // Accounts with no bank statement, taken from 天天記帳 as recorded.
-    let (daily_body, n_other) =
-        emit_daily_accounts(&entries, &chart, &mut used_accounts, &mut unmapped, &mut used_overrides);
+    let (daily_body, n_other) = emit_daily_accounts(
+        &entries,
+        &chart,
+        &mut used_accounts,
+        &mut unmapped,
+        &mut used_overrides,
+    );
 
     // Assert every non-國泰 asset/liability balance against the app's own figure,
     // so bean-check proves the emitted ledger matches 天天記帳. Beancount checks a
@@ -479,8 +481,12 @@ pub fn build(opts: &Args) -> Result<Summary> {
         out.push_str(";; Records touching 國泰 are not here — those come from its statements.\n\n");
         out.push_str(&daily_body);
         if !asserts.is_empty() {
-            out.push_str("\n;; Balance assertions computed straight from 天天記帳, independent of\n");
-            out.push_str(";; how the postings above are emitted. bean-check thus proves the ledger\n");
+            out.push_str(
+                "\n;; Balance assertions computed straight from 天天記帳, independent of\n",
+            );
+            out.push_str(
+                ";; how the postings above are emitted. bean-check thus proves the ledger\n",
+            );
             out.push_str(";; matches the app for every non-國泰 asset and liability account.\n");
             out.push_str(&asserts);
         }
