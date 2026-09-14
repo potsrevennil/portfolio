@@ -11,6 +11,7 @@ pub mod daily;
 pub mod emit;
 pub mod matching;
 pub mod names;
+pub mod rates;
 pub mod statements;
 pub mod summary;
 pub mod writer;

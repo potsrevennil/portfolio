@@ -20,10 +20,13 @@
 ;;      silently skipped and every statement line falls back to an
 ;;      uncategorised contra.
 ;;
+;;   3. The exchange rates the multi-currency balances are converted at.
+;;        cargo run -- rates
+;;
 ;; Then validate with:  bean-check ledger/main.beancount
 ;;
-;; A missing-glob error from bean-check means step 2 has not been run, not that
-;; the ledger is broken.
+;; A missing-glob error from bean-check means one of the steps above has not
+;; been run, not that the ledger is broken.
 
 option "title" "Personal Ledger"
 option "operating_currency" "TWD"
@@ -38,5 +41,6 @@ option "inferred_tolerance_default" "*:0.01"
 include "accounts.beancount"
 include "manual.beancount"
 include "generated/accounts.beancount"
+include "generated/rates.beancount"
 include "generated/cathay.beancount"
 include "generated/daily.beancount"
