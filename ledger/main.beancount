@@ -23,10 +23,12 @@
 ;;   3. The exchange rates the multi-currency balances are converted at.
 ;;        cargo run -- rates
 ;;
-;; Then validate with:  bean-check ledger/main.beancount
+;; Only then:
+;;   bean-check ledger/main.beancount     to validate
+;;   fava ledger/main.beancount           to browse
 ;;
-;; A missing-glob error from bean-check means one of the steps above has not
-;; been run, not that the ledger is broken.
+;; A missing-glob error from bean-check means one of the three steps above has
+;; not been run, not that the ledger is broken.
 
 option "title" "Personal Ledger"
 option "operating_currency" "TWD"
@@ -37,6 +39,44 @@ option "operating_currency" "USD"
 ;; Multiplying it out leaves residuals around 1e-24, so tolerate a rounding
 ;; error far below any real unit of currency.
 option "inferred_tolerance_default" "*:0.01"
+
+;; --- presentation ---
+;; Beancount account names must be ASCII and colon-separated, and Fava has no
+;; per-account colour or display-alias option, so readability comes from keeping
+;; names shallow, translating the interface, and folding away detail by default.
+
+;; Traditional Chinese (Taiwan) interface.
+2000-01-01 custom "fava-option" "language" "zh_Hant_TW"
+
+;; Show income, liabilities and equity as positive numbers instead of the
+;; sign-flipped accounting convention.
+2000-01-01 custom "fava-option" "invert-income-liabilities-equity" "true"
+
+;; Deep, rarely-inspected branches start folded.
+2000-01-01 custom "fava-option" "collapse-pattern" "Expenses:Travel"
+2000-01-01 custom "fava-option" "collapse-pattern" "Assets:Receivable"
+2000-01-01 custom "fava-option" "collapse-pattern" "Assets:Currency"
+
+;; Offer these in the conversion selector, so every report can be read in one
+;; unit. The ledger holds nine currencies and adding them up raw is meaningless.
+2000-01-01 custom "fava-option" "conversion-currencies" "TWD USD"
+
+;; Hide accounts that have gone to zero rather than listing every dormant one.
+2000-01-01 custom "fava-option" "show-accounts-with-zero-balance" "false"
+
+;; Jump straight to holdings filtered to the securities accounts. Fava's 持倉
+;; otherwise lists every cash account too, which buries the few positions that
+;; are worth looking at. One link per broker once those accounts exist.
+2000-01-01 custom "fava-sidebar-link" "持股" "/personal-ledger/holdings/?filter=account:\"Assets:Securities\""
+
+;; Relabel account names in Chinese. Beancount names must be ASCII and Fava
+;; cannot alias them, so this extension's JS swaps them in the page on every
+;; report, from the labels in mapping.toml. Display only — the data and the
+;; URLs keep the ASCII names.
+2000-01-01 custom "fava-extension" "mandarin_overview"
+
+;; Land on the balance sheet (net worth over time).
+2000-01-01 custom "fava-option" "default-page" "balance_sheet/"
 
 include "accounts.beancount"
 include "manual.beancount"
