@@ -41,6 +41,9 @@
                 codespell
                 protobuf
                 sqlx-cli
+
+                beancount
+                fava
                 ;
             };
         };

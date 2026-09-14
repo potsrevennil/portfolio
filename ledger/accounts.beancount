@@ -1,0 +1,5 @@
+;; Equity root. Every other account, and all opening balances, are emitted by
+;; the importer into generated/ — so adding a category to mapping.toml is enough
+;; and nothing has to be declared twice.
+
+2000-01-01 open Equity:Opening-Balances

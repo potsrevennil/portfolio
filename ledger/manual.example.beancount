@@ -1,0 +1,4 @@
+;; Hand-written entries — cash spending and anything no statement covers.
+;; Copy to manual.beancount; the importer never touches it.
+;;
+;; Gitignored once copied, because what you record here is financial data.

@@ -8,3 +8,21 @@ securities.toml
 
 *.csv
 sqlite.db
+
+# Imported transaction history — same financial data the *.csv rule keeps out.
+ledger/generated/
+
+# AI-session scratch: plans, analyses and working notes. Not project docs, and
+# not enumerated file by file — anything an assistant leaves here stays local.
+.claude/
+
+# Fava loads the extension as a Python module from ledger/.
+ledger/__pycache__/
+
+# Your own chart of accounts: account numbers, who you split bills with, and
+# which records you have corrected. mapping.example.toml ships in its place.
+ledger/mapping.toml
+
+# Hand-entered transactions — financial data, same as the CSVs.
+# manual.example.beancount ships in its place; copy it to get started.
+ledger/manual.beancount
