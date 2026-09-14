@@ -20,6 +20,7 @@ use super::{
     summary::Summary,
     writer,
 };
+use crate::currency::Currency;
 
 /// Each account's balance as the app's own records imply it, per currency.
 ///
@@ -33,26 +34,25 @@ use super::{
 fn app_balances(
     entries: &[daily::Entry],
     chart: &accounts::Chart,
-) -> BTreeMap<(String, String), Decimal> {
-    let mut bal: BTreeMap<(String, String), Decimal> = BTreeMap::new();
+) -> BTreeMap<(String, Currency), Decimal> {
+    let mut bal: BTreeMap<(String, Currency), Decimal> = BTreeMap::new();
     let app_account = chart.institution.app_account.as_str();
     for entry in entries {
-        let mut add = |name: &str, amount: Decimal, currency: &str| {
+        let mut add = |name: &str, amount: Decimal, currency: Currency| {
             if name == app_account {
                 return;
             }
             if let Some(mapping) = chart.account(name) {
-                *bal.entry((mapping.account.to_string(), currency.to_string())).or_default() +=
-                    amount;
+                *bal.entry((mapping.account.to_string(), currency)).or_default() += amount;
             }
         };
         match entry {
             daily::Entry::Flow { account, amount, currency, .. } => {
-                add(account, *amount, currency);
+                add(account, *amount, *currency);
             }
             daily::Entry::Transfer { from, out, out_currency, to, inn, in_currency, .. } => {
-                add(from, -*out, out_currency);
-                add(to, *inn, in_currency);
+                add(from, -*out, *out_currency);
+                add(to, *inn, *in_currency);
             }
         }
     }
@@ -216,8 +216,8 @@ pub fn build(opts: &Args) -> Result<Summary> {
                 "derived from 天天記帳, not observed",
                 &[],
                 &[
-                    writer::Posting::new(savings, savings_open, "TWD"),
-                    writer::Posting::new(investment, opening_of(investment), "TWD"),
+                    writer::Posting::new(savings, savings_open, Currency::TWD),
+                    writer::Posting::new(investment, opening_of(investment), Currency::TWD),
                     writer::Posting::inferred("Equity:Opening-Balances"),
                 ],
             ));
@@ -241,8 +241,8 @@ pub fn build(opts: &Args) -> Result<Summary> {
                         "活存 funds 投資 for settlement",
                         &[],
                         &[
-                            writer::Posting::new(savings, event.delta, &event.currency),
-                            writer::Posting::new(investment, -event.delta, &event.currency),
+                            writer::Posting::new(savings, event.delta, event.currency),
+                            writer::Posting::new(investment, -event.delta, event.currency),
                         ],
                     ));
                     body.push('\n');
@@ -252,13 +252,13 @@ pub fn build(opts: &Args) -> Result<Summary> {
                         narration,
                         &tags,
                         &[
-                            writer::Posting::new(investment, event.delta, &event.currency),
+                            writer::Posting::new(investment, event.delta, event.currency),
                             contra_posting(target, event),
                         ],
                     ));
                 } else {
                     body.push_str(&writer::transaction(event.date, "", narration, &tags, &[
-                        writer::Posting::new(savings, event.delta, &event.currency),
+                        writer::Posting::new(savings, event.delta, event.currency),
                         contra_posting(target, event),
                     ]));
                 }
@@ -270,7 +270,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
 
     for (si, statement) in statements.iter().enumerate() {
         let account: &str = statement_account(&chart, &statement.account_no)?;
-        let currency = &statement.currency;
+        let currency = statement.currency;
         used_accounts.insert(account.to_string());
         let first = statement.lines.first().expect("load_bank_statement rejects empty statements");
 
@@ -402,7 +402,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
             &tags,
             &[
                 contra_posting(target, event),
-                writer::Posting::new(near, event.delta, &event.currency),
+                writer::Posting::new(near, event.delta, event.currency),
             ],
         ));
         body.push('\n');
@@ -447,13 +447,17 @@ pub fn build(opts: &Args) -> Result<Summary> {
         // A Beancount balance assertion covers the account's whole subtree, so
         // the asserted figure must sum the account with its descendants.
         let prefix = format!("{account}:");
-        let mut by_currency: BTreeMap<&str, Decimal> = BTreeMap::new();
+        let mut by_currency: BTreeMap<Currency, Decimal> = BTreeMap::new();
         for ((a, currency), amount) in &leaf_bal {
             if a == account || a.starts_with(&prefix) {
-                *by_currency.entry(currency.as_str()).or_default() += *amount;
+                *by_currency.entry(*currency).or_default() += *amount;
             }
         }
-        for (currency, amount) in by_currency {
+        // Emit an account's assertions ordered by currency code, not by the
+        // enum's declaration order, so the output is stable and alphabetical.
+        let mut per_currency: Vec<(Currency, Decimal)> = by_currency.into_iter().collect();
+        per_currency.sort_by_key(|(currency, _)| currency.to_string());
+        for (currency, amount) in per_currency {
             asserts.push_str(&writer::balance(assert_date, account, amount, currency));
             n_asserted += 1;
         }

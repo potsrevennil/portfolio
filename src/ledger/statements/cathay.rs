@@ -13,6 +13,8 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
+use crate::currency::Currency;
+
 #[derive(Debug)]
 pub struct StatementLine {
     pub book_date: NaiveDate,
@@ -34,7 +36,7 @@ impl StatementLine {
 pub struct BankStatement {
     pub account_no: String,
     pub account_kind: String,
-    pub currency: String,
+    pub currency: Currency,
     /// End of the period the export covers, from the `(自 … 至 …)` header.
     pub period_end: Option<NaiveDate>,
     /// Oldest first.
@@ -133,7 +135,7 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
 
     let mut account_no = String::new();
     let mut account_kind = String::new();
-    let mut currency = "TWD".to_string();
+    let mut currency = Currency::TWD;
     let mut lines: Vec<StatementLine> = Vec::new();
     let mut period_end: Option<NaiveDate> = None;
     let mut past_header = false;
@@ -157,7 +159,10 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
                 account_no = parts.next().unwrap_or("").to_string();
                 account_kind = parts.next().unwrap_or("").to_string();
             } else if let Some(rest) = f0.strip_prefix("幣別：") {
-                currency = rest.trim().to_string();
+                currency = rest
+                    .trim()
+                    .parse()
+                    .with_context(|| format!("unknown statement currency {:?}", rest.trim()))?;
             }
             continue;
         }

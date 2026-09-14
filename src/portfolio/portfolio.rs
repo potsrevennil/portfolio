@@ -9,6 +9,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumIter};
 
+pub use crate::currency::Currency;
 use crate::{
     portfolio::{
         holding::{adjust_holdings, mark_to_market, settle_transactions, Holding},
@@ -44,27 +45,6 @@ pub enum TransactionKind {
 pub enum AssetClass {
     Stocks,
     Cash,
-}
-
-#[derive(
-    ValueEnum,
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Deserialize,
-    Serialize,
-    Default,
-    Display,
-    EnumIter,
-)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum Currency {
-    #[default]
-    USD,
-    TWD,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, Display, EnumIter)]

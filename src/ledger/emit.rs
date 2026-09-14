@@ -71,10 +71,10 @@ pub(super) fn resolve(
 /// was actually written in. Taking it from the statement instead assumed the
 /// two always agree, which holds only while every account is TWD.
 pub(super) fn contra_posting(account: String, event: &daily::AppEvent) -> writer::Posting {
-    let near = event.currency.as_str();
-    match &event.far {
+    let near = event.currency;
+    match event.far {
         Some((amount, far_currency)) if far_currency != near && !amount.is_zero() => {
-            let signed = if event.delta.is_sign_negative() { *amount } else { -*amount };
+            let signed = if event.delta.is_sign_negative() { amount } else { -amount };
             writer::Posting::new(account, signed, far_currency).worth(event.delta.abs(), near)
         }
         _ => writer::Posting::new(account, -event.delta, near),
@@ -156,8 +156,8 @@ pub(super) fn emit_daily_accounts(
                 };
                 let narration = narration_for(chart, id, memo);
                 out.push_str(&writer::transaction(*date, category, narration, &tags, &[
-                    writer::Posting::new(asset, *amount, currency),
-                    writer::Posting::new(contra, -amount, currency),
+                    writer::Posting::new(asset, *amount, *currency),
+                    writer::Posting::new(contra, -amount, *currency),
                 ]));
                 out.push('\n');
                 count += 1;
@@ -181,14 +181,14 @@ pub(super) fn emit_daily_accounts(
                 // receiving side states what it is worth in the sending
                 // currency. Both totals are known, so no rate rounding is
                 // involved and the transaction balances exactly.
-                let credit = writer::Posting::new(target, *inn, in_currency);
+                let credit = writer::Posting::new(target, *inn, *in_currency);
                 let credit = if out_currency != in_currency {
-                    credit.worth(sent.abs(), out_currency)
+                    credit.worth(sent.abs(), *out_currency)
                 } else {
                     credit
                 };
                 out.push_str(&writer::transaction(*date, "轉帳", memo, &[], &[
-                    writer::Posting::new(source, -sent, out_currency),
+                    writer::Posting::new(source, -sent, *out_currency),
                     credit,
                 ]));
                 out.push('\n');
@@ -205,6 +205,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
+    use crate::currency::Currency;
 
     /// Both routes a record can take into the ledger, against one chart.
     fn chart() -> accounts::Chart {
@@ -226,7 +227,7 @@ mod tests {
             date: chrono::NaiveDate::from_ymd_opt(2022, 11, 14).unwrap(),
             account: "券商".into(),
             amount: dec!(-41312.11),
-            currency: "USD".into(),
+            currency: Currency::USD,
             category: "投資".into(),
             memo: String::new(),
             id: id.into(),

@@ -3,36 +3,40 @@ use std::fmt::Write;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
+use crate::currency::Currency;
+
 /// A single posting leg. `amount == None` lets Beancount infer the value, which
 /// is how the contra-leg of a two-posting transaction is normally written.
 pub struct Posting {
     pub account: String,
     pub amount: Option<Decimal>,
-    pub currency: String,
+    pub currency: Currency,
     /// `@@ total currency` — the total the other leg is worth, needed when the
     /// two legs are in different currencies. Stated as a total rather than a
     /// per-unit rate because both totals are known exactly, and a rounded rate
     /// multiplied back out does not balance.
-    pub price: Option<(Decimal, String)>,
+    pub price: Option<(Decimal, Currency)>,
 }
 
 impl Posting {
-    pub fn new(account: impl Into<String>, amount: Decimal, currency: impl Into<String>) -> Self {
-        Posting {
-            account: account.into(),
-            amount: Some(amount),
-            currency: currency.into(),
-            price: None,
-        }
+    pub fn new(account: impl Into<String>, amount: Decimal, currency: Currency) -> Self {
+        Posting { account: account.into(), amount: Some(amount), currency, price: None }
     }
 
-    pub fn worth(mut self, total: Decimal, currency: impl Into<String>) -> Self {
-        self.price = Some((total, currency.into()));
+    pub fn worth(mut self, total: Decimal, currency: Currency) -> Self {
+        self.price = Some((total, currency));
         self
     }
 
+    /// The currency is unused — an inferred leg prints only its account — so it
+    /// takes the default rather than threading one through.
     pub fn inferred(account: impl Into<String>) -> Self {
-        Posting { account: account.into(), amount: None, currency: String::new(), price: None }
+        Posting {
+            account: account.into(),
+            amount: None,
+            currency: Currency::default(),
+            price: None,
+        }
     }
 }
 
@@ -82,6 +86,6 @@ pub fn transaction(
     out
 }
 
-pub fn balance(date: NaiveDate, account: &str, amount: Decimal, currency: &str) -> String {
+pub fn balance(date: NaiveDate, account: &str, amount: Decimal, currency: Currency) -> String {
     format!("{} balance {:<38} {} {}\n", date, account, amount, currency)
 }

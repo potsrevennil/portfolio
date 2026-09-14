@@ -2,7 +2,10 @@
 
 use std::io::Write;
 
-use portfolio::ledger::{accounts::Chart, daily};
+use portfolio::{
+    currency::Currency,
+    ledger::{accounts::Chart, daily},
+};
 use rust_decimal_macros::dec;
 use tempfile::NamedTempFile;
 
@@ -73,10 +76,10 @@ fn the_subject_view_keeps_each_side_in_its_own_currency() -> anyhow::Result<()> 
     let [flow, sent] = &bank[..] else {
         panic!("expected the bank to see two records, got {bank:?}");
     };
-    assert_eq!(flow.currency, "USD", "收支 currency is dropped");
+    assert_eq!(flow.currency, Currency::USD, "收支 currency is dropped");
     assert_eq!(flow.far, None, "a category has no far side");
-    assert_eq!(sent.currency, "TWD", "the sending side is in what it sent");
-    assert_eq!(sent.far, Some((dec!(100.00), "USD".into())), "far side lost");
+    assert_eq!(sent.currency, Currency::TWD, "the sending side is in what it sent");
+    assert_eq!(sent.far, Some((dec!(100.00), Currency::USD)), "far side lost");
 
     // The same row, seen from the other account: the two sides swap.
     let exchange = daily::view(&entries, "交易所");
@@ -84,8 +87,8 @@ fn the_subject_view_keeps_each_side_in_its_own_currency() -> anyhow::Result<()> 
         panic!("expected the exchange to see one record, got {exchange:?}");
     };
     assert_eq!(received.delta, dec!(100.00));
-    assert_eq!(received.currency, "USD");
-    assert_eq!(received.far, Some((dec!(3000), "TWD".into())));
+    assert_eq!(received.currency, Currency::USD);
+    assert_eq!(received.far, Some((dec!(3000), Currency::TWD)));
     Ok(())
 }
 

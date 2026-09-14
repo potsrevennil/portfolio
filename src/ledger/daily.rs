@@ -10,6 +10,8 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
+use crate::currency::Currency;
+
 #[derive(Debug)]
 pub enum Contra {
     /// From a 收支 row: the other side is a spending or earning category.
@@ -26,13 +28,13 @@ pub struct AppEvent {
     pub delta: Decimal,
     /// What `delta` is denominated in — the subject's own currency, not the
     /// other side's.
-    pub currency: String,
+    pub currency: Currency,
     pub contra: Contra,
     pub memo: String,
     /// For a transfer, what the other account received or sent, and in which
     /// currency. Differs from `delta` whenever the two sides are not the same
     /// currency, which is the whole reason it is carried.
-    pub far: Option<(Decimal, String)>,
+    pub far: Option<(Decimal, Currency)>,
     /// The app's UUID for the record this view came from, so a per-record
     /// correction applies whichever path the record reaches the ledger by.
     /// Empty for a 轉帳 row, whose two sides are one record with one id but two
@@ -54,6 +56,15 @@ fn parse_amount(s: &str) -> Result<Decimal> {
     t.parse::<Decimal>().with_context(|| format!("unparseable 天天記帳 amount {:?}", s))
 }
 
+/// The currency in a 幣別 cell, defaulting to TWD when the column is absent or
+/// blank — the app omits it on local-currency rows.
+fn parse_currency(cell: Option<&str>) -> Result<Currency> {
+    match cell.map(str::trim) {
+        None | Some("") => Ok(Currency::TWD),
+        Some(code) => code.parse().with_context(|| format!("unknown 天天記帳 currency {code:?}")),
+    }
+}
+
 /// The subject account's view of every record touching it, oldest first.
 ///
 /// This is a projection of `load_entries`, not a second parse. Reading the two
@@ -71,7 +82,7 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                 out.push(AppEvent {
                     date: *date,
                     delta: *amount,
-                    currency: currency.clone(),
+                    currency: *currency,
                     contra: Contra::Category(category.clone()),
                     memo: memo.clone(),
                     far: None,
@@ -85,10 +96,10 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                     out.push(AppEvent {
                         date: *date,
                         delta: -sent,
-                        currency: out_currency.clone(),
+                        currency: *out_currency,
                         contra: Contra::Account(to.clone()),
                         memo: memo.clone(),
-                        far: Some((*inn, in_currency.clone())),
+                        far: Some((*inn, *in_currency)),
                         id: String::new(),
                     });
                 }
@@ -96,10 +107,10 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                     out.push(AppEvent {
                         date: *date,
                         delta: *inn,
-                        currency: in_currency.clone(),
+                        currency: *in_currency,
                         contra: Contra::Account(from.clone()),
                         memo: memo.clone(),
-                        far: Some((*sent, out_currency.clone())),
+                        far: Some((*sent, *out_currency)),
                         id: String::new(),
                     });
                 }
@@ -122,7 +133,7 @@ pub enum Entry {
         account: String,
         /// Signed: positive is 收, negative is 支.
         amount: Decimal,
-        currency: String,
+        currency: Currency,
         category: String,
         memo: String,
         /// The app's own UUID for this record, so a single record can be
@@ -135,10 +146,10 @@ pub enum Entry {
         date: NaiveDate,
         from: String,
         out: Decimal,
-        out_currency: String,
+        out_currency: Currency,
         to: String,
         inn: Decimal,
-        in_currency: String,
+        in_currency: Currency,
         memo: String,
     },
 }
@@ -194,7 +205,7 @@ pub fn load_entries(
             date: parse_date(rec.get(0).unwrap_or(""))?,
             account: account.to_string(),
             amount: if is_income { amount } else { -amount },
-            currency: rec.get(4).unwrap_or("TWD").trim().to_string(),
+            currency: parse_currency(rec.get(4))?,
             category: rec.get(1).unwrap_or("").trim().to_string(),
             memo: rec.get(8).unwrap_or("").trim().to_string(),
             id: rec.get(11).unwrap_or("").trim().to_string(),
@@ -216,10 +227,10 @@ pub fn load_entries(
             date,
             from: rec.get(1).unwrap_or("").trim().to_string(),
             out: parse_amount(rec.get(2).unwrap_or(""))?,
-            out_currency: rec.get(3).unwrap_or("TWD").trim().to_string(),
+            out_currency: parse_currency(rec.get(3))?,
             to: rec.get(4).unwrap_or("").trim().to_string(),
             inn: parse_amount(rec.get(5).unwrap_or(""))?,
-            in_currency: rec.get(6).unwrap_or("TWD").trim().to_string(),
+            in_currency: parse_currency(rec.get(6))?,
             memo: rec.get(8).unwrap_or("").trim().to_string(),
         });
     }
