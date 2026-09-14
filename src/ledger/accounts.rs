@@ -5,7 +5,7 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    fs,
+    fmt, fs,
     ops::Deref,
     path::Path,
     str::FromStr,
@@ -97,35 +97,47 @@ impl TryFrom<String> for Account {
 }
 
 /// An account plus the tags that carry the detail the shallow account tree no
-/// longer encodes. Written in the config as a bare account string when it has
-/// no tags, or as `{ account = "...", tags = [...] }` when it does — one shape
-/// to the code either way.
-#[derive(Debug, Default, Deserialize)]
-#[serde(from = "Raw")]
+/// longer encodes. Bare is just the empty-tags case.
+#[derive(Debug, Default)]
 pub struct Mapping {
     pub account: Account,
     pub tags: Vec<String>,
 }
 
-/// A mapping as written: a bare account, or an account with tags. Only a
-/// parsing shape — the code sees the flattened `Mapping`, never this.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Raw {
-    Bare(Account),
-    Tagged {
-        account: Account,
-        #[serde(default)]
-        tags: Vec<String>,
-    },
-}
+impl<'de> Deserialize<'de> for Mapping {
+    /// The config writes a mapping either as a bare account string or as a
+    /// `{ account, tags }` table. There is one `Mapping`; the two arms here are
+    /// the two TOML shapes serde dispatches on, not two kinds of mapping.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct MappingVisitor;
 
-impl From<Raw> for Mapping {
-    fn from(raw: Raw) -> Self {
-        match raw {
-            Raw::Bare(account) => Mapping { account, tags: Vec::new() },
-            Raw::Tagged { account, tags } => Mapping { account, tags },
+        impl<'de> serde::de::Visitor<'de> for MappingVisitor {
+            type Value = Mapping;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an account name or a { account, tags } table")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Mapping, E> {
+                Ok(Mapping { account: s.parse().map_err(E::custom)?, tags: Vec::new() })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Mapping, A::Error> {
+                #[derive(Deserialize)]
+                struct Fields {
+                    account: Account,
+                    #[serde(default)]
+                    tags: Vec<String>,
+                }
+                let f = Fields::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(Mapping { account: f.account, tags: f.tags })
+            }
         }
+
+        deserializer.deserialize_any(MappingVisitor)
     }
 }
 
