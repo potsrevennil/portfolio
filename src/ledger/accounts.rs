@@ -5,7 +5,8 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    fmt, fs,
+    fs,
+    ops::Deref,
     str::FromStr,
 };
 
@@ -59,13 +60,26 @@ impl Account {
         &self.0
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// The root this account hangs off, or `None` for the empty "unmapped" one.
     pub fn account_type(&self) -> Option<AccountType> {
-        self.0.split(':').next().unwrap_or("").parse().ok()
+        self.split(':').next().unwrap_or("").parse().ok()
+    }
+}
+
+/// An `Account` is a `str` wherever one is wanted — `is_empty`, `split`,
+/// `to_string`, `== "Assets:…"` — so no wrapper method or inherent `Display` is
+/// needed for each. `AsRef<str>` is its companion for the `AsRef`-bound APIs.
+impl Deref for Account {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for Account {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
 }
 
@@ -98,12 +112,6 @@ impl TryFrom<String> for Account {
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         s.parse()
-    }
-}
-
-impl fmt::Display for Account {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
