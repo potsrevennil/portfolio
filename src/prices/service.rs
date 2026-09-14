@@ -65,14 +65,17 @@ impl PriceService {
             };
             let symbol_owned = symbol.to_string();
             fetch_futures.push(async move {
-                // A single symbol's error is logged and swallowed, so one bad
-                // symbol does not fail the whole batch.
+                // A single symbol's error is swallowed so one bad symbol does
+                // not fail the batch. Logged at debug, not warn: a symbol with
+                // no data is an expected, benign outcome here — callers probe
+                // FX pairs that may not exist — and the caller warns if a
+                // missing series actually matters.
                 match self.source.fetch_stock_prices(&symbol_owned, fetch_start, end_date).await {
                     Ok(prices) => {
                         Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, prices))
                     }
                     Err(e) => {
-                        log::warn!("Failed to fetch prices for {}: {}", symbol_owned, e);
+                        log::debug!("no prices for {}: {}", symbol_owned, e);
                         Ok((symbol_owned, Vec::new()))
                     }
                 }

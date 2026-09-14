@@ -66,7 +66,7 @@ pub async fn fetch(args: &Args, service: &PriceService) -> Result<usize> {
     currencies.remove(&args.base);
 
     if currencies.is_empty() {
-        println!("nothing to convert: the ledger only holds {}", args.base);
+        log::info!("nothing to convert: the ledger only holds {}", args.base);
         return Ok(0);
     }
 
@@ -86,7 +86,7 @@ pub async fn fetch(args: &Args, service: &PriceService) -> Result<usize> {
     // property of Yahoo's coverage, so only a direct pair that comes back thin
     // or missing is worth a fallback — most runs then fetch one series per
     // currency, not three.
-    println!("fetching {start} .. {end} for {currencies:?}");
+    log::info!("fetching {start} .. {end} for {currencies:?}");
     let direct_refs: Vec<&str> = forward.iter().map(String::as_str).collect();
     let mut fetched = service.get_prices(&direct_refs, start, end).await?;
 
@@ -161,7 +161,7 @@ pub async fn fetch(args: &Args, service: &PriceService) -> Result<usize> {
             .filter(|(_, p)| !p.is_empty())
             .max_by_key(|(rank, p)| (p.len(), *rank))
         else {
-            println!("  no rates for {currency} — balances in it stay unconverted");
+            log::warn!("no rates for {currency} — balances in it stay unconverted");
             continue;
         };
         // Some pairs come back as a single spot quote with no history. Beancount
@@ -174,8 +174,8 @@ pub async fn fetch(args: &Args, service: &PriceService) -> Result<usize> {
         if let [(date, rate)] = points[..] {
             if date > start {
                 rows.push((start, *currency, rate));
-                println!(
-                    "  {currency}: only a spot quote, held flat from {start} — historical amounts \
+                log::warn!(
+                    "{currency}: only a spot quote, held flat from {start} — historical amounts \
                      are approximate"
                 );
             }
