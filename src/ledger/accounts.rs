@@ -155,10 +155,10 @@ pub struct Override {
 /// The bank whose statements drive the ledger.
 ///
 /// Account numbers are the customer's, not the importer's, so they are named
-/// here rather than compiled in. Everything else in this struct is an account
-/// the build has to reach by role — it routes backfilled activity through
-/// `primary` and settlement through `settlement` — and a role cannot be looked
-/// up by a name the config is free to choose.
+/// here rather than compiled in. The rest name the accounts and app-side buckets
+/// the build reaches by role — backfilled activity through `primary`, settlement
+/// through `settlement` — since a role cannot be looked up by a name the config
+/// is free to choose.
 #[derive(Debug, Default, Deserialize)]
 pub struct Institution {
     /// Statement account number → ledger account. The key is the bank's own

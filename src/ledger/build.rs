@@ -398,10 +398,10 @@ pub fn build(opts: &Args) -> Result<Summary> {
         }
         let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
         used_accounts.insert(target.clone());
-        let near = if event.delta.is_sign_negative() {
-            "Expenses:Uncategorized"
+        let near: &str = if event.delta.is_sign_negative() {
+            &chart.fallback.expense
         } else {
-            "Income:Uncategorized"
+            &chart.fallback.income
         };
         used_accounts.insert(near.to_string());
         body.push_str(&writer::transaction(

@@ -114,9 +114,9 @@ fn resolve_account(
 ///
 /// Records touching the statement-driven account are skipped: those are already
 /// emitted from the statement side, and replaying them here would double every
-/// one. Because the
-/// transfer export names both accounts in a single row, the double entry is
-/// already present — no pairing is needed, unlike the statement path.
+/// one. Because the transfer export names both accounts in a single row, the
+/// double entry is already present — no pairing is needed, unlike the statement
+/// path.
 pub(super) fn emit_daily_accounts(
     entries: &[daily::Entry],
     chart: &accounts::Chart,
@@ -156,9 +156,9 @@ pub(super) fn emit_daily_accounts(
                         None => {
                             unmapped.insert(category.clone());
                             let fallback = if amount.is_sign_positive() {
-                                "Income:Uncategorized"
+                                &chart.fallback.income
                             } else {
-                                "Expenses:Uncategorized"
+                                &chart.fallback.expense
                             };
                             used_accounts.insert(fallback.to_string());
                             (fallback.to_string(), Vec::new())
