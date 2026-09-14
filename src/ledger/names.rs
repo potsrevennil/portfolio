@@ -8,15 +8,14 @@
 use anyhow::{Context, Result};
 use rust_decimal::Decimal;
 
-use super::accounts::Chart;
+use super::accounts::{Account, Chart};
 
 /// The ledger account a statement's own account number refers to.
-pub(super) fn statement_account<'a>(chart: &'a Chart, account_no: &str) -> Result<&'a str> {
+pub(super) fn statement_account<'a>(chart: &'a Chart, account_no: &str) -> Result<&'a Account> {
     chart
         .institution
         .accounts
         .get(account_no)
-        .map(String::as_str)
         .with_context(|| format!("unknown account {account_no} — add it to institution.accounts"))
 }
 
@@ -30,7 +29,7 @@ pub(super) fn fallback_account<'a>(
     chart: &'a Chart,
     description: &str,
     delta: Decimal,
-) -> &'a str {
+) -> &'a Account {
     if let Some(account) = chart.fallback.descriptions.get(description) {
         return account;
     }

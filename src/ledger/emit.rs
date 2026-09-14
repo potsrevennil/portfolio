@@ -23,7 +23,7 @@ fn corrected(
 ) -> Option<(String, Vec<String>)> {
     let found = chart.override_for(id)?;
     used.insert(id.to_string());
-    Some((found.account.clone(), found.tags.iter().map(|t| writer::tag_name(t)).collect()))
+    Some((found.account.to_string(), found.tags.iter().map(|t| writer::tag_name(t)).collect()))
 }
 
 /// What to narrate a corrected record as, falling back to the app's own 備註.
@@ -60,7 +60,7 @@ pub(super) fn resolve(
     };
     match found {
         Some(t) => {
-            (t.account().to_string(), t.tags().iter().map(|s| writer::tag_name(s)).collect())
+            (t.account.to_string(), t.tags.iter().map(|s| writer::tag_name(s)).collect())
         }
         None => {
             let raw = match &event.contra {
@@ -100,7 +100,7 @@ fn resolve_account(
     unmapped: &mut BTreeSet<String>,
 ) -> String {
     let account = match chart.account(name) {
-        Some(m) => m.account().to_string(),
+        Some(m) => m.account.to_string(),
         None => {
             unmapped.insert(name.to_string());
             "Assets:Unmapped".to_string()
@@ -147,10 +147,10 @@ pub(super) fn emit_daily_accounts(
                     }
                     None => match chart.category(category, amount.is_sign_positive()) {
                         Some(m) => {
-                            used_accounts.insert(m.account().to_string());
+                            used_accounts.insert(m.account.to_string());
                             (
-                                m.account().to_string(),
-                                m.tags().iter().map(|t| writer::tag_name(t)).collect::<Vec<_>>(),
+                                m.account.to_string(),
+                                m.tags.iter().map(|t| writer::tag_name(t)).collect::<Vec<_>>(),
                             )
                         }
                         None => {

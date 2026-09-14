@@ -5,38 +5,142 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
-    fs,
+    fmt, fs,
 };
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-/// Either a bare account name, or an account plus the tags that carry the detail
-/// the account tree no longer encodes.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum Mapping {
-    Account(String),
-    Tagged {
-        account: String,
-        #[serde(default)]
-        tags: Vec<String>,
-    },
+/// One of Beancount's five account roots. The root is the part of an account
+/// name that carries meaning beyond naming — it fixes the sign convention and
+/// which statement the account lands on — so it is worth lifting out of the
+/// string rather than re-deriving with `split(':')` at each use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountType {
+    Assets,
+    Liabilities,
+    Income,
+    Expenses,
+    Equity,
 }
 
-impl Mapping {
-    pub fn account(&self) -> &str {
-        match self {
-            Mapping::Account(a) => a,
-            Mapping::Tagged { account, .. } => account,
-        }
+impl AccountType {
+    /// The five roots Beancount allows, and nothing else.
+    pub fn parse(root: &str) -> Option<Self> {
+        Some(match root {
+            "Assets" => Self::Assets,
+            "Liabilities" => Self::Liabilities,
+            "Income" => Self::Income,
+            "Expenses" => Self::Expenses,
+            "Equity" => Self::Equity,
+            _ => return None,
+        })
+    }
+}
+
+/// A Beancount account name, e.g. `Assets:Bank:Savings`.
+///
+/// Its own type rather than a bare `String` so a field that holds an account
+/// cannot be mixed up with one holding an app-side account name or a bank's own
+/// wording, and so its [`AccountType`] is available without re-splitting the
+/// string. An empty value is allowed and means "deliberately unmapped"; any
+/// non-empty value must be a colon path whose first segment is one of the five
+/// roots, or it is rejected at load with the offending name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Account(String);
+
+impl Account {
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 
-    pub fn tags(&self) -> &[String] {
-        match self {
-            Mapping::Account(_) => &[],
-            Mapping::Tagged { tags, .. } => tags,
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The root this account hangs off, or `None` for the empty "unmapped" one.
+    pub fn account_type(&self) -> Option<AccountType> {
+        AccountType::parse(self.0.split(':').next().unwrap_or(""))
+    }
+
+    fn parse(raw: &str) -> Result<Self, String> {
+        let name = raw.trim();
+        if name.is_empty() {
+            return Ok(Account(String::new()));
         }
+        if !name.is_ascii() {
+            return Err(format!("{name:?} is not ASCII, which Beancount account names must be"));
+        }
+        if AccountType::parse(name.split(':').next().unwrap_or("")).is_none() {
+            return Err(format!(
+                "{name:?} is not a Beancount account: the first segment must be one of \
+                 Assets, Liabilities, Income, Expenses, Equity"
+            ));
+        }
+        if name.split(':').any(str::is_empty) {
+            return Err(format!("{name:?} has an empty account segment"));
+        }
+        Ok(Account(name.to_string()))
+    }
+}
+
+impl fmt::Display for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Account {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Account::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
+/// An account plus the tags that carry the detail the shallow account tree no
+/// longer encodes. Written in the config as a bare account string when it has no
+/// tags, or as `{ account = "...", tags = [...] }` when it does — one shape to
+/// the code either way.
+#[derive(Debug, Default)]
+pub struct Mapping {
+    pub account: Account,
+    pub tags: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for Mapping {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct MappingVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for MappingVisitor {
+            type Value = Mapping;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an account name or a { account, tags } table")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Mapping, E> {
+                Ok(Mapping { account: Account::parse(s).map_err(E::custom)?, tags: Vec::new() })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Mapping, A::Error> {
+                #[derive(Deserialize)]
+                struct Tagged {
+                    account: Account,
+                    #[serde(default)]
+                    tags: Vec<String>,
+                }
+                let t = Tagged::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(Mapping { account: t.account, tags: t.tags })
+            }
+        }
+
+        deserializer.deserialize_any(MappingVisitor)
     }
 }
 
@@ -48,8 +152,9 @@ impl Mapping {
 /// so the correction survives regeneration without editing generated files.
 #[derive(Debug, Deserialize)]
 pub struct Override {
-    /// Replaces whatever the category would have resolved to.
-    pub account: String,
+    /// Replaces whatever the category would have resolved to. Empty means the
+    /// entry is deliberately inert, matching how a blank mapping is treated.
+    pub account: Account,
     /// The app leaves 備註 empty on most records, so this is usually the only
     /// place the event gets described.
     #[serde(default)]
@@ -67,39 +172,43 @@ pub struct Override {
 /// up by a name the config is free to choose.
 #[derive(Debug, Default, Deserialize)]
 pub struct Institution {
-    /// Statement account number → ledger account.
+    /// Statement account number → ledger account. The key is the bank's own
+    /// identifier for the account, which is a string and nothing more; the value
+    /// is where its lines are posted.
     #[serde(default)]
-    pub accounts: HashMap<String, String>,
+    pub accounts: HashMap<String, Account>,
     /// What the bookkeeping app calls all of them together, having no notion
-    /// that one institution can hold several accounts.
+    /// that one institution can hold several accounts. An app-side name, not a
+    /// ledger account, so it stays a plain string.
     #[serde(default)]
     pub app_account: String,
     /// Where activity with no statement of its own is attributed.
     #[serde(default)]
-    pub primary: String,
+    pub primary: Account,
     /// Where securities settlement passes through.
     #[serde(default)]
-    pub settlement: String,
+    pub settlement: Account,
     /// The app account whose movements are securities settlement rather than
     /// ordinary spending. Backfilled activity naming it is routed through
-    /// `settlement`; everything else goes through `primary`.
+    /// `settlement`; everything else goes through `primary`. App-side name, so a
+    /// plain string like `app_account`.
     #[serde(default)]
     pub settlement_app_account: String,
     /// Catches internal transfers whose two halves land on different days, so a
     /// non-zero balance means money was genuinely in transit at the period end.
     #[serde(default)]
-    pub clearing: String,
+    pub clearing: Account,
 }
 
 /// Where a statement line goes when no app record explains it.
 #[derive(Debug, Default, Deserialize)]
 pub struct Fallback {
-    pub income: String,
-    pub expense: String,
+    pub income: Account,
+    pub expense: Account,
     /// Statement descriptions whose contra is known without an app record, such
     /// as interest the bank pays and fees it charges.
     #[serde(default)]
-    pub descriptions: HashMap<String, String>,
+    pub descriptions: HashMap<String, Account>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -130,16 +239,16 @@ impl Chart {
     /// empty account names, which Beancount rejects far from the actual cause.
     fn validate(&self) -> Result<()> {
         let required = [
-            ("institution.app_account", &self.institution.app_account),
-            ("institution.primary", &self.institution.primary),
-            ("institution.settlement", &self.institution.settlement),
-            ("institution.settlement_app_account", &self.institution.settlement_app_account),
-            ("institution.clearing", &self.institution.clearing),
-            ("fallback.income", &self.fallback.income),
-            ("fallback.expense", &self.fallback.expense),
+            ("institution.app_account", self.institution.app_account.is_empty()),
+            ("institution.primary", self.institution.primary.is_empty()),
+            ("institution.settlement", self.institution.settlement.is_empty()),
+            ("institution.settlement_app_account", self.institution.settlement_app_account.is_empty()),
+            ("institution.clearing", self.institution.clearing.is_empty()),
+            ("fallback.income", self.fallback.income.is_empty()),
+            ("fallback.expense", self.fallback.expense.is_empty()),
         ];
-        for (name, value) in required {
-            anyhow::ensure!(!value.is_empty(), "{name} is required and must not be empty");
+        for (name, empty) in required {
+            anyhow::ensure!(!empty, "{name} is required and must not be empty");
         }
         anyhow::ensure!(
             !self.institution.accounts.is_empty(),
@@ -150,7 +259,7 @@ impl Chart {
 
     /// An empty account means "deliberately unmapped" and is treated as missing.
     fn get<'a>(table: &'a HashMap<String, Mapping>, key: &str) -> Option<&'a Mapping> {
-        table.get(key).filter(|t| !t.account().is_empty())
+        table.get(key).filter(|t| !t.account.is_empty())
     }
 
     pub fn category(&self, name: &str, is_income: bool) -> Option<&Mapping> {

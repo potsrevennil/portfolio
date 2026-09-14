@@ -11,7 +11,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
 use super::{
-    accounts,
+    accounts::{self, Account, AccountType},
     args::Args,
     daily,
     emit::{contra_posting, emit_daily_accounts, narration_for, resolve},
@@ -43,7 +43,7 @@ fn app_balances(
                 return;
             }
             if let Some(mapping) = chart.account(name) {
-                *bal.entry((mapping.account().to_string(), currency.to_string())).or_default() +=
+                *bal.entry((mapping.account.to_string(), currency.to_string())).or_default() +=
                     amount;
             }
         };
@@ -199,7 +199,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
             let opening_of = |want: &str| -> Decimal {
                 statements
                     .iter()
-                    .find(|s| statement_account(&chart, &s.account_no).map(|a| a == want).unwrap_or(false))
+                    .find(|s| statement_account(&chart, &s.account_no).map(|a| a.as_str() == want).unwrap_or(false))
                     .map(|s| s.opening_balance())
                     .unwrap_or_default()
             };
@@ -278,7 +278,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
     }
 
     for (si, statement) in statements.iter().enumerate() {
-        let account = statement_account(&chart, &statement.account_no)?;
+        let account = statement_account(&chart, &statement.account_no)?.as_str();
         let currency = &statement.currency;
         used_accounts.insert(account.to_string());
         let first = statement.lines.first().expect("load_bank_statement rejects empty statements");
@@ -326,7 +326,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
 
             if let Some(&(psi, pli)) = partner.get(&(si, li)) {
                 n_internal += 1;
-                let far_account = statement_account(&chart, &statements[psi].account_no)?;
+                let far_account = statement_account(&chart, &statements[psi].account_no)?.as_str();
                 used_accounts.insert(far_account.to_string());
                 postings.push(writer::Posting::new(
                     far_account,
@@ -353,7 +353,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
                 }
             } else {
                 n_fallback += 1;
-                let target = fallback_account(&chart, &line.description, line.delta());
+                let target = fallback_account(&chart, &line.description, line.delta()).as_str();
                 used_accounts.insert(target.to_string());
                 postings.push(writer::Posting::new(target, -line.delta(), currency));
             }
@@ -432,15 +432,15 @@ pub fn build(opts: &Args) -> Result<Summary> {
         .unwrap_or(anchor);
     let assert_date = last_date.succ_opt().unwrap_or(last_date);
     let bank_asserted: BTreeSet<&str> =
-        chart.institution.accounts.values().map(String::as_str).collect();
+        chart.institution.accounts.values().map(Account::as_str).collect();
     let leaf_bal = app_balances(&entries, &chart);
     let accounts: BTreeSet<&str> = leaf_bal.keys().map(|(a, _)| a.as_str()).collect();
     let mut asserts = String::new();
     let mut n_asserted = 0usize;
     for account in accounts {
-        let root = account.split(':').next().unwrap_or("");
+        let root = AccountType::parse(account.split(':').next().unwrap_or(""));
         if !used_accounts.contains(account)
-            || (root != "Assets" && root != "Liabilities")
+            || !matches!(root, Some(AccountType::Assets | AccountType::Liabilities))
             || bank_asserted.contains(account)
         {
             continue;

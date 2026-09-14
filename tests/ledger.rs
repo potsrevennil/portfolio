@@ -107,7 +107,7 @@ fn blank_override_account_is_ignored() -> anyhow::Result<()> {
 
     let chart = Chart::load(mapping.path().to_str().unwrap())?;
     let kept = chart.override_for("KEEP").expect("KEEP is corrected");
-    assert_eq!(kept.account, "Expenses:Investment:Loss");
+    assert_eq!(kept.account.as_str(), "Expenses:Investment:Loss");
     assert_eq!(kept.narration, "虧損");
     assert!(chart.override_for("DROP").is_none());
     assert!(chart.override_for("ABSENT").is_none());
@@ -125,6 +125,23 @@ fn a_config_missing_required_accounts_is_rejected() -> anyhow::Result<()> {
         format!("{error:#}").contains("institution.app_account"),
         "error should name the missing field, got: {error:#}"
     );
+    Ok(())
+}
+
+/// An account field now carries a validated `Account`, not a bare string, so a
+/// value that is not a Beancount account fails at load with the offending name
+/// rather than sailing through to bean-check as an unopened account far away.
+#[test]
+fn a_non_beancount_account_is_rejected_at_load() -> anyhow::Result<()> {
+    let mapping = temp(&REQUIRED.replace(
+        r#"expense = "Expenses:Uncategorized""#,
+        r#"expense = "Spending:Uncategorized""#,
+    ))?;
+    let error = Chart::load(mapping.path().to_str().unwrap())
+        .expect_err("a non-Beancount root should not load");
+    let shown = format!("{error:#}");
+    assert!(shown.contains("Spending:Uncategorized"), "error should name the value, got: {shown}");
+    assert!(shown.contains("Assets"), "error should name the roots allowed, got: {shown}");
     Ok(())
 }
 
