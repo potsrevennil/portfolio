@@ -72,27 +72,45 @@ pub async fn fetch(args: &Args, service: &PriceService) -> Result<usize> {
 
     // Yahoo quotes a pair as <from><to>=X, giving <to> per unit of <from>.
     // Thinly traded pairs are only published the other way round — there is no
-    // VNDTWD=X, but TWDVND=X exists — so ask for both and invert the reverse
-    // one. Without this VND and CNY stay unconverted, and Fava then plots them
-    // as their own series stacked into the same bar as TWD.
-    let forward: Vec<String> = currencies.iter().map(|c| format!("{}{}=X", c, args.base)).collect();
-    let reverse: Vec<String> = currencies.iter().map(|c| format!("{}{}=X", args.base, c)).collect();
-    // Last resort: Yahoo publishes nothing for TWD/CNY or TWD/VND in either
-    // direction, but quotes both against USD, so the rate can be crossed.
+    // VNDTWD=X, but TWDVND=X exists — so the inverted quote is a fallback, and a
+    // USD cross a last resort (Yahoo publishes nothing for TWD/VND either way,
+    // but quotes both against USD). Without them VND and CNY stay unconverted,
+    // and Fava then plots them as their own series stacked into the same bar.
+    let end = Utc::now().date_naive();
+    let forward: Vec<String> = currencies.iter().map(|c| format!("{c}{}=X", args.base)).collect();
+    let reverse: Vec<String> = currencies.iter().map(|c| format!("{}{c}=X", args.base)).collect();
     let via_usd: Vec<String> = currencies.iter().map(|c| format!("USD{c}=X")).collect();
     let base_usd = format!("USD{}=X", args.base);
-    let tickers: Vec<String> = forward
-        .iter()
-        .chain(&reverse)
-        .chain(&via_usd)
-        .cloned()
-        .chain(std::iter::once(base_usd.clone()))
-        .collect();
-    let refs: Vec<&str> = tickers.iter().map(String::as_str).collect();
-    let end = Utc::now().date_naive();
 
-    println!("fetching {} .. {} for {:?}", start, end, currencies);
-    let fetched = service.get_prices(&refs, start, end).await?;
+    // Round 1: the direct pair for every currency. Which source wins is a stable
+    // property of Yahoo's coverage, so only a direct pair that comes back thin
+    // or missing is worth a fallback — most runs then fetch one series per
+    // currency, not three.
+    println!("fetching {start} .. {end} for {currencies:?}");
+    let direct_refs: Vec<&str> = forward.iter().map(String::as_str).collect();
+    let mut fetched = service.get_prices(&direct_refs, start, end).await?;
+
+    // A direct series covers the ledger when it is more than a spot quote and
+    // spans roughly the whole range; the ~week of slack absorbs weekends and
+    // holidays, when FX does not trade.
+    let covers = |ticker: &str| {
+        fetched.get(ticker).is_some_and(|p| {
+            p.len() > 1
+                && p.first().is_some_and(|q| (q.date - start).num_days().abs() <= 7)
+                && p.last().is_some_and(|q| (end - q.date).num_days() <= 7)
+        })
+    };
+    let fallbacks: Vec<&str> = (0..currencies.len())
+        .filter(|&i| !covers(&forward[i]))
+        .flat_map(|i| [reverse[i].as_str(), via_usd[i].as_str()])
+        .chain(std::iter::once(base_usd.as_str()))
+        .collect();
+
+    // Round 2: the inverted pair and USD cross, only for what round 1 missed.
+    // `fallbacks` always carries base_usd, so more than that means real work.
+    if fallbacks.len() > 1 {
+        fetched.extend(service.get_prices(&fallbacks, start, end).await?);
+    }
 
     let mut out = String::new();
     writeln!(out, ";; GENERATED — do not edit by hand.")?;
