@@ -438,9 +438,9 @@ pub fn build(opts: &Args) -> Result<Summary> {
     let mut asserts = String::new();
     let mut n_asserted = 0usize;
     for account in accounts {
-        let root = AccountType::parse(account.split(':').next().unwrap_or(""));
+        let root = account.split(':').next().unwrap_or("").parse::<AccountType>();
         if !used_accounts.contains(account)
-            || !matches!(root, Some(AccountType::Assets | AccountType::Liabilities))
+            || !matches!(root, Ok(AccountType::Assets | AccountType::Liabilities))
             || bank_asserted.contains(account)
         {
             continue;

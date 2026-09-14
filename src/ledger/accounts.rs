@@ -6,6 +6,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     fmt, fs,
+    str::FromStr,
 };
 
 use anyhow::{Context, Result};
@@ -24,16 +25,18 @@ pub enum AccountType {
     Equity,
 }
 
-impl AccountType {
+impl FromStr for AccountType {
+    type Err = ();
+
     /// The five roots Beancount allows, and nothing else.
-    pub fn parse(root: &str) -> Option<Self> {
-        Some(match root {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "Assets" => Self::Assets,
             "Liabilities" => Self::Liabilities,
             "Income" => Self::Income,
             "Expenses" => Self::Expenses,
             "Equity" => Self::Equity,
-            _ => return None,
+            _ => return Err(()),
         })
     }
 }
@@ -43,10 +46,12 @@ impl AccountType {
 /// Its own type rather than a bare `String` so a field that holds an account
 /// cannot be mixed up with one holding an app-side account name or a bank's own
 /// wording, and so its [`AccountType`] is available without re-splitting the
-/// string. An empty value is allowed and means "deliberately unmapped"; any
+/// string. It parses through `FromStr`, which is also how it deserializes and
+/// displays: an empty value is allowed and means "deliberately unmapped"; any
 /// non-empty value must be a colon path whose first segment is one of the five
 /// roots, or it is rejected at load with the offending name.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
 pub struct Account(String);
 
 impl Account {
@@ -60,18 +65,22 @@ impl Account {
 
     /// The root this account hangs off, or `None` for the empty "unmapped" one.
     pub fn account_type(&self) -> Option<AccountType> {
-        AccountType::parse(self.0.split(':').next().unwrap_or(""))
+        self.0.split(':').next().unwrap_or("").parse().ok()
     }
+}
 
-    fn parse(raw: &str) -> Result<Self, String> {
-        let name = raw.trim();
+impl FromStr for Account {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let name = s.trim();
         if name.is_empty() {
             return Ok(Account(String::new()));
         }
         if !name.is_ascii() {
             return Err(format!("{name:?} is not ASCII, which Beancount account names must be"));
         }
-        if AccountType::parse(name.split(':').next().unwrap_or("")).is_none() {
+        if name.split(':').next().unwrap_or("").parse::<AccountType>().is_err() {
             return Err(format!(
                 "{name:?} is not a Beancount account: the first segment must be one of \
                  Assets, Liabilities, Income, Expenses, Equity"
@@ -84,19 +93,17 @@ impl Account {
     }
 }
 
-impl fmt::Display for Account {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+impl TryFrom<String> for Account {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
     }
 }
 
-impl<'de> Deserialize<'de> for Account {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        Account::parse(&raw).map_err(serde::de::Error::custom)
+impl fmt::Display for Account {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -104,43 +111,32 @@ impl<'de> Deserialize<'de> for Account {
 /// longer encodes. Written in the config as a bare account string when it has no
 /// tags, or as `{ account = "...", tags = [...] }` when it does — one shape to
 /// the code either way.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Deserialize)]
+#[serde(from = "Raw")]
 pub struct Mapping {
     pub account: Account,
     pub tags: Vec<String>,
 }
 
-impl<'de> Deserialize<'de> for Mapping {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct MappingVisitor;
+/// A mapping as written: a bare account, or an account with tags. Only a parsing
+/// shape — the code sees the flattened `Mapping`, never this.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Raw {
+    Bare(Account),
+    Tagged {
+        account: Account,
+        #[serde(default)]
+        tags: Vec<String>,
+    },
+}
 
-        impl<'de> serde::de::Visitor<'de> for MappingVisitor {
-            type Value = Mapping;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("an account name or a { account, tags } table")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Mapping, E> {
-                Ok(Mapping { account: Account::parse(s).map_err(E::custom)?, tags: Vec::new() })
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Mapping, A::Error> {
-                #[derive(Deserialize)]
-                struct Tagged {
-                    account: Account,
-                    #[serde(default)]
-                    tags: Vec<String>,
-                }
-                let t = Tagged::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(Mapping { account: t.account, tags: t.tags })
-            }
+impl From<Raw> for Mapping {
+    fn from(raw: Raw) -> Self {
+        match raw {
+            Raw::Bare(account) => Mapping { account, tags: Vec::new() },
+            Raw::Tagged { account, tags } => Mapping { account, tags },
         }
-
-        deserializer.deserialize_any(MappingVisitor)
     }
 }
 
