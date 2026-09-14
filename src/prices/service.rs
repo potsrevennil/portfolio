@@ -43,59 +43,62 @@ impl PriceService {
         start_date: NaiveDate,
         end_date: NaiveDate,
     ) -> Result<HashMap<String, Vec<StockPrice>>, PriceError> {
-        let mut fetch_futures = Vec::new();
-
-        // Retrieve existing prices from the database for the requested range.
+        // Existing prices for the requested range, ordered by date per symbol.
         let mut all_prices =
             self.store.get_stock_prices_in_range(symbols, start_date, end_date).await?;
 
-        // For each symbol, determine if additional data needs to be fetched from the
-        // web.
+        // Fetch only what the cache is missing: the tail past the last cached
+        // day — the usual case, since `end_date` advances daily — or the whole
+        // range when nothing is cached or the cache does not reach `start_date`.
+        // Re-fetching the full range each run re-downloaded years of history.
+        let mut fetch_futures = Vec::new();
         for &symbol in symbols {
-            let needs_fetching = all_prices.get(symbol).is_none_or(|prices| {
-                prices.is_empty()
-                    || prices.first().unwrap().date > start_date
-                    || prices.last().unwrap().date < end_date
-            });
-
-            if needs_fetching {
-                let symbol_owned = symbol.to_string();
-                // Prepare an asynchronous task to fetch missing data for this symbol.
-                fetch_futures.push(async move {
-                    // NOTE: Temporarily skipping errors for specific symbols
-                    // due to parsing issues with yfinance-rs. This should be addressed
-                    // with a more robust error handling or data source in the future.
-                    let prices_result =
-                        self.source.fetch_stock_prices(&symbol_owned, start_date, end_date).await;
-
-                    match prices_result {
-                        Ok(prices) => {
-                            Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, prices))
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to fetch prices for {}: {}", symbol_owned, e);
-                            Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, Vec::new()))
-                            // Return empty vec on error
-                        }
+            let fetch_start = match all_prices.get(symbol) {
+                Some(prices) if prices.first().is_some_and(|p| p.date <= start_date) => {
+                    let last = prices.last().unwrap().date;
+                    if last >= end_date {
+                        continue; // already covered
                     }
-                });
-            }
+                    last.succ_opt().unwrap_or(end_date)
+                }
+                _ => start_date,
+            };
+            let symbol_owned = symbol.to_string();
+            fetch_futures.push(async move {
+                // A single symbol's error is logged and swallowed, so one bad
+                // symbol does not fail the whole batch.
+                match self.source.fetch_stock_prices(&symbol_owned, fetch_start, end_date).await {
+                    Ok(prices) => {
+                        Ok::<(String, Vec<StockPrice>), PriceError>((symbol_owned, prices))
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to fetch prices for {}: {}", symbol_owned, e);
+                        Ok((symbol_owned, Vec::new()))
+                    }
+                }
+            });
         }
 
         // Execute all pending data fetching tasks concurrently.
-        let mut fetched_results: HashMap<String, Vec<StockPrice>> =
-            try_join_all(fetch_futures).await?.into_iter().collect();
-
-        fetched_results.retain(|_, v| !v.is_empty());
+        let fetched_results: HashMap<String, Vec<StockPrice>> = try_join_all(fetch_futures)
+            .await?
+            .into_iter()
+            .filter(|(_, prices)| !prices.is_empty())
+            .collect();
 
         // Save any newly fetched data to the database.
         if !fetched_results.is_empty() {
             self.store.save_stock_prices(&fetched_results).await?;
         }
 
-        // Merge the newly fetched data with the data already retrieved from the
-        // database.
-        all_prices.extend(fetched_results);
+        // Merge each fetched delta onto the cached series. A delta abuts the
+        // cache, but a full re-fetch overlaps it, so dedup by date.
+        for (symbol, prices) in fetched_results {
+            let series = all_prices.entry(symbol).or_default();
+            series.extend(prices);
+            series.sort_by_key(|p| p.date);
+            series.dedup_by_key(|p| p.date);
+        }
 
         Ok(all_prices)
     }
