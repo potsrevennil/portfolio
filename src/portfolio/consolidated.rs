@@ -118,7 +118,7 @@ impl ConsolidatedPortfolio {
             .map_or(start_date, |min_date| start_date.min(min_date));
 
         let symbols_ref: Vec<&str> = all_symbols.iter().map(|s| s.as_str()).collect();
-        let prices = price_service.get_prices(&symbols_ref, fetch_start, end_date).await?;
+        let prices = price_service.get_prices(&symbols_ref, fetch_start, end_date, false).await?;
 
         Ok(prices)
     }

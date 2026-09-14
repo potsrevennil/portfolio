@@ -42,27 +42,50 @@ impl PriceService {
         symbols: &[&str],
         start_date: NaiveDate,
         end_date: NaiveDate,
+        force: bool,
     ) -> Result<HashMap<String, Vec<StockPrice>>, PriceError> {
         // Existing prices for the requested range, ordered by date per symbol.
         let mut all_prices =
             self.store.get_stock_prices_in_range(symbols, start_date, end_date).await?;
 
+        // How far each symbol was last fetched through. `force` (--refresh)
+        // ignores it, so a repeat run can re-check the source.
+        let fetched_through =
+            if force { HashMap::new() } else { self.store.get_fetched_through(symbols).await? };
+
         // Fetch only what the cache is missing: the tail past the last cached
         // day — the usual case, since `end_date` advances daily — or the whole
         // range when nothing is cached or the cache does not reach `start_date`.
-        // Re-fetching the full range each run re-downloaded years of history.
+        // Re-fetching the full range each run re-downloaded years of history; a
+        // symbol already fetched through `end_date` is skipped entirely, so
+        // running twice the same day does not re-probe the source for nothing.
         let mut fetch_futures = Vec::new();
+        let mut attempted: Vec<&str> = Vec::new();
         for &symbol in symbols {
-            let fetch_start = match all_prices.get(symbol) {
-                Some(prices) if prices.first().is_some_and(|p| p.date <= start_date) => {
-                    let last = prices.last().unwrap().date;
-                    if last >= end_date {
-                        continue; // already covered
-                    }
-                    last.succ_opt().unwrap_or(end_date)
-                }
-                _ => start_date,
+            let cached = all_prices.get(symbol);
+            let reaches_start =
+                cached.is_some_and(|p| p.first().is_some_and(|q| q.date <= start_date));
+            let last = cached.and_then(|p| p.last()).map(|q| q.date);
+
+            // Every day up to end is already cached.
+            if reaches_start && last.is_some_and(|d| d >= end_date) {
+                continue;
+            }
+            // Already asked the source through end_date, and either the cache
+            // reaches start or the source had nothing — re-asking now would only
+            // return what we already hold.
+            if fetched_through.get(symbol).is_some_and(|&d| d >= end_date)
+                && (cached.is_none() || reaches_start)
+            {
+                continue;
+            }
+
+            let fetch_start = if reaches_start {
+                last.unwrap().succ_opt().unwrap_or(end_date)
+            } else {
+                start_date
             };
+            attempted.push(symbol);
             let symbol_owned = symbol.to_string();
             fetch_futures.push(async move {
                 // A single symbol's error is swallowed so one bad symbol does
@@ -92,6 +115,12 @@ impl PriceService {
         // Save any newly fetched data to the database.
         if !fetched_results.is_empty() {
             self.store.save_stock_prices(&fetched_results).await?;
+        }
+
+        // Every symbol we contacted is now current through end_date — even those
+        // that returned nothing — so the same-day skip above can trust it.
+        if !attempted.is_empty() {
+            self.store.mark_fetched_through(&attempted, end_date).await?;
         }
 
         // Merge each fetched delta onto the cached series. A delta abuts the

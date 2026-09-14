@@ -13,6 +13,12 @@ struct StockPriceRow {
     close_price: f64,
 }
 
+#[derive(sqlx::FromRow, Debug)]
+struct PriceCheckRow {
+    symbol: String,
+    fetched_through: NaiveDate,
+}
+
 // --- Layer 2: Local Price PriceStore ---
 #[derive(Clone)]
 pub struct StockPriceStore {
@@ -52,6 +58,59 @@ impl StockPriceStore {
 
             let query = query_builder.build();
             query.execute(&self.pool).await?;
+        }
+
+        Ok(())
+    }
+
+    /// The date each symbol was last fetched through, for symbols that have a
+    /// record. A symbol not in the map has never been fetched.
+    pub async fn get_fetched_through(
+        &self,
+        symbols: &[&str],
+    ) -> Result<HashMap<String, NaiveDate>, PriceError> {
+        let mut fetched_through = HashMap::new();
+        const BATCH_SIZE: usize = 500;
+
+        for chunk in symbols.chunks(BATCH_SIZE) {
+            let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
+                "SELECT symbol, fetched_through FROM price_checks WHERE symbol IN (",
+            );
+            let mut separated = query_builder.separated(", ");
+            for symbol in chunk {
+                separated.push_bind(symbol);
+            }
+            separated.push_unseparated(")");
+
+            let rows =
+                query_builder.build_query_as::<PriceCheckRow>().fetch_all(&self.pool).await?;
+            for row in rows {
+                fetched_through.insert(row.symbol, row.fetched_through);
+            }
+        }
+
+        Ok(fetched_through)
+    }
+
+    /// Record that these symbols have been fetched through `date`.
+    pub async fn mark_fetched_through(
+        &self,
+        symbols: &[&str],
+        date: NaiveDate,
+    ) -> Result<(), PriceError> {
+        if symbols.is_empty() {
+            return Ok(());
+        }
+        // Two host parameters per row, well under SQLite's 999 limit.
+        const BATCH_SIZE: usize = 400;
+
+        for chunk in symbols.chunks(BATCH_SIZE) {
+            let mut query_builder: QueryBuilder<Sqlite> =
+                QueryBuilder::new("INSERT OR REPLACE INTO price_checks (symbol, fetched_through) ");
+            query_builder.push_values(chunk.iter(), |mut b, symbol| {
+                b.push_bind(*symbol).push_bind(date);
+            });
+            query_builder.build().execute(&self.pool).await?;
         }
 
         Ok(())

@@ -24,6 +24,10 @@ pub struct Args {
     /// Directory holding the Beancount ledger
     #[arg(long, default_value = "ledger")]
     pub ledger_dir: String,
+
+    /// Re-check the source even for prices already fetched today
+    #[arg(long)]
+    pub refresh: bool,
 }
 
 /// Currencies the generated ledger actually holds, and the date it starts.
@@ -88,7 +92,7 @@ pub async fn fetch(args: &Args, service: &PriceService) -> Result<usize> {
     // currency, not three.
     log::info!("fetching {start} .. {end} for {currencies:?}");
     let direct_refs: Vec<&str> = forward.iter().map(String::as_str).collect();
-    let mut fetched = service.get_prices(&direct_refs, start, end).await?;
+    let mut fetched = service.get_prices(&direct_refs, start, end, args.refresh).await?;
 
     // A direct series covers the ledger when it is more than a spot quote and
     // spans roughly the whole range; the ~week of slack absorbs weekends and
@@ -109,7 +113,7 @@ pub async fn fetch(args: &Args, service: &PriceService) -> Result<usize> {
     // Round 2: the inverted pair and USD cross, only for what round 1 missed.
     // `fallbacks` always carries base_usd, so more than that means real work.
     if fallbacks.len() > 1 {
-        fetched.extend(service.get_prices(&fallbacks, start, end).await?);
+        fetched.extend(service.get_prices(&fallbacks, start, end, args.refresh).await?);
     }
 
     let mut out = String::new();
