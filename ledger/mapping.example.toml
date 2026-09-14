@@ -1,0 +1,78 @@
+# Example chart of accounts. Copy to mapping.toml and edit.
+#
+# Everything here is yours, not the importer's: which bank you use, which
+# account numbers, which categories map where, and who you split bills with.
+# mapping.toml is gitignored for that reason. This file documents the shape
+# with invented values and is the one that ships.
+#
+# Beancount rejects non-ASCII account names and Fava cannot alias them, so
+# readability comes from keeping the tree shallow. Expenses are capped at two
+# levels and the detail moves into tags, which Fava can filter on.
+#
+# Asset and liability accounts keep their leaf name: a tag cannot hold a
+# balance, so collapsing them would lose the per-account figure.
+#
+# A value may be a plain account name, or { account = "...", tags = [...] }.
+
+
+# The bank whose statements drive the ledger. Account numbers are yours, so the
+# code reads whichever numbers it is given rather than knowing any itself.
+[institution]
+app_account = "銀行"                          # what the bookkeeping app calls them together
+primary = "Assets:Bank:Savings"               # where activity with no statement lands
+settlement = "Assets:Bank:Investment"         # where securities settlement passes
+settlement_app_account = "證券"                # app account that means settlement
+clearing = "Assets:Bank:Transfer-Clearing"    # internal transfers still in flight
+
+# Statement account number → ledger account. One entry per statement file.
+[institution.accounts]
+"123456789012" = "Assets:Bank:Savings"
+"210987654321" = "Assets:Bank:Investment"
+
+# Where a statement line goes when no app record explains it. The statement
+# alone tells us only the direction, so that is all the default can use.
+[fallback]
+income = "Income:Uncategorized"
+expense = "Expenses:Uncategorized"
+
+# Except where the bank's own wording says what the line is. This is per-bank
+# phrasing, which is why it is configured rather than compiled in.
+[fallback.descriptions]
+"存款息" = "Income:Interest"
+"跨行費用" = "Expenses:Fees:Bank"
+"手續費" = "Expenses:Fees:Bank"
+
+# Spending categories, as the app names them. Several may share one account;
+# the 中文總覽 page shows the first and lists the rest as a tooltip.
+[expenses]
+"交通" = "Expenses:Transport"
+"咖啡" = { account = "Expenses:Food", tags = ["coffee"] }
+"居家" = "Expenses:Home"
+"食材" = { account = "Expenses:Food", tags = ["groceries"] }
+"飲食" = { account = "Expenses:Food", tags = ["dining"] }
+
+# Earning categories. Keyed separately because one app category can mean either
+# depending on direction: 投資 is a fee when paid and a return when received.
+[income]
+"投資" = "Income:Investment"
+"薪資" = "Income:Salary"
+"回饋" = "Income:Rebates"
+
+# Accounts the app names, including the ones no statement covers.
+[accounts]
+"現金" = "Assets:Cash"
+"銀行" = "Assets:Bank"
+"信用卡" = { account = "Liabilities:Card", tags = ["card"] }
+"應收款" = "Assets:Receivable"
+"證券" = "Assets:Securities"
+
+# Single records whose app category is too coarse, keyed by the record's UUID
+# (the export's last column). The app allows one category per record, so a
+# once-off event the category list has no word for lands under whatever is
+# closest — and then reads as an ordinary fee or an ordinary windfall.
+#
+# Both sides of one episode can point at the same account, so its running
+# balance is the net rather than a large expense in one year and a large income
+# in another. An id matching no record is reported rather than ignored.
+[overrides]
+"00000000-0000-4000-8000-000000000000" = { account = "Expenses:Investment:Loss", narration = "虧損", tags = ["example"] }

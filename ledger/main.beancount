@@ -1,0 +1,42 @@
+;; Personal ledger — system of record for cash, debts and securities.
+;;
+;; Nothing below loads on a fresh checkout, and that is not a fault: every file
+;; this includes is either yours and gitignored, or produced by the importer.
+;; In order:
+;;
+;;   1. Your own copies of the two gitignored inputs.
+;;        cp ledger/mapping.example.toml     ledger/mapping.toml
+;;        cp ledger/manual.example.beancount ledger/manual.beancount
+;;      Then edit mapping.toml: it names your accounts, and the importer
+;;      refuses to run until institution.* and fallback.* are filled in.
+;;
+;;   2. The imported half, which writes everything under generated/.
+;;        cargo run -- ledger \
+;;          --cathay-statements <活存.csv> <投資.csv> \
+;;          --daily-income-expense <天天記帳_..._收支_....csv> \
+;;          --daily-transfers <天天記帳_..._轉帳_....csv> \
+;;          --daily-backfill
+;;      Both 天天記帳 exports are required: without them the app half is
+;;      silently skipped and every statement line falls back to an
+;;      uncategorised contra.
+;;
+;; Then validate with:  bean-check ledger/main.beancount
+;;
+;; A missing-glob error from bean-check means step 2 has not been run, not that
+;; the ledger is broken.
+
+option "title" "Personal Ledger"
+option "operating_currency" "TWD"
+option "operating_currency" "USD"
+
+;; Cross-currency transfers state the total the other leg is worth, and
+;; Beancount converts that back to a per-unit rate with ~28 significant digits.
+;; Multiplying it out leaves residuals around 1e-24, so tolerate a rounding
+;; error far below any real unit of currency.
+option "inferred_tolerance_default" "*:0.01"
+
+include "accounts.beancount"
+include "manual.beancount"
+include "generated/accounts.beancount"
+include "generated/cathay.beancount"
+include "generated/daily.beancount"
