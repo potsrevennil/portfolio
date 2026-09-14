@@ -18,7 +18,7 @@ use crate::{currency::Currency, prices::PriceService};
 #[derive(clap::Parser, Debug)]
 pub struct Args {
     /// Currency to quote everything in
-    #[arg(long, value_enum, default_value_t = Currency::TWD)]
+    #[arg(long, value_enum, default_value_t = Currency::TWD, hide_possible_values = true)]
     pub base: Currency,
 
     /// Directory holding the Beancount ledger
