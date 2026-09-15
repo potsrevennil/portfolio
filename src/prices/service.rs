@@ -53,41 +53,45 @@ impl PriceService {
         let fetched_through =
             if force { HashMap::new() } else { self.store.get_fetched_through(symbols).await? };
 
-        // Fetch only what the cache is missing: the tail past the last cached
-        // day — the usual case, since `end_date` advances daily — or the whole
-        // range when nothing is cached or the cache does not reach `start_date`.
-        // Re-fetching the full range each run re-downloaded years of history; a
-        // symbol already fetched through `end_date` is skipped entirely, so
-        // running twice the same day does not re-probe the source for nothing.
-        let mut fetch_futures = Vec::new();
-        let mut attempted: Vec<&str> = Vec::new();
-        for &symbol in symbols {
-            let cached = all_prices.get(symbol);
-            let reaches_start =
-                cached.is_some_and(|p| p.first().is_some_and(|q| q.date <= start_date));
-            let last = cached.and_then(|p| p.last()).map(|q| q.date);
+        // Decide, purely, which symbols to fetch and from when: the tail past
+        // the last cached day — the usual case, since `end_date` advances daily
+        // — or the whole range when the cache is empty or does not reach start.
+        // A symbol already covered, or already fetched through `end_date` this
+        // day, needs nothing. Fetching only the tail keeps a run from
+        // re-downloading years of history, and the same-day skip keeps a repeat
+        // run from re-probing the source for nothing.
+        let to_fetch: Vec<(&str, NaiveDate)> = symbols
+            .iter()
+            .filter_map(|&symbol| {
+                let cached = all_prices.get(symbol);
+                let reaches_start =
+                    cached.is_some_and(|p| p.first().is_some_and(|q| q.date <= start_date));
+                let last = cached.and_then(|p| p.last()).map(|q| q.date);
 
-            // Every day up to end is already cached.
-            if reaches_start && last.is_some_and(|d| d >= end_date) {
-                continue;
-            }
-            // Already asked the source through end_date, and either the cache
-            // reaches start or the source had nothing — re-asking now would only
-            // return what we already hold.
-            if fetched_through.get(symbol).is_some_and(|&d| d >= end_date)
-                && (cached.is_none() || reaches_start)
-            {
-                continue;
-            }
+                let covered = reaches_start && last.is_some_and(|d| d >= end_date);
+                // Asked the source through end_date already, and the cache
+                // reaches start (or the source had nothing) — re-asking would
+                // return only what we hold.
+                let fresh = fetched_through.get(symbol).is_some_and(|&d| d >= end_date)
+                    && (cached.is_none() || reaches_start);
+                if covered || fresh {
+                    return None;
+                }
+                let fetch_start = if reaches_start {
+                    last.unwrap().succ_opt().unwrap_or(end_date)
+                } else {
+                    start_date
+                };
+                Some((symbol, fetch_start))
+            })
+            .collect();
 
-            let fetch_start = if reaches_start {
-                last.unwrap().succ_opt().unwrap_or(end_date)
-            } else {
-                start_date
-            };
-            attempted.push(symbol);
+        // Every symbol we contact, so the same-day marker below covers them all.
+        let attempted: Vec<&str> = to_fetch.iter().map(|&(symbol, _)| symbol).collect();
+
+        let fetch_futures = to_fetch.into_iter().map(|(symbol, fetch_start)| {
             let symbol_owned = symbol.to_string();
-            fetch_futures.push(async move {
+            async move {
                 // A single symbol's error is swallowed so one bad symbol does
                 // not fail the batch. Logged at debug, not warn: a symbol with
                 // no data is an expected, benign outcome here — callers probe
@@ -102,8 +106,8 @@ impl PriceService {
                         Ok((symbol_owned, Vec::new()))
                     }
                 }
-            });
-        }
+            }
+        });
 
         // Execute all pending data fetching tasks concurrently.
         let fetched_results: HashMap<String, Vec<StockPrice>> = try_join_all(fetch_futures)
