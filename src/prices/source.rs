@@ -51,29 +51,23 @@ impl YFinanceSource {
             return rust_decimal::Decimal::ONE;
         }
 
-        if let Some(ticker) = YFinanceSource::get_exchange_rate_ticker(from_currency, to_currency) {
-            if let Some(exchange_prices) = prices.get(&ticker) {
-                if let Some(latest_price) = exchange_prices.last() {
-                    return rust_decimal::Decimal::from_f64(latest_price.close_price)
-                        .unwrap_or_default();
-                }
-            }
-        }
-        rust_decimal::Decimal::ONE // Default to 1 if no conversion rate found
+        // Default to 1 if no conversion rate found.
+        YFinanceSource::get_exchange_rate_ticker(from_currency, to_currency)
+            .and_then(|ticker| prices.get(&ticker))
+            .and_then(|exchange_prices| exchange_prices.last())
+            .and_then(|latest_price| rust_decimal::Decimal::from_f64(latest_price.close_price))
+            .unwrap_or(rust_decimal::Decimal::ONE)
     }
 
     pub fn get_exchange_rate_ticker(
         from_currency: Currency,
         to_currency: Currency,
     ) -> Option<String> {
-        if from_currency == to_currency {
-            return None;
-        }
-
         match (from_currency, to_currency) {
-            (Currency::USD, to) => Some(format!("{}=X", to)),
-            (from, Currency::USD) => Some(format!("{}USD=X", from)),
-            (from, to) => Some(format!("{}{}=X", from, to)),
+            (a, b) if a == b => None,
+            (Currency::USD, to) => Some(format!("{to}=X")),
+            (from, Currency::USD) => Some(format!("{from}USD=X")),
+            (from, to) => Some(format!("{from}{to}=X")),
         }
     }
 

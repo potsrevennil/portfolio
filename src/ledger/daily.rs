@@ -51,9 +51,10 @@ fn parse_date(s: &str) -> Result<NaiveDate> {
 fn parse_amount(s: &str) -> Result<Decimal> {
     let t = s.trim().replace(',', "");
     if t.is_empty() {
-        return Ok(Decimal::ZERO);
+        Ok(Decimal::ZERO)
+    } else {
+        t.parse::<Decimal>().with_context(|| format!("unparseable 天天記帳 amount {:?}", s))
     }
-    t.parse::<Decimal>().with_context(|| format!("unparseable 天天記帳 amount {:?}", s))
 }
 
 /// The currency in a 幣別 cell, defaulting to TWD when the column is absent or
