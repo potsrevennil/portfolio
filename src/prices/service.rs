@@ -74,15 +74,17 @@ impl PriceService {
                 // return only what we hold.
                 let fresh = fetched_through.get(symbol).is_some_and(|&d| d >= end_date)
                     && (cached.is_none() || reaches_start);
+
                 if covered || fresh {
-                    return None;
-                }
-                let fetch_start = if reaches_start {
-                    last.unwrap().succ_opt().unwrap_or(end_date)
+                    None
                 } else {
-                    start_date
-                };
-                Some((symbol, fetch_start))
+                    let fetch_start = if reaches_start {
+                        last.unwrap().succ_opt().unwrap_or(end_date)
+                    } else {
+                        start_date
+                    };
+                    Some((symbol, fetch_start))
+                }
             })
             .collect();
 
