@@ -6,7 +6,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-use crate::{calculate, ledger, record};
+use crate::{calculate, db, ledger, prices::PriceService, record};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -25,6 +25,8 @@ enum Command {
     Record(Record),
     /// Build a Beancount ledger from downloaded statements
     Ledger(ledger::Args),
+    /// Fetch daily exchange rates so the ledger's currencies can be compared
+    Rates(ledger::rates::Args),
 }
 
 #[derive(Parser, Debug)]
@@ -41,6 +43,12 @@ impl Cli {
             }
             Some(Command::Ledger(args)) => {
                 print!("{}", ledger::build(args)?);
+                Ok(())
+            }
+            Some(Command::Rates(args)) => {
+                let pool = db::init_db("sqlite:sqlite.db").await?;
+                let written = ledger::rates::fetch(args, &PriceService::new(pool)).await?;
+                println!("wrote {written} price directives");
                 Ok(())
             }
             Some(Command::Init(args)) => calculate::init(args).await,

@@ -114,7 +114,7 @@ struct SharedArgs {
     #[arg(long, value_parser = parse_time_selector)]
     from: Option<TimeSelector>,
 
-    #[arg(long, value_enum, default_value_t = Currency::USD)]
+    #[arg(long, value_enum, default_value_t = Currency::USD, hide_possible_values = true)]
     reporting_currency: Currency,
 }
 

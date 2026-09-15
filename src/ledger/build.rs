@@ -436,14 +436,16 @@ pub fn build(opts: &Args) -> Result<Summary> {
     let accounts: BTreeSet<&str> = leaf_bal.keys().map(|(a, _)| a.as_str()).collect();
     let mut asserts = String::new();
     let mut n_asserted = 0usize;
-    for account in accounts {
+
+    // Assert every used asset or liability account, except 國泰's — those are
+    // asserted against the bank statement, not the app.
+    let assertable = accounts.into_iter().filter(|&account| {
         let root = account.split(':').next().unwrap_or("").parse::<AccountType>();
-        if !used_accounts.contains(account)
-            || !matches!(root, Ok(AccountType::Assets | AccountType::Liabilities))
-            || bank_asserted.contains(account)
-        {
-            continue;
-        }
+        used_accounts.contains(account)
+            && matches!(root, Ok(AccountType::Assets | AccountType::Liabilities))
+            && !bank_asserted.contains(account)
+    });
+    for account in assertable {
         // A Beancount balance assertion covers the account's whole subtree, so
         // the asserted figure must sum the account with its descendants.
         let prefix = format!("{account}:");
