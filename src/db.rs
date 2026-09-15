@@ -8,7 +8,7 @@ pub async fn init_db(db_url: &str) -> Result<SqlitePool> {
 
     // Create the database file if it doesn't exist
     if !Path::new(db_file_path).exists() {
-        println!("Creating database file: {}", db_file_path);
+        log::info!("Creating database file: {db_file_path}");
         fs::File::create(db_file_path)?;
     }
 
