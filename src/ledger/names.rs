@@ -30,12 +30,9 @@ pub(super) fn fallback_account<'a>(
     description: &str,
     delta: Decimal,
 ) -> &'a Account {
-    if let Some(account) = chart.fallback.descriptions.get(description) {
-        return account;
-    }
-    if delta.is_sign_positive() {
-        &chart.fallback.income
-    } else {
-        &chart.fallback.expense
+    match chart.fallback.descriptions.get(description) {
+        Some(account) => account,
+        None if delta.is_sign_positive() => &chart.fallback.income,
+        None => &chart.fallback.expense,
     }
 }

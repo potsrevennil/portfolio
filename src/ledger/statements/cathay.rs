@@ -73,9 +73,10 @@ impl BankStatement {
 fn parse_amount(s: &str) -> Result<Decimal> {
     let t = s.trim();
     if t.is_empty() || t == "−" || t == "-" {
-        return Ok(Decimal::ZERO);
+        Ok(Decimal::ZERO)
+    } else {
+        t.replace(',', "").parse::<Decimal>().with_context(|| format!("unparseable amount {:?}", t))
     }
-    t.replace(',', "").parse::<Decimal>().with_context(|| format!("unparseable amount {:?}", t))
 }
 
 fn parse_slash_date(s: &str) -> Result<NaiveDate> {
