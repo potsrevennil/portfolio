@@ -441,13 +441,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 tags,
                 postings,
                 source: model::Source::Import,
-                // A stable per-line id: the account number is unique per
-                // statement and the line index unique within it, so no two lines
-                // collide, and the running balance keeps it legible.
-                external_ref: Some(format!(
-                    "{}:{}:{}:{}",
-                    statement.account_no, li, line.book_date, line.balance
-                )),
+                external_ref: Some(line.dedup_ref(&statement.account_no)),
             }));
             cathay.push(Directive::Blank);
         }

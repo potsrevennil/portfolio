@@ -30,6 +30,13 @@ impl StatementLine {
     /// Signed effect on the account. `withdrawal` can be negative on 錯誤更正
     /// (error-correction) rows, which reverse an earlier debit.
     pub fn delta(&self) -> Decimal { self.deposit - self.withdrawal }
+
+    /// Dedup key shared by the freeze bake and importers. Not the line index:
+    /// statements get re-split per year, which shifts indices. The running
+    /// balance keeps same-day, same-amount lines distinct.
+    pub fn dedup_ref(&self, account_no: &str) -> String {
+        format!("{}:{}:{}:{}", account_no, self.book_date, self.delta(), self.balance)
+    }
 }
 
 #[derive(Debug)]
@@ -278,5 +285,21 @@ mod tests {
         ]);
 
         assert!(s.reversals().is_empty());
+    }
+
+    #[test]
+    fn dedup_ref_is_content_based() {
+        let mut l = line(29, "電子轉出", dec!(500), "(822)0000000000000001");
+        l.balance = dec!(1000);
+        assert_eq!(l.dedup_ref("123456789012"), "123456789012:2026-06-29:-500:1000");
+    }
+
+    #[test]
+    fn dedup_ref_distinguishes_repeated_amounts_by_balance() {
+        let mut first = line(29, "電子轉出", dec!(500), "(822)0000000000000001");
+        first.balance = dec!(1500);
+        let mut second = line(29, "電子轉出", dec!(500), "(807)0000000000000002");
+        second.balance = dec!(1000);
+        assert_ne!(first.dedup_ref("123456789012"), second.dedup_ref("123456789012"));
     }
 }

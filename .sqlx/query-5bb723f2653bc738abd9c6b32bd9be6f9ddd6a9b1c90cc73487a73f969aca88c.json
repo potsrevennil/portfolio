@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO transactions (date, payee, narration, source, external_ref)\n            VALUES (?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "5bb723f2653bc738abd9c6b32bd9be6f9ddd6a9b1c90cc73487a73f969aca88c"
+}

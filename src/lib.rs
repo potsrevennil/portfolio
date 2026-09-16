@@ -6,11 +6,13 @@ pub mod db;
 pub mod event;
 pub mod ib;
 pub mod ledger;
+pub mod matcher;
 pub mod portfolio;
 pub mod prices;
 pub mod record;
 pub mod securities;
 pub mod split;
+pub mod store;
 // Re-export necessary items from db
 pub use db::init_db;
 // Re-export necessary items from portfolio
