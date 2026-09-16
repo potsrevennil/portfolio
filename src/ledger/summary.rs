@@ -13,6 +13,9 @@ pub struct Summary {
     pub categorised: usize,
     pub internal: usize,
     pub in_transit: usize,
+    /// Debits the bank itself reversed (錯誤更正), each netted with its
+    /// reversal.
+    pub reversed: usize,
     pub uncategorised: usize,
     /// Records emitted for accounts that have no statement.
     pub other_accounts: usize,
@@ -46,6 +49,9 @@ impl fmt::Display for Summary {
              clearing, {} uncategorised",
             self.categorised, self.internal, self.in_transit, self.uncategorised
         )?;
+        if self.reversed > 0 {
+            writeln!(f, "  {} bank reversals netted against the debit they undid", self.reversed)?;
+        }
         if self.other_accounts > 0 {
             writeln!(
                 f,
