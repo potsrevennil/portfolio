@@ -42,6 +42,16 @@ expense = "Expenses:Uncategorized"
 "跨行費用" = "Expenses:Fees:Bank"
 "手續費" = "Expenses:Fees:Bank"
 
+# Positions already carried when record-keeping began, which the app has no way
+# to express. Keyed by ledger account; each is posted against
+# Equity:Opening-Balances and folded into that account's balance assertion, so an
+# account whose life predates the exports (a loan drawn earlier, a wallet already
+# holding cash) shows its true total rather than only the movements since.
+# amount is a quoted string; date is the day it is asserted from, before the
+# first record.
+[opening_balances]
+"Liabilities:Card" = { amount = "-5000", date = "2020-01-01", currency = "TWD" }
+
 # Spending categories, as the app names them. Several may share one account;
 # the 中文總覽 page shows the first and lists the rest as a tooltip.
 [expenses]

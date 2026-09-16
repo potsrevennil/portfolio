@@ -12,7 +12,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
+use rust_decimal::Decimal;
 use serde::Deserialize;
+
+use crate::currency::Currency;
 
 /// One of Beancount's five account roots — the part of an account name that
 /// fixes its sign convention and which statement it lands on.
@@ -209,6 +213,25 @@ pub struct Fallback {
     pub descriptions: HashMap<String, Account>,
 }
 
+/// A balance an account already carried before 天天記帳's history begins.
+///
+/// The app has no opening-balance concept, so an account whose life predates
+/// the exports — a loan drawn before record-keeping, a wallet already holding
+/// cash — nets to only the movements since, not its true total. This declares
+/// the starting position: the build emits it against `Equity:Opening-Balances`
+/// and folds it into the account's balance assertion, so `bean-check` still
+/// proves the ledger matches the app plus this declared start.
+///
+/// `amount` is a string because `rust_decimal` deserializes through
+/// `serde-str`; `date` is the day the position is asserted from, before the
+/// first record.
+#[derive(Debug, Deserialize)]
+pub struct OpeningBalance {
+    pub amount: Decimal,
+    pub currency: Currency,
+    pub date: NaiveDate,
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct Chart {
     #[serde(default)]
@@ -223,6 +246,10 @@ pub struct Chart {
     pub institution: Institution,
     #[serde(default)]
     pub fallback: Fallback,
+    /// Positions predating the exports, keyed by the ledger account they belong
+    /// to. See `OpeningBalance`.
+    #[serde(default)]
+    pub opening_balances: HashMap<String, OpeningBalance>,
 }
 
 impl Chart {
@@ -258,6 +285,9 @@ impl Chart {
             !self.institution.accounts.is_empty(),
             "institution.accounts must name at least one statement account number"
         );
+        for key in self.opening_balances.keys() {
+            key.parse::<Account>().map_err(|e| anyhow::anyhow!("opening_balances: {e}"))?;
+        }
         Ok(())
     }
 
