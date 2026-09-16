@@ -14,15 +14,14 @@
 #
 # A value may be a plain account name, or { account = "...", tags = [...] }.
 
-
 # The bank whose statements drive the ledger. Account numbers are yours, so the
 # code reads whichever numbers it is given rather than knowing any itself.
 [institution]
-app_account = "銀行"                          # what the bookkeeping app calls them together
-primary = "Assets:Bank:Savings"               # where activity with no statement lands
-settlement = "Assets:Bank:Investment"         # where securities settlement passes
-settlement_app_account = "證券"                # app account that means settlement
-clearing = "Assets:Bank:Transfer-Clearing"    # internal transfers still in flight
+app_account            = "銀行"                            # what the bookkeeping app calls them together
+primary                = "Assets:Bank:Savings"           # where activity with no statement lands
+settlement             = "Assets:Bank:Investment"        # where securities settlement passes
+settlement_app_account = "證券"                            # app account that means settlement
+clearing               = "Assets:Bank:Transfer-Clearing" # internal transfers still in flight
 
 # Statement account number → ledger account. One entry per statement file.
 [institution.accounts]
@@ -32,15 +31,15 @@ clearing = "Assets:Bank:Transfer-Clearing"    # internal transfers still in flig
 # Where a statement line goes when no app record explains it. The statement
 # alone tells us only the direction, so that is all the default can use.
 [fallback]
-income = "Income:Uncategorized"
+income  = "Income:Uncategorized"
 expense = "Expenses:Uncategorized"
 
 # Except where the bank's own wording says what the line is. This is per-bank
 # phrasing, which is why it is configured rather than compiled in.
 [fallback.descriptions]
-"存款息" = "Income:Interest"
+"存款息"  = "Income:Interest"
 "跨行費用" = "Expenses:Fees:Bank"
-"手續費" = "Expenses:Fees:Bank"
+"手續費"  = "Expenses:Fees:Bank"
 
 # Positions already carried when record-keeping began, which the app has no way
 # to express. Keyed by ledger account; each is posted against
@@ -70,11 +69,11 @@ expense = "Expenses:Uncategorized"
 
 # Accounts the app names, including the ones no statement covers.
 [accounts]
-"現金" = "Assets:Cash"
-"銀行" = "Assets:Bank"
+"現金"  = "Assets:Cash"
+"銀行"  = "Assets:Bank"
 "信用卡" = { account = "Liabilities:Card", tags = ["card"] }
 "應收款" = "Assets:Receivable"
-"證券" = "Assets:Securities"
+"證券"  = "Assets:Securities"
 
 # Single records whose app category is too coarse, keyed by the record's UUID
 # (the export's last column). The app allows one category per record, so a
@@ -85,7 +84,9 @@ expense = "Expenses:Uncategorized"
 # balance is the net rather than a large expense in one year and a large income
 # in another. An id matching no record is reported rather than ignored.
 [overrides]
-"00000000-0000-4000-8000-000000000000" = { account = "Expenses:Investment:Loss", narration = "虧損", tags = ["example"] }
+"00000000-0000-4000-8000-000000000000" = { account = "Expenses:Investment:Loss", narration = "虧損", tags = [
+  "example",
+] }
 
 # Chinese labels for the account tree, used to relabel Fava's reports. A
 # category or institution above is relabelled from its own key; this covers the
@@ -94,12 +95,12 @@ expense = "Expenses:Uncategorized"
 # (they differ only by tag), so none of them can name it — clicking 咖啡 would
 # open every Food record — and it is labelled here instead.
 [display]
-"Assets" = "資產"
-"Assets:Bank" = "銀行"
-"Assets:Cash" = "現金"
-"Equity" = "權益"
+"Assets"                  = "資產"
+"Assets:Bank"             = "銀行"
+"Assets:Cash"             = "現金"
+"Equity"                  = "權益"
 "Equity:Opening-Balances" = "期初餘額"
-"Expenses" = "支出"
-"Expenses:Food" = "餐飲"
-"Income" = "收入"
-"Liabilities" = "負債"
+"Expenses"                = "支出"
+"Expenses:Food"           = "餐飲"
+"Income"                  = "收入"
+"Liabilities"             = "負債"

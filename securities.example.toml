@@ -6,13 +6,12 @@
 #
 # Read from the working directory on every run. Both sections are optional.
 
-
 # Security name → Yahoo Finance ticker: .TW for TWSE listings, .TWO for TPEx.
 # Some exports name a security rather than giving its ticker. Every name such
 # an export contains needs an entry here; a missing one fails the import and
 # says which name.
 [symbols]
-"範例科技" = "ZZ01.TW"
+"範例科技"  = "ZZ01.TW"
 "範例高股息" = "ZZ02.TW"
 "範例公司債" = "ZZ03B.TWO"
 
@@ -20,5 +19,5 @@
 # split is 4. Dates are quoted, as YYYY-MM-DD.
 [[splits]]
 symbol = "ZZ01.TW"
-date = "2024-07-01"
-ratio = 4
+date   = "2024-07-01"
+ratio  = 4

@@ -1,0 +1,6 @@
+[codespell]
+# target/ and .direnv/ are build output; .sqlx/ and *.lock are generated.
+skip = ./target,./.direnv,./.sqlx,./sqlite.db,*.lock
+# ZAR is the South African Rand currency code; "unparseable" is valid English
+# and the spelling the error messages already use.
+ignore-words-list = unparseable,zar
