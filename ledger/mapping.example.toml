@@ -42,6 +42,16 @@ expense = "Expenses:Uncategorized"
 "跨行費用" = "Expenses:Fees:Bank"
 "手續費" = "Expenses:Fees:Bank"
 
+# Positions already carried when record-keeping began, which the app has no way
+# to express. Keyed by ledger account; each is posted against
+# Equity:Opening-Balances and folded into that account's balance assertion, so an
+# account whose life predates the exports (a loan drawn earlier, a wallet already
+# holding cash) shows its true total rather than only the movements since.
+# amount is a quoted string; date is the day it is asserted from, before the
+# first record.
+[opening_balances]
+"Liabilities:Card" = { amount = "-5000", date = "2020-01-01", currency = "TWD" }
+
 # Spending categories, as the app names them. Several may share one account;
 # the 中文總覽 page shows the first and lists the rest as a tooltip.
 [expenses]
@@ -76,3 +86,20 @@ expense = "Expenses:Uncategorized"
 # in another. An id matching no record is reported rather than ignored.
 [overrides]
 "00000000-0000-4000-8000-000000000000" = { account = "Expenses:Investment:Loss", narration = "虧損", tags = ["example"] }
+
+# Chinese labels for the account tree, used to relabel Fava's reports. A
+# category or institution above is relabelled from its own key; this covers the
+# grouping levels, the accounts the app names in Latin script, and any account
+# that several categories collapse into. Expenses:Food takes 飲食, 食材 and 咖啡
+# (they differ only by tag), so none of them can name it — clicking 咖啡 would
+# open every Food record — and it is labelled here instead.
+[display]
+"Assets" = "資產"
+"Assets:Bank" = "銀行"
+"Assets:Cash" = "現金"
+"Equity" = "權益"
+"Equity:Opening-Balances" = "期初餘額"
+"Expenses" = "支出"
+"Expenses:Food" = "餐飲"
+"Income" = "收入"
+"Liabilities" = "負債"

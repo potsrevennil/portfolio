@@ -455,6 +455,14 @@ pub fn build(opts: &Args) -> Result<Summary> {
                 *by_currency.entry(*currency).or_default() += *amount;
             }
         }
+        // Fold in any opening balance on this account (or its subtree): the app
+        // records net only the movements since, so the asserted figure must add
+        // the declared starting position the build also emits below.
+        for (ob_account, ob) in &chart.opening_balances {
+            if ob_account == account || ob_account.starts_with(&prefix) {
+                *by_currency.entry(ob.currency).or_default() += ob.amount;
+            }
+        }
         // Emit an account's assertions ordered by currency code, not by the
         // enum's declaration order, so the output is stable and alphabetical.
         let mut per_currency: Vec<(Currency, Decimal)> = by_currency.into_iter().collect();
@@ -465,10 +473,32 @@ pub fn build(opts: &Args) -> Result<Summary> {
         }
     }
 
+    // Opening balances predate every record, so build their transactions first
+    // and make sure their accounts are opened alongside the rest.
+    let mut opening = String::new();
+    let mut declared: Vec<(&String, &accounts::OpeningBalance)> =
+        chart.opening_balances.iter().collect();
+    declared.sort_by(|a, b| a.0.cmp(b.0));
+    for (account, ob) in declared {
+        used_accounts.insert(account.clone());
+        opening.push_str(&writer::transaction(ob.date, "", "Opening balance", &[], &[
+            writer::Posting::new(account.clone(), ob.amount, ob.currency),
+            writer::Posting::inferred("Equity:Opening-Balances"),
+        ]));
+    }
+
     let mut opens = String::new();
     opens.push_str(";; GENERATED — do not edit by hand.\n\n");
     for account in &used_accounts {
         writeln!(opens, "2000-01-01 open {}", account)?;
+    }
+    if !opening.is_empty() {
+        opens.push_str(
+            "\n;; Opening balances — positions predating 天天記帳, emitted against\n;; \
+             Equity:Opening-Balances and folded into the assertions in daily.beancount\n;; so \
+             bean-check still proves the ledger matches the app plus this start.\n\n",
+        );
+        opens.push_str(&opening);
     }
     std::fs::write(out_dir.join("accounts.beancount"), opens)?;
 
