@@ -6,24 +6,84 @@ set -o errtrace
 set -o nounset
 set -o pipefail
 
-# consts
+# Formats the tree. With --check nothing is written: the formatters report drift
+# instead, and the lint-only tools (deadnix, shellcheck, codespell) run too, so
+# `format --check` is exactly the CI lint gate — the workflow just calls this.
+# A plain `format` only formats; it does not run the linters. Run inside
+# `nix develop`, which puts every tool on PATH.
+
+check=0
+case "${1:-}" in
+  --check | --dry-run | -n) check=1 ;;
+  "") ;;
+  *)
+    echo "usage: ${0##*/} [--check]" >&2
+    exit 2
+    ;;
+esac
+
 ROOT="$(realpath "$(dirname "$0")"/../)"
+cd "$ROOT"
 
-GREEN="$(tput setaf 2)"
-NORMAL="$(tput sgr0)"
+# No TTY on CI, so tput would fail under `set -e` — swallow it.
+GREEN="$(tput setaf 2 2>/dev/null || true)"
+NORMAL="$(tput sgr0 2>/dev/null || true)"
 
-# utility
 info()
 {
-  printf "%s %b\n" "${GREEN}info" "${NORMAL}${*}"
+  printf "%s %b\n" "${GREEN}info${NORMAL}" "${*}"
 }
 
-info "Formatting nix files"
-nixpkgs-fmt "$(git ls-files -- ":/*.nix")"
+# git ls-files/grep so only tracked files are touched.
+nix_files()
+{
+  git ls-files -- ':/*.nix'
+}
 
-info "Formatting shell scripts"
-# shellcheck disable=SC2046
-shfmt -s -w -l -i 2 -ci -fn $(shfmt -f $(git grep -l '' :/))
+shell_files()
+{
+  # shellcheck disable=SC2046
+  shfmt -f $(git grep -Il '' -- ':/')
+}
 
-info "Formatting python scripts"
-black --include scripts/tests "$ROOT"
+if [ "$check" -eq 1 ]; then
+  info "Checking Rust formatting"
+  cargo fmt --check
+
+  info "Checking nix formatting"
+  # shellcheck disable=SC2046
+  nixpkgs-fmt --check $(nix_files)
+
+  info "Checking shell formatting"
+  # shellcheck disable=SC2046
+  shfmt -d -s -i 2 -ci -fn $(shell_files)
+
+  info "Checking TOML formatting"
+  # No path argument: taplo.toml's own `include` glob selects the files.
+  taplo format --check
+
+  # Lint-only tools: they never format, so they run only in --check, not on a
+  # plain `format`.
+  info "Scanning nix for dead code"
+  deadnix --fail --hidden .
+
+  info "Linting shell scripts"
+  shellcheck --check-sourced --shell bash scripts/*
+
+  info "Checking spelling"
+  codespell .
+else
+  info "Formatting Rust"
+  cargo fmt
+
+  info "Formatting nix"
+  # shellcheck disable=SC2046
+  nixpkgs-fmt $(nix_files)
+
+  info "Formatting shell"
+  # shellcheck disable=SC2046
+  shfmt -w -s -i 2 -ci -fn $(shell_files)
+
+  info "Formatting TOML"
+  taplo format
+fi

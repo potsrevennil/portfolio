@@ -13,6 +13,7 @@ fn day(y: i32, m: u32, d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, d).u
 /// extended by fetching only the tail past its last day, then merged — kept
 /// sorted and without duplicates — with what was already stored.
 #[tokio::test]
+#[ignore = "fetches from Yahoo Finance"]
 async fn get_prices_fetches_the_missing_tail() -> anyhow::Result<()> {
     let (pool, _db_file) = create_temp_db().await?;
     let price_store = StockPriceStore::new(pool.clone());

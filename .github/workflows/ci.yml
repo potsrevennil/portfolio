@@ -1,0 +1,87 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# gxhash's platform modules `compile_error!` unless the target advertises aes
+# (plus sse2 on x86, neon on aarch64) at compile time -- see
+# gxhash-3.5.0/src/gxhash/platform/{x86,arm}.rs. aarch64-apple-darwin turns aes
+# on by default, which is why this never shows up locally; neither
+# aarch64-unknown-linux-gnu nor x86_64-unknown-linux-gnu does, so without this
+# the Linux leg cannot compile at all. +aes alone is enough on both -- neon and
+# sse2 are already baseline there.
+#
+# This does make the binary require the ARM crypto extensions, which the
+# odroid-m2's RK3588S (Cortex-A76/A55) has, so the deployment target is fine. A
+# machine without them would SIGILL rather than fall back to a soft path.
+env:
+  RUSTFLAGS: -C target-feature=+aes
+
+jobs:
+  # The tools .pre-commit-config.yaml drives, invoked directly rather than via
+  # `pre-commit run --all-files`: every local hook there is `language: system`,
+  # so pre-commit would need the devShell's tools on PATH regardless, and
+  # pre-commit itself is not in the devShell. Running the tools is the shorter
+  # path to the same checks. Only the `repo: local` hooks are covered -- the
+  # pre-commit-hooks.git ones (trailing-whitespace, check-yaml, ...) would need
+  # pre-commit itself.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-nix
+      # scripts/format --check is the whole gate: format-checks plus the
+      # lint-only tools (deadnix, shellcheck, codespell). The same script, run
+      # without --check, is how formatting is applied locally, so the two cannot
+      # drift. It covers every `repo: local` hook in .pre-commit-config.yaml.
+      - shell: nix develop -c bash -e {0}
+        run: scripts/format --check
+
+  # aarch64-linux is what this gets deployed to (odroid-m2, Arch);
+  # aarch64-darwin is where it is developed and tested. Both are in the flake's
+  # `systems`, and the devShell substitutes wholly from cache.nixos.org on each.
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: aarch64-linux
+            runs-on: ubuntu-24.04-arm
+          - name: aarch64-darwin
+            runs-on: macos-14
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-nix
+      # rust-cache is a JS action, so it does not inherit a `nix develop` step
+      # shell -- it shells out to `rustc -vV` itself to build the cache key, and
+      # the toolchain lives only inside the devShell. Exporting the devShell's
+      # rustup shims here keeps the key on the nightly rust-toolchain.toml pins
+      # rather than on whatever stable the runner image happens to ship.
+      - name: Put the devShell toolchain on PATH
+        shell: nix develop -c bash -e {0}
+        run: dirname "$(command -v cargo)" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
+      # No SQLX_OFFLINE: build.rs creates sqlite.db (gitignored, so absent in a
+      # fresh checkout) and runs ./migrations against it before the crate
+      # compiles, which gives the one sqlx::query! macro a live schema to check
+      # against. That is strictly more checking than offline mode reading
+      # .sqlx/, and it means a stale .sqlx/ cache shows up as a failure here
+      # instead of passing quietly.
+      - shell: nix develop -c bash -e {0}
+        run: |
+          cargo build
+          cargo test
