@@ -81,8 +81,24 @@ pub fn build(opts: &Args) -> Result<Summary> {
     };
     let app_events = daily::view(&entries, &chart.institution.app_account);
 
-    let statements: Vec<statements::cathay::BankStatement> =
-        opts.cathay_statements.iter().map(statements::cathay::load).collect::<Result<_>>()?;
+    // Load each statement with the path it came from, then order by the
+    // statement's earliest line rather than by argument order. A per-account
+    // `.find()` (the derived-opening backfill below) must reach the
+    // chronologically first statement for an account; argument order made a
+    // second 活存 export passed first silently drive the opening balance.
+    let mut loaded: Vec<(statements::cathay::BankStatement, std::path::PathBuf)> = opts
+        .cathay_statements
+        .iter()
+        .map(|path| statements::cathay::load(path).map(|s| (s, path.clone())))
+        .collect::<Result<_>>()?;
+    loaded.sort_by(|a, b| {
+        let key = |s: &statements::cathay::BankStatement| {
+            (s.lines.first().map(|l| l.book_date), s.account_no.clone())
+        };
+        key(&a.0).cmp(&key(&b.0))
+    });
+    let (statements, statement_paths): (Vec<statements::cathay::BankStatement>, Vec<_>) =
+        loaded.into_iter().unzip();
 
     // Flatten to (statement index, line index) so lines from both accounts can be
     // matched against one pool of app records.
@@ -296,7 +312,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
             statement.account_no,
             statement.account_kind,
             statement.lines.len(),
-            opts.cathay_statements[si].display()
+            statement_paths[si].display()
         )?;
         if !backfilling {
             // Dated the day before, so the assertion below still checks something:
