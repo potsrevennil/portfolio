@@ -45,6 +45,11 @@ jobs:
       # drift. It covers every `repo: local` hook in .pre-commit-config.yaml.
       - shell: nix develop -c bash -e {0}
         run: scripts/format --check
+      # Round-trips the sqlx migrations (apply, seed, revert, re-apply) so a down
+      # migration with the wrong drop order fails here, not in a real rollback.
+      # SQLite-only, so it runs once here rather than in the build-test matrix.
+      - shell: nix develop -c bash -e {0}
+        run: scripts/check-migrations
 
   # aarch64-linux is what this gets deployed to (odroid-m2, Arch);
   # aarch64-darwin is where it is developed and tested. Both are in the flake's

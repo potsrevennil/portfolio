@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# Round-trips the sqlx migrations against a throwaway SQLite database so an
+# ordering mistake fails here rather than in a real rollback:
+#
+#   * apply everything, then seed one row into each table that has a foreign key.
+#     SQLite only enforces a foreign key when the referenced row is deleted, so
+#     without data a down migration could drop a parent table before its children
+#     and still succeed -- the seed is what makes wrong drop order fail.
+#   * revert everything. sqlx enables foreign_keys on its connections, so this
+#     fails exactly as a production rollback would.
+#   * re-apply. Every table uses a plain CREATE TABLE, so a down migration that
+#     forgot to drop its table surfaces here as a "table already exists" error.
+#
+# scripts/format's shell partner: run it locally, and CI runs the same script.
+# When a migration adds a table with a foreign key, add a seed row for it below.
+
+set -o errexit
+set -o errtrace
+set -o nounset
+set -o pipefail
+
+ROOT="$(realpath "$(dirname "$0")"/../)"
+MIGRATIONS="$ROOT/migrations"
+
+if tput setaf 1 >/dev/null 2>&1; then
+  GREEN="$(tput setaf 2)"
+  RED="$(tput setaf 1)"
+  NORMAL="$(tput sgr0)"
+else
+  GREEN=""
+  RED=""
+  NORMAL=""
+fi
+
+info()
+{
+  printf "%s %b\n" "${GREEN}info" "${NORMAL}${*}"
+}
+
+fail()
+{
+  printf "%s %b\n" "${RED}fail" "${NORMAL}${*}" >&2
+  exit 1
+}
+
+info "Checking every migration has an up/down pair"
+for up in "$MIGRATIONS"/*.up.sql; do
+  [ -f "${up%.up.sql}.down.sql" ] || fail "missing down for $(basename "$up")"
+done
+for down in "$MIGRATIONS"/*.down.sql; do
+  [ -f "${down%.down.sql}.up.sql" ] || fail "missing up for $(basename "$down")"
+done
+
+info "Checking migration versions are unique"
+dupes="$(
+  for up in "$MIGRATIONS"/*.up.sql; do
+    basename "$up" | cut -d_ -f1
+  done | sort | uniq -d
+)"
+[ -z "$dupes" ] || fail "duplicate migration versions: $dupes"
+
+# A fresh, absolute-path database that is thrown away on exit; sqlx needs an
+# absolute DATABASE_URL.
+work="$(mktemp -d)"
+trap '/bin/rm -rf "$work"' EXIT
+export DATABASE_URL="sqlite://$work/check.db"
+count="$(find "$MIGRATIONS" -name '*.up.sql' | wc -l | tr -d ' ')"
+
+info "Applying $count migrations"
+sqlx database create
+sqlx migrate run --source "$MIGRATIONS"
+
+db="$work/check.db"
+
+info "Seeding one row per foreign-key relationship"
+sqlite3 "$db" <<'SQL'
+INSERT INTO accounts (path, label, type) VALUES ('Assets:Check', 'chk', 'asset');
+INSERT INTO transactions (date, source) VALUES ('2020-01-01', 'manual');
+INSERT INTO account_events (account_id, event) VALUES (1, 'created');
+INSERT INTO opening_balances (account_id, currency, amount, date) VALUES (1, 'TWD', '0', '2020-01-01');
+INSERT INTO postings (transaction_id, account_id, amount, currency) VALUES (1, 1, '0', 'TWD');
+SQL
+
+fk="$(sqlite3 "$db" 'PRAGMA foreign_key_check;')"
+[ -z "$fk" ] || fail "foreign_key_check reported violations: $fk"
+
+# Every table that declares a foreign key must hold a seeded row, otherwise its
+# parent's drop order goes untested (a wrong order only fails when a referencing
+# row exists). This turns "forgot to seed a new FK table" into a loud failure
+# here. Parent tables need no separate check: seeding a child already fails if
+# the parent row is missing.
+info "Checking every foreign-key table was seeded"
+child_tables="$(sqlite3 "$db" "
+  SELECT m.name FROM sqlite_master m
+  WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
+    AND EXISTS (SELECT 1 FROM pragma_foreign_key_list(m.name));")"
+for table in $child_tables; do
+  rows="$(sqlite3 "$db" "SELECT count(*) FROM \"$table\";")"
+  [ "$rows" -gt 0 ] || fail "table '$table' has a foreign key but no seed row; add one to the seed block above"
+done
+
+info "Reverting $count migrations"
+for ((i = 0; i < count; i++)); do
+  sqlx migrate revert --source "$MIGRATIONS"
+done
+
+info "Re-applying migrations"
+sqlx migrate run --source "$MIGRATIONS"
+
+info "Migrations apply and reverse cleanly"
