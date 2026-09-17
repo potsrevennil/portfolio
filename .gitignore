@@ -9,6 +9,10 @@ securities.toml
 *.csv
 sqlite.db
 
+# The baked SQLite ledger — the app's source of truth, so real financial data.
+# The bake writes it here by default; keep it out of git like every other input.
+ledger-app.db
+
 # Imported transaction history — same financial data the *.csv rule keeps out.
 ledger/generated/
 
@@ -23,6 +27,8 @@ ledger/__pycache__/
 # which records you have corrected. mapping.example.toml ships in its place.
 ledger/mapping.toml
 
-# Hand-entered transactions — financial data, same as the CSVs.
-# manual.example.beancount ships in its place; copy it to get started.
-ledger/manual.beancount
+# Hand-entered cash — financial data, same as the CSVs.
+# manual.example.csv ships in its place; copy it to get started. The blanket
+# *.csv rule above would swallow the example too, so it is re-included here.
+ledger/manual.csv
+!ledger/manual.example.csv

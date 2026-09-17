@@ -1,0 +1,17 @@
+# Hand-entered cash, and anything no statement covers. Copy to manual.csv;
+# gitignored once copied, because what you record here is financial data.
+#
+# One row is one transaction with two legs. `amount` is the signed effect on
+# `account` (negative = money left it); `contra` is the other side and gets the
+# negation, so a row is always balanced. Both legs are in `currency` (default
+# TWD). `tags` is separated by spaces or semicolons. Lines starting with `#` and
+# blank lines are ignored. Only date, account, contra and amount are required.
+#
+# Cross-currency and 3-or-more-leg entries are not expressible here by design;
+# those wait for the app's own entry UI.
+#
+# Examples (delete these):
+date,account,contra,amount,currency,payee,narration,tags
+2024-01-06,Assets:Cash,Expenses:Food,-85,TWD,,morning coffee,coffee
+2024-01-09,Assets:Cash,Income:Gifts,1000,TWD,,red envelope,
+2024-02-02,Assets:Cash,Assets:Cash-Jar,-500,TWD,,move to the savings jar,

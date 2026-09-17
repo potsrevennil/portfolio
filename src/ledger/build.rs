@@ -15,6 +15,7 @@ use super::{
     daily,
     emit::{contra_posting, emit_daily_accounts, narration_for, resolve},
     matching,
+    model::{self, Directive},
     names::{fallback_account, statement_account},
     statements,
     summary::Summary,
@@ -59,10 +60,13 @@ fn app_balances(
     bal
 }
 
-pub fn build(opts: &Args) -> Result<Summary> {
+/// Assembles the ledger as an in-memory model: the transactions, balance
+/// assertions and opens the reconciliation produces, with each transaction's
+/// source and dedup id attached. [`build`] renders this to the generated
+/// Beancount files; the SQLite bake (T2) consumes it directly, so nothing
+/// re-parses the importer's own output.
+pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let ledger = opts.ledger_dir.as_path();
-    let out_dir = ledger.join("generated");
-    std::fs::create_dir_all(&out_dir)?;
 
     let chart = accounts::Chart::load(ledger.join("mapping.toml"))?;
     // Accounts the build has to reach by role rather than by name, since the
@@ -184,7 +188,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
     // backfill and the unmatched-record pass below need to exclude these.
     let claimed: HashSet<usize> = assignment.values().flat_map(|v| v.iter().copied()).collect();
 
-    let mut body = String::new();
+    let mut cathay: Vec<Directive> = Vec::new();
     let mut used_accounts: BTreeSet<String> = BTreeSet::new();
     let mut unmapped: BTreeSet<String> = BTreeSet::new();
     // Which [overrides] entries actually matched a record. An id that matches
@@ -239,21 +243,28 @@ pub fn build(opts: &Args) -> Result<Summary> {
             let drift: Decimal = pre.iter().map(|e| e.delta).sum();
             let savings_open = opening_of(savings) - drift;
 
-            writeln!(body, ";; --- 天天記帳 history before {} ---", anchor)?;
-            writeln!(body, ";; Opening balances below are DERIVED by working backwards from")?;
-            writeln!(body, ";; the first statement. No bank record of them exists.")?;
-            body.push_str(&writer::transaction(
-                start,
-                "Opening balance",
-                "derived from 天天記帳, not observed",
-                &[],
-                &[
+            cathay
+                .push(Directive::Comment(format!(";; --- 天天記帳 history before {} ---", anchor)));
+            cathay.push(Directive::Comment(
+                ";; Opening balances below are DERIVED by working backwards from".to_string(),
+            ));
+            cathay.push(Directive::Comment(
+                ";; the first statement. No bank record of them exists.".to_string(),
+            ));
+            cathay.push(Directive::Transaction(model::Transaction {
+                date: start,
+                payee: "Opening balance".to_string(),
+                narration: "derived from 天天記帳, not observed".to_string(),
+                tags: Vec::new(),
+                postings: vec![
                     writer::Posting::new(savings, savings_open, Currency::TWD),
                     writer::Posting::new(investment, opening_of(investment), Currency::TWD),
                     writer::Posting::inferred("Equity:Opening-Balances"),
                 ],
-            ));
-            body.push('\n');
+                source: model::Source::Import,
+                external_ref: None,
+            }));
+            cathay.push(Directive::Blank);
             used_accounts.insert(savings.to_string());
             used_accounts.insert(investment.to_string());
 
@@ -266,35 +277,51 @@ pub fn build(opts: &Args) -> Result<Summary> {
                 let memo = if event.memo.is_empty() { raw } else { &event.memo };
                 let narration = narration_for(&chart, &event.id, memo);
 
+                let external_ref = (!event.id.is_empty()).then(|| event.id.clone());
                 if matches!(&event.contra, daily::Contra::Account(n) if *n == settlement_source) {
-                    body.push_str(&writer::transaction(
-                        event.date,
-                        "資金調撥",
-                        "活存 funds 投資 for settlement",
-                        &[],
-                        &[
+                    // The 資金調撥 funding leg is synthetic (no source row of its
+                    // own), so only the settlement transaction carries the
+                    // record's id — else the two would collide on (source, ref).
+                    cathay.push(Directive::Transaction(model::Transaction {
+                        date: event.date,
+                        payee: "資金調撥".to_string(),
+                        narration: "活存 funds 投資 for settlement".to_string(),
+                        tags: Vec::new(),
+                        postings: vec![
                             writer::Posting::new(savings, event.delta, event.currency),
                             writer::Posting::new(investment, -event.delta, event.currency),
                         ],
-                    ));
-                    body.push('\n');
-                    body.push_str(&writer::transaction(
-                        event.date,
-                        &settlement_source,
-                        narration,
-                        &tags,
-                        &[
+                        source: model::Source::Tiantian,
+                        external_ref: None,
+                    }));
+                    cathay.push(Directive::Blank);
+                    cathay.push(Directive::Transaction(model::Transaction {
+                        date: event.date,
+                        payee: settlement_source.clone(),
+                        narration: narration.to_string(),
+                        tags,
+                        postings: vec![
                             writer::Posting::new(investment, event.delta, event.currency),
                             contra_posting(target, event),
                         ],
-                    ));
+                        source: model::Source::Tiantian,
+                        external_ref,
+                    }));
                 } else {
-                    body.push_str(&writer::transaction(event.date, "", narration, &tags, &[
-                        writer::Posting::new(savings, event.delta, event.currency),
-                        contra_posting(target, event),
-                    ]));
+                    cathay.push(Directive::Transaction(model::Transaction {
+                        date: event.date,
+                        payee: String::new(),
+                        narration: narration.to_string(),
+                        tags,
+                        postings: vec![
+                            writer::Posting::new(savings, event.delta, event.currency),
+                            contra_posting(target, event),
+                        ],
+                        source: model::Source::Tiantian,
+                        external_ref,
+                    }));
                 }
-                body.push('\n');
+                cathay.push(Directive::Blank);
                 n_backfill += 1;
             }
         }
@@ -306,36 +333,37 @@ pub fn build(opts: &Args) -> Result<Summary> {
         used_accounts.insert(account.to_string());
         let first = statement.lines.first().expect("load_bank_statement rejects empty statements");
 
-        writeln!(
-            body,
+        cathay.push(Directive::Comment(format!(
             ";; --- {} {} — {} rows from {} ---",
             statement.account_no,
             statement.account_kind,
             statement.lines.len(),
             statement_paths[si].display()
-        )?;
+        )));
         if !backfilling {
             // Dated the day before, so the assertion below still checks something:
             // Beancount asserts at the start of the day.
-            body.push_str(&writer::transaction(
-                first.book_date.pred_opt().unwrap_or(first.book_date),
-                "Opening balance",
-                &statement.account_kind,
-                &[],
-                &[
+            cathay.push(Directive::Transaction(model::Transaction {
+                date: first.book_date.pred_opt().unwrap_or(first.book_date),
+                payee: "Opening balance".to_string(),
+                narration: statement.account_kind.clone(),
+                tags: Vec::new(),
+                postings: vec![
                     writer::Posting::new(account, statement.opening_balance(), currency),
                     writer::Posting::inferred("Equity:Opening-Balances"),
                 ],
-            ));
-            body.push('\n');
+                source: model::Source::Import,
+                external_ref: None,
+            }));
+            cathay.push(Directive::Blank);
         }
-        body.push_str(&writer::balance(
-            first.book_date,
-            account,
-            statement.opening_balance(),
+        cathay.push(Directive::Balance(model::Balance {
+            date: first.book_date,
+            account: account.to_string(),
+            amount: statement.opening_balance(),
             currency,
-        ));
-        body.push('\n');
+        }));
+        cathay.push(Directive::Blank);
 
         for (li, line) in statement.lines.iter().enumerate() {
             // The receiving half of a paired transfer is emitted by its partner.
@@ -404,23 +432,33 @@ pub fn build(opts: &Args) -> Result<Summary> {
                 .join(" · ");
             tags.sort();
             tags.dedup();
-            body.push_str(&writer::transaction(
-                line.book_date,
-                description,
-                &narration,
-                &tags,
-                &postings,
-            ));
-            body.push('\n');
+            cathay.push(Directive::Transaction(model::Transaction {
+                date: line.book_date,
+                // A reversed debit is labelled by its reversal (see `description`
+                // above), so the journal says why the pair nets to nothing.
+                payee: description.to_string(),
+                narration,
+                tags,
+                postings,
+                source: model::Source::Import,
+                // A stable per-line id: the account number is unique per
+                // statement and the line index unique within it, so no two lines
+                // collide, and the running balance keeps it legible.
+                external_ref: Some(format!(
+                    "{}:{}:{}:{}",
+                    statement.account_no, li, line.book_date, line.balance
+                )),
+            }));
+            cathay.push(Directive::Blank);
         }
 
-        body.push_str(&writer::balance(
-            statement.assert_date(),
-            account,
-            statement.closing_balance(),
+        cathay.push(Directive::Balance(model::Balance {
+            date: statement.assert_date(),
+            account: account.to_string(),
+            amount: statement.closing_balance(),
             currency,
-        ));
-        body.push('\n');
+        }));
+        cathay.push(Directive::Blank);
     }
 
     // 天天記帳 records touching 國泰 that no statement line matched.
@@ -444,24 +482,26 @@ pub fn build(opts: &Args) -> Result<Summary> {
             &chart.fallback.income
         };
         used_accounts.insert(near.to_string());
-        body.push_str(&writer::transaction(
-            event.date,
-            "未對應紀錄",
-            narration_for(&chart, &event.id, &event.memo),
-            &tags,
-            &[
+        cathay.push(Directive::Transaction(model::Transaction {
+            date: event.date,
+            payee: "未對應紀錄".to_string(),
+            narration: narration_for(&chart, &event.id, &event.memo).to_string(),
+            tags,
+            postings: vec![
                 contra_posting(target, event),
                 writer::Posting::new(near, event.delta, event.currency),
             ],
-        ));
-        body.push('\n');
+            source: model::Source::Tiantian,
+            external_ref: (!event.id.is_empty()).then(|| event.id.clone()),
+        }));
+        cathay.push(Directive::Blank);
         n_unmatched_records += 1;
     }
 
     used_accounts.insert(clearing.to_string());
 
     // Accounts with no bank statement, taken from 天天記帳 as recorded.
-    let (daily_body, n_other) = emit_daily_accounts(
+    let (daily, n_other) = emit_daily_accounts(
         &entries,
         &chart,
         &mut used_accounts,
@@ -483,7 +523,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
         chart.institution.accounts.values().map(|a| a.as_ref()).collect();
     let leaf_bal = app_balances(&entries, &chart);
     let accounts: BTreeSet<&str> = leaf_bal.keys().map(|(a, _)| a.as_str()).collect();
-    let mut asserts = String::new();
+    let mut asserts: Vec<Directive> = Vec::new();
     let mut n_asserted = 0usize;
 
     // Assert every used asset or liability account, except 國泰's — those are
@@ -517,71 +557,42 @@ pub fn build(opts: &Args) -> Result<Summary> {
         let mut per_currency: Vec<(Currency, Decimal)> = by_currency.into_iter().collect();
         per_currency.sort_by_key(|(currency, _)| currency.to_string());
         for (currency, amount) in per_currency {
-            asserts.push_str(&writer::balance(assert_date, account, amount, currency));
+            asserts.push(Directive::Balance(model::Balance {
+                date: assert_date,
+                account: account.to_string(),
+                amount,
+                currency,
+            }));
             n_asserted += 1;
         }
     }
 
     // Opening balances predate every record, so build their transactions first
     // and make sure their accounts are opened alongside the rest.
-    let mut opening = String::new();
+    let mut openings: Vec<Directive> = Vec::new();
     let mut declared: Vec<(&String, &accounts::OpeningBalance)> =
         chart.opening_balances.iter().collect();
     declared.sort_by(|a, b| a.0.cmp(b.0));
     for (account, ob) in declared {
         used_accounts.insert(account.clone());
-        opening.push_str(&writer::transaction(ob.date, "", "Opening balance", &[], &[
-            writer::Posting::new(account.clone(), ob.amount, ob.currency),
-            writer::Posting::inferred("Equity:Opening-Balances"),
-        ]));
+        openings.push(Directive::Transaction(model::Transaction {
+            date: ob.date,
+            payee: String::new(),
+            narration: "Opening balance".to_string(),
+            tags: Vec::new(),
+            postings: vec![
+                writer::Posting::new(account.clone(), ob.amount, ob.currency),
+                writer::Posting::inferred("Equity:Opening-Balances"),
+            ],
+            source: model::Source::Import,
+            external_ref: None,
+        }));
     }
 
-    let mut opens = String::new();
-    opens.push_str(";; GENERATED — do not edit by hand.\n\n");
-    for account in &used_accounts {
-        writeln!(opens, "2000-01-01 open {}", account)?;
-    }
-    if !opening.is_empty() {
-        opens.push_str(
-            "\n;; Opening balances — positions predating 天天記帳, emitted against\n;; \
-             Equity:Opening-Balances and folded into the assertions in daily.beancount\n;; so \
-             bean-check still proves the ledger matches the app plus this start.\n\n",
-        );
-        opens.push_str(&opening);
-    }
-    std::fs::write(out_dir.join("accounts.beancount"), opens)?;
-
-    let mut out = String::new();
-    out.push_str(";; GENERATED — do not edit by hand.\n");
-    out.push_str(";; Balance assertions come from the statement's own 餘額 column, which is\n");
-    out.push_str(";; independent of the 提出/存入 columns the transactions are built from.\n\n");
-    out.push_str(&body);
-    let path = out_dir.join("cathay.beancount");
-    std::fs::write(&path, out)?;
-
-    if !daily_body.is_empty() || !asserts.is_empty() {
-        let mut out = String::new();
-        out.push_str(";; GENERATED — do not edit by hand.\n");
-        out.push_str(";; Accounts with no bank statement, taken from 天天記帳 as recorded.\n");
-        out.push_str(";; Records touching 國泰 are not here — those come from its statements.\n\n");
-        out.push_str(&daily_body);
-        if !asserts.is_empty() {
-            out.push_str(
-                "\n;; Balance assertions computed straight from 天天記帳, independent of\n",
-            );
-            out.push_str(
-                ";; how the postings above are emitted. bean-check thus proves the ledger\n",
-            );
-            out.push_str(";; matches the app for every non-國泰 asset and liability account.\n");
-            out.push_str(&asserts);
-        }
-        std::fs::write(out_dir.join("daily.beancount"), out)?;
-    }
-
-    Ok(Summary {
+    let summary = Summary {
         other_accounts: n_other,
         unmatched_records: n_unmatched_records,
-        output: path,
+        output: ledger.join("generated").join("cathay.beancount"),
         anchor,
         backfilled: n_backfill,
         categorised: n_matched,
@@ -592,5 +603,65 @@ pub fn build(opts: &Args) -> Result<Summary> {
         balance_assertions: n_asserted,
         stale_overrides: chart.stale_overrides(&used_overrides),
         unmapped,
-    })
+    };
+    let ledger_model = model::Model { cathay, daily, asserts, openings, opens: used_accounts };
+    Ok((ledger_model, summary))
+}
+
+/// Assembles the ledger and writes the generated Beancount files, returning the
+/// run summary. This is the `ledger` command; the freeze tool calls
+/// [`assemble`] instead and never touches the text.
+pub fn build(opts: &Args) -> Result<Summary> {
+    let (model, summary) = assemble(opts)?;
+    let out_dir = opts.ledger_dir.join("generated");
+    std::fs::create_dir_all(&out_dir)?;
+    write_files(&out_dir, &model)?;
+    Ok(summary)
+}
+
+/// Serialises the model to the three generated files, each with its header.
+fn write_files(out_dir: &std::path::Path, ledger: &model::Model) -> Result<()> {
+    let mut accounts = String::new();
+    accounts.push_str(";; GENERATED — do not edit by hand.\n\n");
+    for account in &ledger.opens {
+        writeln!(accounts, "2000-01-01 open {}", account)?;
+    }
+    if !ledger.openings.is_empty() {
+        accounts.push_str(
+            "\n;; Opening balances — positions predating 天天記帳, emitted against\n;; \
+             Equity:Opening-Balances and folded into the assertions in daily.beancount\n;; so \
+             bean-check still proves the ledger matches the app plus this start.\n\n",
+        );
+        accounts.push_str(&model::render(&ledger.openings));
+    }
+    std::fs::write(out_dir.join("accounts.beancount"), accounts)?;
+
+    let mut cathay = String::new();
+    cathay.push_str(";; GENERATED — do not edit by hand.\n");
+    cathay.push_str(";; Balance assertions come from the statement's own 餘額 column, which is\n");
+    cathay.push_str(";; independent of the 提出/存入 columns the transactions are built from.\n\n");
+    cathay.push_str(&model::render(&ledger.cathay));
+    std::fs::write(out_dir.join("cathay.beancount"), cathay)?;
+
+    if !ledger.daily.is_empty() || !ledger.asserts.is_empty() {
+        let mut daily = String::new();
+        daily.push_str(";; GENERATED — do not edit by hand.\n");
+        daily.push_str(";; Accounts with no bank statement, taken from 天天記帳 as recorded.\n");
+        daily.push_str(
+            ";; Records touching 國泰 are not here — those come from its statements.\n\n",
+        );
+        daily.push_str(&model::render(&ledger.daily));
+        if !ledger.asserts.is_empty() {
+            daily.push_str(
+                "\n;; Balance assertions computed straight from 天天記帳, independent of\n",
+            );
+            daily.push_str(
+                ";; how the postings above are emitted. bean-check thus proves the ledger\n",
+            );
+            daily.push_str(";; matches the app for every non-國泰 asset and liability account.\n");
+            daily.push_str(&model::render(&ledger.asserts));
+        }
+        std::fs::write(out_dir.join("daily.beancount"), daily)?;
+    }
+    Ok(())
 }

@@ -25,6 +25,10 @@ enum Command {
     Record(Record),
     /// Build a Beancount ledger from downloaded statements
     Ledger(ledger::Args),
+    /// Freeze reconciled history to a seed CSV (one-time / audit-time)
+    Freeze(ledger::freeze::FreezeArgs),
+    /// Load a frozen seed CSV into the SQLite core tables
+    SeedLoad(ledger::load::Args),
     /// Fetch daily exchange rates so the ledger's currencies can be compared
     Rates(ledger::rates::Args),
 }
@@ -43,6 +47,19 @@ impl Cli {
             }
             Some(Command::Ledger(args)) => {
                 print!("{}", ledger::build(args)?);
+                Ok(())
+            }
+            Some(Command::Freeze(args)) => {
+                let report = ledger::freeze::run(args)?;
+                print!("{report}");
+                if report.ok() {
+                    Ok(())
+                } else {
+                    anyhow::bail!("reconciliation failed; seed not written")
+                }
+            }
+            Some(Command::SeedLoad(args)) => {
+                print!("{}", ledger::load::run(args).await?);
                 Ok(())
             }
             Some(Command::Rates(args)) => {

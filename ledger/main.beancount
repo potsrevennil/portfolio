@@ -4,11 +4,13 @@
 ;; this includes is either yours and gitignored, or produced by the importer.
 ;; In order:
 ;;
-;;   1. Your own copies of the two gitignored inputs.
-;;        cp ledger/mapping.example.toml     ledger/mapping.toml
-;;        cp ledger/manual.example.beancount ledger/manual.beancount
+;;   1. Your own copy of the gitignored chart of accounts.
+;;        cp ledger/mapping.example.toml ledger/mapping.toml
 ;;      Then edit mapping.toml: it names your accounts, and the importer
 ;;      refuses to run until institution.* and fallback.* are filled in.
+;;      (Hand-entered cash lives in ledger/manual.csv now — copied from
+;;      manual.example.csv — and feeds the SQLite freeze/seed load, not this
+;;      Fava ledger.)
 ;;
 ;;   2. The imported half, which writes everything under generated/.
 ;;        cargo run -- ledger \
@@ -79,7 +81,6 @@ option "inferred_tolerance_default" "*:0.01"
 2000-01-01 custom "fava-option" "default-page" "balance_sheet/"
 
 include "accounts.beancount"
-include "manual.beancount"
 include "generated/accounts.beancount"
 include "generated/rates.beancount"
 include "generated/cathay.beancount"

@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use super::{accounts, daily, names::fallback_account, writer};
+use super::{accounts, daily, model, names::fallback_account, writer};
 
 /// A per-record correction, when mapping.toml names this record.
 ///
@@ -143,9 +143,16 @@ pub(super) fn emit_daily_accounts(
     used_accounts: &mut BTreeSet<String>,
     unmapped: &mut BTreeSet<String>,
     used_overrides: &mut BTreeSet<String>,
-) -> (String, usize) {
-    let mut out = String::new();
+) -> (Vec<model::Directive>, usize) {
+    let mut out: Vec<model::Directive> = Vec::new();
     let mut count = 0;
+    // A transaction plus the blank line the format puts after each one; keeping
+    // it here mirrors the old `push_str` + `push('\n')` so the render is exact.
+    let mut push = |txn: model::Transaction| {
+        out.push(model::Directive::Transaction(txn));
+        out.push(model::Directive::Blank);
+        count += 1;
+    };
 
     for entry in entries {
         if entry.accounts().contains(&chart.institution.app_account.as_str()) {
@@ -188,12 +195,19 @@ pub(super) fn emit_daily_accounts(
                 let mut tags = tags;
                 with_trip_tags(chart, *date, id, &contra, &mut tags);
                 let narration = narration_for(chart, id, memo);
-                out.push_str(&writer::transaction(*date, category, narration, &tags, &[
-                    writer::Posting::new(asset, *amount, *currency),
-                    writer::Posting::new(contra, -amount, *currency),
-                ]));
-                out.push('\n');
-                count += 1;
+                push(model::Transaction {
+                    date: *date,
+                    payee: category.clone(),
+                    narration: narration.to_string(),
+                    tags,
+                    postings: vec![
+                        writer::Posting::new(asset, *amount, *currency),
+                        writer::Posting::new(contra, -amount, *currency),
+                    ],
+                    source: model::Source::Tiantian,
+                    // The record's own UUID is its stable id for later dedup.
+                    external_ref: (!id.is_empty()).then(|| id.clone()),
+                });
             }
             daily::Entry::Transfer {
                 date,
@@ -220,12 +234,17 @@ pub(super) fn emit_daily_accounts(
                 } else {
                     credit
                 };
-                out.push_str(&writer::transaction(*date, "轉帳", memo, &[], &[
-                    writer::Posting::new(source, -sent, *out_currency),
-                    credit,
-                ]));
-                out.push('\n');
-                count += 1;
+                push(model::Transaction {
+                    date: *date,
+                    payee: "轉帳".to_string(),
+                    narration: memo.clone(),
+                    tags: Vec::new(),
+                    postings: vec![writer::Posting::new(source, -sent, *out_currency), credit],
+                    source: model::Source::Tiantian,
+                    // A 轉帳 row has one id but two account sides; the app leaves
+                    // no per-side id, so there is nothing stable to dedup on.
+                    external_ref: None,
+                });
             }
         }
     }
@@ -273,13 +292,14 @@ mod tests {
     #[test]
     fn an_override_replaces_the_account_tag_and_narration() {
         let (mut used, mut unmapped, mut overrides) = Default::default();
-        let (out, count) = emit_daily_accounts(
+        let (directives, count) = emit_daily_accounts(
             &[flow("LOSS")],
             &chart(),
             &mut used,
             &mut unmapped,
             &mut overrides,
         );
+        let out = model::render(&directives);
 
         assert_eq!(count, 1);
         assert!(out.contains("Expenses:Investment:Loss"), "override account missing:\n{out}");
@@ -295,13 +315,14 @@ mod tests {
     #[test]
     fn an_unnamed_record_keeps_its_category() {
         let (mut used, mut unmapped, mut overrides) = Default::default();
-        let (out, _) = emit_daily_accounts(
+        let (directives, _) = emit_daily_accounts(
             &[flow("OTHER")],
             &chart(),
             &mut used,
             &mut unmapped,
             &mut overrides,
         );
+        let out = model::render(&directives);
 
         assert!(out.contains("Expenses:Fees"), "category account missing:\n{out}");
         assert!(out.contains("#investment"), "category tag missing:\n{out}");
