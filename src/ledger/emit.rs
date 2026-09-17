@@ -42,23 +42,54 @@ pub(super) fn resolve(
     unmapped: &mut BTreeSet<String>,
     used_overrides: &mut BTreeSet<String>,
 ) -> (String, Vec<String>) {
-    if let Some(found) = corrected(chart, &event.id, used_overrides) {
-        return found;
-    }
-    let found = match &event.contra {
-        daily::Contra::Category(name) => chart.category(name, event.delta.is_sign_positive()),
-        daily::Contra::Account(name) => chart.account(name),
-    };
-    match found {
-        Some(t) => (t.account.to_string(), t.tags.iter().map(|s| writer::tag_name(s)).collect()),
+    let (account, mut tags) = match corrected(chart, &event.id, used_overrides) {
+        Some(found) => found,
         None => {
-            let raw = match &event.contra {
-                daily::Contra::Category(n) | daily::Contra::Account(n) => n,
+            let found = match &event.contra {
+                daily::Contra::Category(name) => {
+                    chart.category(name, event.delta.is_sign_positive())
+                }
+                daily::Contra::Account(name) => chart.account(name),
             };
-            unmapped.insert(raw.clone());
-            (fallback_account(chart, description, event.delta).to_string(), Vec::new())
+            match found {
+                Some(t) => {
+                    (t.account.to_string(), t.tags.iter().map(|s| writer::tag_name(s)).collect())
+                }
+                None => {
+                    let raw = match &event.contra {
+                        daily::Contra::Category(n) | daily::Contra::Account(n) => n,
+                    };
+                    unmapped.insert(raw.clone());
+                    (fallback_account(chart, description, event.delta).to_string(), Vec::new())
+                }
+            }
         }
+    };
+    with_trip_tags(chart, event.date, &event.id, &account, &mut tags);
+    (account, tags)
+}
+
+/// Appends any trip tags the record earns, in place. A record is on a trip when
+/// its own tags already mark it `abroad` and its date falls in the trip window,
+/// or when a trip names it explicitly. Shared by both emit paths so the two
+/// agree on what belongs to a trip.
+///
+/// Only spending is tagged: a trip total is what the trip cost, so an asset
+/// movement that merely fell on a trip day — a transfer, a securities sale — is
+/// left out, which is what keeps a domestic window from claiming the day's
+/// unrelated banking.
+fn with_trip_tags(
+    chart: &accounts::Chart,
+    date: chrono::NaiveDate,
+    id: &str,
+    account: &str,
+    tags: &mut Vec<String>,
+) {
+    if !account.starts_with("Expenses:") {
+        return;
     }
+    let abroad = tags.iter().any(|t| t == "abroad");
+    tags.extend(chart.trip_tags(date, id, abroad));
 }
 
 /// The far-side posting for a matched 天天記帳 record.
@@ -154,6 +185,8 @@ pub(super) fn emit_daily_accounts(
                         }
                     },
                 };
+                let mut tags = tags;
+                with_trip_tags(chart, *date, id, &contra, &mut tags);
                 let narration = narration_for(chart, id, memo);
                 out.push_str(&writer::transaction(*date, category, narration, &tags, &[
                     writer::Posting::new(asset, *amount, *currency),
