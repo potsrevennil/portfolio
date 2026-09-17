@@ -132,8 +132,23 @@ pub fn build(opts: &Args) -> Result<Summary> {
         }
     }
 
-    let to_match: Vec<(usize, usize)> =
-        flat.iter().copied().filter(|(si, li)| !is_internal(*si, *li)).collect();
+    // Debits the bank reversed, keyed by the debit, and every line in such a pair.
+    // Withheld from matching: an app record the same size would otherwise be
+    // spent on a movement that never happened.
+    let mut reversed_by: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+    for (si, s) in statements.iter().enumerate() {
+        for (debit, reversal) in s.reversals() {
+            reversed_by.insert((si, debit), (si, reversal));
+        }
+    }
+    let in_reversal: HashSet<(usize, usize)> =
+        reversed_by.iter().flat_map(|(debit, reversal)| [*debit, *reversal]).collect();
+
+    let to_match: Vec<(usize, usize)> = flat
+        .iter()
+        .copied()
+        .filter(|(si, li)| !is_internal(*si, *li) && !in_reversal.contains(&(*si, *li)))
+        .collect();
     let keys: Vec<(NaiveDate, Decimal)> = to_match
         .iter()
         .map(|(si, li)| {
@@ -162,6 +177,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
     let mut used_overrides: BTreeSet<String> = BTreeSet::new();
     let (mut n_matched, mut n_internal, mut n_fallback) = (0usize, 0usize, 0usize);
     let mut n_in_transit = 0usize;
+    let mut n_reversed = 0usize;
     let mut n_backfill = 0usize;
 
     // --- history from before the statements begin ---
@@ -310,11 +326,28 @@ pub fn build(opts: &Args) -> Result<Summary> {
             if paired.contains(&(si, li)) && !partner.contains_key(&(si, li)) {
                 continue;
             }
+            // Likewise a bank reversal, which its debit emits.
+            if in_reversal.contains(&(si, li)) && !reversed_by.contains_key(&(si, li)) {
+                continue;
+            }
 
             let mut postings = vec![writer::Posting::new(account, line.delta(), currency)];
             let mut tags: Vec<String> = Vec::new();
+            let reversal =
+                reversed_by.get(&(si, li)).map(|&(rsi, rli)| &statements[rsi].lines[rli]);
+            // A reversed debit is labelled by the reversal, which says why it nets to
+            // nothing.
+            let description = match reversal {
+                Some(reversal) => reversal.description.as_str(),
+                None => line.description.as_str(),
+            };
 
-            if let Some(&(psi, pli)) = partner.get(&(si, li)) {
+            if let Some(reversal) = reversal {
+                // Both rows stay on the account, so the journal still shows the
+                // attempt, and they cancel within the one transaction.
+                n_reversed += 1;
+                postings.push(writer::Posting::new(account, reversal.delta(), currency));
+            } else if let Some(&(psi, pli)) = partner.get(&(si, li)) {
                 n_internal += 1;
                 let far_account: &str = statement_account(&chart, &statements[psi].account_no)?;
                 used_accounts.insert(far_account.to_string());
@@ -357,7 +390,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
             tags.dedup();
             body.push_str(&writer::transaction(
                 line.book_date,
-                &line.description,
+                description,
                 &narration,
                 &tags,
                 &postings,
@@ -538,6 +571,7 @@ pub fn build(opts: &Args) -> Result<Summary> {
         categorised: n_matched,
         internal: n_internal,
         in_transit: n_in_transit,
+        reversed: n_reversed,
         uncategorised: n_fallback,
         balance_assertions: n_asserted,
         stale_overrides: chart.stale_overrides(&used_overrides),

@@ -232,6 +232,48 @@ pub struct OpeningBalance {
     pub date: NaiveDate,
 }
 
+/// A trip: a date window (plus any bookings paid before leaving) whose records
+/// carry a tag, so a whole trip can be totalled across the travel and the sport
+/// it spans. Only records already marked `abroad` are swept up by the window,
+/// so home spending during the same days is left alone; `include` names the
+/// pre-trip bookings the window would miss, and `exclude` drops a record the
+/// window would wrongly claim (a private spend, say).
+#[derive(Debug, Deserialize)]
+pub struct Trip {
+    /// One tag or a list, so a trip can be both an activity (`climbing`) and
+    /// one named trip (`krabi-2026`) at once — the activity totals every
+    /// such trip, the name isolates this one.
+    pub tag: TripTags,
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    /// A trip inside Taiwan has no `abroad` records to key on, so its window
+    /// sweeps up every record in range instead. Off by default: an overseas
+    /// trip must stay gated on `abroad`, or its window would tag home spending.
+    #[serde(default)]
+    pub domestic: bool,
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+/// `tag = "climbing"` or `tag = ["climbing", "krabi-2026"]`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum TripTags {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl TripTags {
+    fn names(&self) -> &[String] {
+        match self {
+            TripTags::One(s) => std::slice::from_ref(s),
+            TripTags::Many(v) => v,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct Chart {
     #[serde(default)]
@@ -250,6 +292,9 @@ pub struct Chart {
     /// to. See `OpeningBalance`.
     #[serde(default)]
     pub opening_balances: HashMap<String, OpeningBalance>,
+    /// Trips whose records pick up a tag. See `Trip`.
+    #[serde(default)]
+    pub trips: Vec<Trip>,
 }
 
 impl Chart {
@@ -307,6 +352,23 @@ impl Chart {
         self.overrides.get(id).filter(|o| !o.account.is_empty())
     }
 
+    /// Tags a record picks up from the trips it belongs to: a trip that names
+    /// it in `include`, or — when the record is `abroad` — one whose window
+    /// covers its date. A record listed in a trip's `exclude` is left out
+    /// of that trip.
+    pub fn trip_tags(&self, date: NaiveDate, id: &str, abroad: bool) -> Vec<String> {
+        self.trips
+            .iter()
+            .filter(|t| {
+                let names = |v: &[String]| v.iter().any(|u| u.eq_ignore_ascii_case(id));
+                !names(&t.exclude)
+                    && (names(&t.include)
+                        || ((abroad || t.domestic) && (t.start..=t.end).contains(&date)))
+            })
+            .flat_map(|t| t.tag.names().iter().map(|s| super::writer::tag_name(s)))
+            .collect()
+    }
+
     /// Corrections that named a record the exports do not contain.
     pub fn stale_overrides(&self, used: &BTreeSet<String>) -> BTreeSet<String> {
         self.overrides
@@ -314,5 +376,55 @@ impl Chart {
             .filter(|(id, o)| !o.account.is_empty() && !used.contains(*id))
             .map(|(id, _)| id.clone())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod trip_tests {
+    use super::*;
+
+    fn chart() -> Chart {
+        toml::from_str(
+            r#"
+            [[trips]]
+            tag = ["climbing", "krabi-2026"]
+            start = "2025-04-01"
+            end = "2025-05-31"
+            include = ["FLIGHT-UUID"]
+            exclude = ["PRIVATE-UUID"]
+            "#,
+        )
+        .expect("valid trips config")
+    }
+
+    fn d(s: &str) -> NaiveDate { s.parse().expect("date") }
+
+    /// An abroad record inside the window earns the trip tag; a domestic one on
+    /// the same day does not, so home spending during the trip is left alone.
+    #[test]
+    fn window_tags_only_abroad_records() {
+        let c = chart();
+        assert_eq!(c.trip_tags(d("2025-04-15"), "X", true), vec!["climbing", "krabi-2026"]);
+        assert!(c.trip_tags(d("2025-04-15"), "X", false).is_empty());
+        assert!(c.trip_tags(d("2025-06-01"), "X", true).is_empty());
+        // A domestic trip sweeps up in-window records even when not abroad.
+        let dom: Chart = toml::from_str(
+            "[[trips]]\ntag = \"climb\"\nstart = \"2023-01-01\"\nend = \"2023-01-02\"\ndomestic = \
+             true\n",
+        )
+        .expect("valid");
+        assert_eq!(dom.trip_tags(d("2023-01-01"), "Y", false), vec!["climb"]);
+    }
+
+    /// `include` tags a booking paid before leaving (date outside, not abroad);
+    /// `exclude` drops a record the window would otherwise claim.
+    #[test]
+    fn include_and_exclude_override_the_window() {
+        let c = chart();
+        assert_eq!(c.trip_tags(d("2025-02-01"), "flight-uuid", false), vec![
+            "climbing",
+            "krabi-2026"
+        ]);
+        assert!(c.trip_tags(d("2025-04-15"), "private-uuid", true).is_empty());
     }
 }

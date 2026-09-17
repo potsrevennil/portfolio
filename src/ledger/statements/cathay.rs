@@ -53,6 +53,36 @@ impl BankStatement {
         self.lines.last().map(|l| l.balance).unwrap_or_default()
     }
 
+    /// Debits the bank itself undid, as `(debit, reversal)` line indices.
+    ///
+    /// A 錯誤更正 row carries a negative withdrawal that cancels an earlier
+    /// debit to the same counterparty on the same book date. Neither row is a
+    /// movement anyone recorded, so each pair nets to nothing rather than
+    /// landing in both uncategorised buckets. A reversal with no such debit is
+    /// left unpaired and falls through like any other line.
+    pub fn reversals(&self) -> Vec<(usize, usize)> {
+        let mut used = vec![false; self.lines.len()];
+        let mut pairs = Vec::new();
+        for (ri, reversal) in self.lines.iter().enumerate() {
+            if !reversal.withdrawal.is_sign_negative() {
+                continue;
+            }
+            let debit = (0..ri).rev().find(|&di| {
+                let d = &self.lines[di];
+                !used[di]
+                    && d.book_date == reversal.book_date
+                    && d.info == reversal.info
+                    && d.withdrawal == -reversal.withdrawal
+            });
+            if let Some(di) = debit {
+                used[di] = true;
+                used[ri] = true;
+                pairs.push((di, ri));
+            }
+        }
+        pairs
+    }
+
     /// Date to assert the closing balance on. Beancount asserts at the start of
     /// the day, so this must fall after the final transaction.
     pub fn assert_date(&self) -> NaiveDate {
@@ -192,4 +222,61 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
     lines.reverse();
 
     Ok(BankStatement { account_no, account_kind, currency, period_end, lines })
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal_macros::dec;
+
+    use super::*;
+
+    fn line(day: u32, description: &str, withdrawal: Decimal, info: &str) -> StatementLine {
+        StatementLine {
+            book_date: NaiveDate::from_ymd_opt(2026, 6, day).expect("valid date"),
+            description: description.to_string(),
+            withdrawal,
+            deposit: Decimal::ZERO,
+            balance: Decimal::ZERO,
+            info: info.to_string(),
+            memo: String::new(),
+        }
+    }
+
+    fn statement(lines: Vec<StatementLine>) -> BankStatement {
+        BankStatement {
+            account_no: "123456789012".to_string(),
+            account_kind: "活存".to_string(),
+            currency: Currency::TWD,
+            period_end: None,
+            lines,
+        }
+    }
+
+    /// A 錯誤更正 cancels the debit to the same counterparty that day, and only
+    /// that one: a same-sized debit elsewhere, or on another day, is a real
+    /// movement and must still reach the matcher.
+    #[test]
+    fn a_reversal_pairs_with_the_debit_it_undoes() {
+        let s = statement(vec![
+            line(28, "電子轉出", dec!(500), "(822)0000000000000001"),
+            line(29, "電子轉出", dec!(500), "(807)0000000000000002"),
+            line(29, "電子轉出", dec!(500), "(822)0000000000000001"),
+            line(29, "錯誤更正", dec!(-500), "(822)0000000000000001"),
+        ]);
+
+        assert_eq!(s.reversals(), vec![(2, 3)]);
+        assert_eq!(s.lines[2].delta() + s.lines[3].delta(), Decimal::ZERO);
+    }
+
+    /// With nothing to cancel, the reversal is left for the ordinary fallback
+    /// rather than netted against an unrelated line.
+    #[test]
+    fn an_unmatched_reversal_stays_unpaired() {
+        let s = statement(vec![
+            line(29, "電子轉出", dec!(300), "(822)0000000000000001"),
+            line(29, "錯誤更正", dec!(-500), "(822)0000000000000001"),
+        ]);
+
+        assert!(s.reversals().is_empty());
+    }
 }
