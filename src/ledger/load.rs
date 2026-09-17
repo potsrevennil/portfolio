@@ -132,8 +132,7 @@ pub async fn run(args: &Args) -> Result<Report> {
         .with_context(|| format!("inserting opening balance for {}", o.account))?;
     }
 
-    // Group the postings back into transactions by their group id, preserving
-    // order.
+    // Regroup the legs into transactions by group id.
     let mut groups: BTreeMap<u64, Vec<&seed::Posting>> = BTreeMap::new();
     for p in &seed.postings {
         groups.entry(p.group).or_default().push(p);

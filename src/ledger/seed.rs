@@ -1,25 +1,21 @@
-//! The **seed**: a flat, format-neutral CSV that is the single source of truth
-//! of reconciled history (design doc T2).
+//! The **seed**: a flat CSV that is the single source of truth of reconciled
+//! history (design doc T2). The freeze tool ([`super::freeze`]) writes it once
+//! reconciliation passes and the loader ([`super::load`]) reads it into SQLite;
+//! it stays deliberately dumb — no Beancount, no chart, no reconciliation — so
+//! that load path carries none of that complexity. It is financial data, so it
+//! is gitignored.
 //!
-//! The freeze tool ([`super::freeze`]) writes it once reconciliation passes;
-//! the seed loader ([`super::load`]) reads it into SQLite. It is deliberately
-//! dumb — no Beancount, no chart, no reconciliation — so the app's
-//! historical-load path carries none of that complexity. It is financial data,
-//! so it is gitignored.
-//!
-//! One row per posting. `source` doubles as a row-kind discriminator: the
-//! reserved value `opening` marks an opening-balance row (which becomes an
-//! `opening_balances` entry, not a posting), and every other value
-//! (`import` / `tiantian` / `manual`) is a real posting grouped into a
-//! transaction by `group`. Transaction-level fields (`date`, `payee`,
-//! `narration`, `external_ref`) repeat across a group's rows; `tags` is
-//! per-posting.
+//! One row per posting. Transaction-level fields (`date`, `payee`, `narration`,
+//! `external_ref`) repeat across a group's rows; `tags` is per-posting. The
+//! reserved `source` value `opening` marks an opening-balance row, which
+//! becomes an `opening_balances` entry rather than a posting.
 
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 
 use crate::currency::Currency;
 
@@ -27,23 +23,9 @@ use crate::currency::Currency;
 pub const OPENING: &str = "opening";
 
 /// The reserved posting tag marking a securities-placeholder leg (the ETF
-/// backfill). The freeze tool stamps it; the loader reads it back to note the
-/// account, and T11 keys off it to retire the placeholder. Shared here because
-/// both ends of the seed rely on the exact string.
+/// backfill). The freeze tool stamps it, the loader reads it back to note the
+/// account, and T11 keys off it to retire the placeholder.
 pub const PLACEHOLDER_TAG: &str = "t11-securities-placeholder";
-
-const COLUMNS: [&str; 10] = [
-    "group",
-    "source",
-    "date",
-    "account",
-    "amount",
-    "currency",
-    "payee",
-    "narration",
-    "external_ref",
-    "tags",
-];
 
 /// One posting of a transaction.
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +60,24 @@ pub struct Seed {
     pub openings: Vec<Opening>,
 }
 
+/// One CSV row; field order is the file's column order. Openings and postings
+/// share the schema — `source == OPENING` marks an opening (blank `group`), any
+/// other value a posting leg. Serde handles the empty-cell ⇄ `None` mapping and
+/// the date/decimal/currency formats.
+#[derive(Serialize, Deserialize)]
+struct Row {
+    group: Option<u64>,
+    source: String,
+    date: NaiveDate,
+    account: String,
+    amount: Decimal,
+    currency: Currency,
+    payee: Option<String>,
+    narration: Option<String>,
+    external_ref: Option<String>,
+    tags: Option<String>,
+}
+
 /// Writes the seed CSV. Openings come first so the file reads opening balances
 /// then history, and postings keep the order they were reconciled in.
 pub fn write(path: impl AsRef<Path>, seed: &Seed) -> Result<()> {
@@ -85,117 +85,72 @@ pub fn write(path: impl AsRef<Path>, seed: &Seed) -> Result<()> {
     let mut writer = csv::WriterBuilder::new()
         .from_path(path)
         .with_context(|| format!("creating {}", path.display()))?;
-    writer.write_record(COLUMNS)?;
 
     for o in &seed.openings {
-        writer.write_record([
-            "",
-            OPENING,
-            &o.date.to_string(),
-            &o.account,
-            &o.amount.to_string(),
-            &o.currency.to_string(),
-            "",
-            "",
-            "",
-            "",
-        ])?;
+        writer.serialize(Row {
+            group: None,
+            source: OPENING.to_string(),
+            date: o.date,
+            account: o.account.clone(),
+            amount: o.amount,
+            currency: o.currency,
+            payee: None,
+            narration: None,
+            external_ref: None,
+            tags: None,
+        })?;
     }
     for p in &seed.postings {
-        writer.write_record([
-            &p.group.to_string(),
-            &p.source,
-            &p.date.to_string(),
-            &p.account,
-            &p.amount.to_string(),
-            &p.currency.to_string(),
-            p.payee.as_deref().unwrap_or(""),
-            &p.narration,
-            p.external_ref.as_deref().unwrap_or(""),
-            p.tags.as_deref().unwrap_or(""),
-        ])?;
+        writer.serialize(Row {
+            group: Some(p.group),
+            source: p.source.clone(),
+            date: p.date,
+            account: p.account.clone(),
+            amount: p.amount,
+            currency: p.currency,
+            payee: p.payee.clone(),
+            narration: Some(p.narration.clone()),
+            external_ref: p.external_ref.clone(),
+            tags: p.tags.clone(),
+        })?;
     }
     writer.flush().with_context(|| format!("flushing {}", path.display()))?;
     Ok(())
 }
 
-/// Reads the seed CSV back. The inverse of [`write`], used by the loader and by
-/// the freeze tool's own verification.
+/// Reads the seed CSV back — the inverse of [`write`], used by the loader and
+/// by the freeze tool's own verification. Columns are matched by header name.
 pub fn read(path: impl AsRef<Path>) -> Result<Seed> {
     let path = path.as_ref();
     let mut reader = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
         .from_path(path)
         .with_context(|| format!("opening {}", path.display()))?;
-    let columns: HashMap<String, usize> = reader
-        .headers()
-        .with_context(|| format!("reading the header of {}", path.display()))?
-        .iter()
-        .enumerate()
-        .map(|(i, name)| (name.to_string(), i))
-        .collect();
-    let index = |name: &str| -> Result<usize> {
-        columns.get(name).copied().with_context(|| format!("seed is missing column {name:?}"))
-    };
-    let (
-        group_i,
-        source_i,
-        date_i,
-        account_i,
-        amount_i,
-        currency_i,
-        payee_i,
-        narration_i,
-        ref_i,
-        tags_i,
-    ) = (
-        index("group")?,
-        index("source")?,
-        index("date")?,
-        index("account")?,
-        index("amount")?,
-        index("currency")?,
-        index("payee")?,
-        index("narration")?,
-        index("external_ref")?,
-        index("tags")?,
-    );
 
     let mut seed = Seed::default();
-    for (row, record) in reader.records().enumerate() {
+    for (row, record) in reader.deserialize::<Row>().enumerate() {
         let record = record.with_context(|| format!("reading seed row {}", row + 1))?;
-        let get = |i: usize| record.get(i).unwrap_or("");
-        let field = |i: usize| -> Option<String> {
-            let value = get(i);
-            (!value.is_empty()).then(|| value.to_string())
-        };
-        let date: NaiveDate = NaiveDate::parse_from_str(get(date_i), "%Y-%m-%d")
-            .with_context(|| format!("unparseable date at seed row {}", row + 1))?;
-        let account = get(account_i).to_string();
-        let amount: Decimal = get(amount_i)
-            .parse()
-            .with_context(|| format!("unparseable amount at seed row {}", row + 1))?;
-        let currency: Currency = get(currency_i)
-            .parse()
-            .with_context(|| format!("unknown currency at seed row {}", row + 1))?;
-
-        if get(source_i) == OPENING {
-            seed.openings.push(Opening { account, currency, amount, date });
+        if record.source == OPENING {
+            seed.openings.push(Opening {
+                account: record.account,
+                currency: record.currency,
+                amount: record.amount,
+                date: record.date,
+            });
         } else {
-            let group: u64 = get(group_i)
-                .parse()
-                .with_context(|| format!("unparseable group at seed row {}", row + 1))?;
             seed.postings.push(Posting {
-                group,
-                source: get(source_i).to_string(),
-                date,
-                payee: field(payee_i),
-                narration: get(narration_i).to_string(),
-                external_ref: field(ref_i),
-                account,
-                amount,
-                currency,
-                tags: field(tags_i),
+                group: record
+                    .group
+                    .with_context(|| format!("posting at seed row {} has no group", row + 1))?,
+                source: record.source,
+                date: record.date,
+                payee: record.payee,
+                narration: record.narration.unwrap_or_default(),
+                external_ref: record.external_ref,
+                account: record.account,
+                amount: record.amount,
+                currency: record.currency,
+                tags: record.tags,
             });
         }
     }

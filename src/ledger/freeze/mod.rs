@@ -2,17 +2,13 @@
 //! reconciles the full history and exports it as a trusted
 //! [`seed`](super::seed).
 //!
-//! This is where all the heavy machinery lives —
-//! [`assemble`](super::build::assemble)'s reconciliation (matching, backfill,
-//! corrections) and the balance checks — so that the app's ongoing
-//! historical-load path ([`super::load`]) carries none of it. The freeze tool
-//! is expected to be **re-run** while the corrected 天天記帳 copies are still
-//! being audited; each run regenerates the seed.
-//!
-//! It trusts the seed only once it verifies: after writing the seed it reads it
-//! back and proves the written rows reproduce every statement/app balance
-//! assertion and that no asset account closes negative. A failure removes the
-//! seed and stops, so a bad seed is never left for the loader.
+//! All the heavy machinery lives here — [`assemble`](super::build::assemble)'s
+//! reconciliation and the balance checks — so the app's ongoing load path
+//! ([`super::load`]) carries none of it. It is meant to be re-run while the
+//! corrected 天天記帳 copies are still being audited; each run regenerates the
+//! seed. The seed is trusted only after it verifies: freeze re-reads what it
+//! wrote and proves the rows reproduce every balance assertion and that no
+//! asset account closes negative, else it removes the seed and stops.
 //!
 //! ```text
 //! cargo run -- freeze --seed ledger/seed.csv \
@@ -62,39 +58,13 @@ pub struct FreezeArgs {
     pub build: BuildArgs,
 }
 
-/// A transaction with its already-balanced legs.
-struct TxnRow {
-    source: &'static str,
-    external_ref: Option<String>,
-    date: NaiveDate,
-    payee: Option<String>,
-    narration: String,
-    postings: Vec<PostingRow>,
-}
-
+/// A transaction's legs after inference and balancing.
 #[derive(Debug)]
 struct PostingRow {
     account: String,
     amount: Decimal,
     currency: Currency,
     tags: Option<String>,
-}
-
-/// An opening position, one per (account, currency).
-struct Opening {
-    account: String,
-    currency: Currency,
-    amount: Decimal,
-    date: NaiveDate,
-}
-
-/// The reconciled history, before it becomes a seed.
-#[derive(Default)]
-struct Reconciled {
-    transactions: Vec<TxnRow>,
-    openings: Vec<Opening>,
-    /// The balance assertions the seed must reproduce.
-    assertions: Vec<model::Balance>,
 }
 
 fn account_type(path: &str) -> Result<AccountType> {
@@ -105,14 +75,12 @@ fn account_type(path: &str) -> Result<AccountType> {
         .map_err(|_| anyhow::anyhow!("{path:?} has no root"))
 }
 
-fn is_placeholder(path: &str) -> bool {
-    path == SECURITIES_PREFIX || path.starts_with(&format!("{SECURITIES_PREFIX}:"))
-}
-
 /// True when an account is or lies under `root` (Beancount subtree semantics).
 fn in_subtree(account: &str, root: &str) -> bool {
     account == root || account.starts_with(&format!("{root}:"))
 }
+
+fn is_placeholder(path: &str) -> bool { in_subtree(path, SECURITIES_PREFIX) }
 
 /// Fills an inferred leg and balances the transaction, plugging a genuine
 /// cross-currency transfer through `Equity:Conversions`. A single-currency
@@ -184,20 +152,23 @@ fn balance_postings(
 /// comma-separated string a posting carries.
 fn merge_tags(txn_tags: &Option<String>, extra: Option<String>) -> Option<String> {
     match (txn_tags, extra) {
-        (None, None) => None,
-        (Some(t), None) => Some(t.clone()),
+        (t, None) => t.clone(),
         (None, Some(e)) => Some(e),
         (Some(t), Some(e)) => Some(format!("{t},{e}")),
     }
 }
 
-/// Folds the importer's model plus the `manual.csv` transactions into balanced
-/// rows and the balance assertions to check them against. Never re-decides
-/// where a posting goes.
-fn reconcile(model: &model::Model, manual: &[model::Transaction]) -> Result<Reconciled> {
+/// Folds the importer's model plus the `manual.csv` transactions straight into
+/// a [`seed::Seed`], returning it with the balance assertions to check it
+/// against. Never re-decides where a posting goes; each non-opening transaction
+/// becomes one `group`.
+fn reconcile(
+    model: &model::Model,
+    manual: &[model::Transaction],
+) -> Result<(seed::Seed, Vec<model::Balance>)> {
     let mut openings: BTreeMap<(String, Currency), (Decimal, NaiveDate)> = BTreeMap::new();
-    let mut transactions: Vec<TxnRow> = Vec::new();
-    let mut assertions: Vec<model::Balance> = Vec::new();
+    let mut postings: Vec<seed::Posting> = Vec::new();
+    let mut group: u64 = 0;
 
     for txn in model.transactions().chain(manual.iter()) {
         if txn.postings.iter().any(|p| p.account == OPENING_EQUITY) {
@@ -218,72 +189,45 @@ fn reconcile(model: &model::Model, manual: &[model::Transaction]) -> Result<Reco
             }
         } else {
             let tags = (!txn.tags.is_empty()).then(|| txn.tags.join(","));
-            transactions.push(TxnRow {
-                source: txn.source.as_str(),
-                external_ref: txn.external_ref.clone(),
-                date: txn.date,
-                payee: (!txn.payee.is_empty()).then(|| txn.payee.clone()),
-                narration: txn.narration.clone(),
-                postings: balance_postings(&txn.postings, txn.date, &tags)?,
-            });
+            let payee = (!txn.payee.is_empty()).then(|| txn.payee.clone());
+            for leg in balance_postings(&txn.postings, txn.date, &tags)? {
+                postings.push(seed::Posting {
+                    group,
+                    source: txn.source.as_str().to_string(),
+                    date: txn.date,
+                    payee: payee.clone(),
+                    narration: txn.narration.clone(),
+                    external_ref: txn.external_ref.clone(),
+                    account: leg.account,
+                    amount: leg.amount,
+                    currency: leg.currency,
+                    tags: leg.tags,
+                });
+            }
+            group += 1;
         }
     }
 
-    for b in model.balances() {
-        assertions.push(model::Balance {
+    let openings = openings
+        .into_iter()
+        .map(|((account, currency), (amount, date))| seed::Opening {
+            account,
+            currency,
+            amount,
+            date,
+        })
+        .collect();
+    let assertions = model
+        .balances()
+        .map(|b| model::Balance {
             date: b.date,
             account: b.account.clone(),
             amount: b.amount,
             currency: b.currency,
-        });
-    }
-
-    Ok(Reconciled {
-        transactions,
-        openings: openings
-            .into_iter()
-            .map(|((account, currency), (amount, date))| Opening {
-                account,
-                currency,
-                amount,
-                date,
-            })
-            .collect(),
-        assertions,
-    })
-}
-
-/// Flattens the reconciled history into seed rows, numbering transaction
-/// groups.
-fn to_seed(reconciled: &Reconciled) -> seed::Seed {
-    let openings = reconciled
-        .openings
-        .iter()
-        .map(|o| seed::Opening {
-            account: o.account.clone(),
-            currency: o.currency,
-            amount: o.amount,
-            date: o.date,
         })
         .collect();
-    let mut postings = Vec::new();
-    for (group, txn) in reconciled.transactions.iter().enumerate() {
-        for p in &txn.postings {
-            postings.push(seed::Posting {
-                group: group as u64,
-                source: txn.source.to_string(),
-                date: txn.date,
-                payee: txn.payee.clone(),
-                narration: txn.narration.clone(),
-                external_ref: txn.external_ref.clone(),
-                account: p.account.clone(),
-                amount: p.amount,
-                currency: p.currency,
-                tags: p.tags.clone(),
-            });
-        }
-    }
-    seed::Seed { postings, openings }
+
+    Ok((seed::Seed { postings, openings }, assertions))
 }
 
 /// A (path, currency, amount, date) figure for verification.
@@ -466,13 +410,12 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
     let manual_path = args.build.ledger_dir.join("manual.csv");
     let manual = if manual_path.exists() { manual::load(&manual_path)? } else { Vec::new() };
 
-    let reconciled = reconcile(&model, &manual)?;
-    let seed = to_seed(&reconciled);
+    let (seed, assertions) = reconcile(&model, &manual)?;
     seed::write(&args.seed, &seed)?;
 
     // Trust the seed only after re-reading what was written and checking it.
     let written = seed::read(&args.seed)?;
-    let (mismatches, negatives) = verify(&written, &reconciled.assertions);
+    let (mismatches, negatives) = verify(&written, &assertions);
 
     let accounts: BTreeSet<&str> = written
         .postings
@@ -480,10 +423,11 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
         .map(|p| p.account.as_str())
         .chain(written.openings.iter().map(|o| o.account.as_str()))
         .collect();
+    let transactions: BTreeSet<u64> = written.postings.iter().map(|p| p.group).collect();
     let report = Report {
         seed: args.seed.clone(),
         accounts: accounts.len(),
-        transactions: reconciled.transactions.len(),
+        transactions: transactions.len(),
         postings: written.postings.len(),
         openings: written.openings.len(),
         placeholders: written
@@ -493,7 +437,7 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
             .count(),
         conversions: written.postings.iter().filter(|p| p.account == CONVERSIONS).count(),
         manual: manual.len(),
-        assertions_checked: reconciled.assertions.len(),
+        assertions_checked: assertions.len(),
         mismatches,
         negatives,
     };
