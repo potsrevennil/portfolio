@@ -75,11 +75,12 @@ expense = "Expenses:Uncategorized"
 "應收款" = "Assets:Split:Others"
 "證券"  = "Assets:Securities"
 
-# Running two-way balances with a person or group (current accounts): one account
-# per counterparty, and the sign says who owes whom — positive, they owe you;
-# negative, you owe them. The freeze therefore lets these close negative. List
-# every subtree that holds them, e.g. bill splits and advances an employer repays.
-[counterparty]
+# Split accounts: running two-way balances with a person or group (current
+# accounts), one account per person or group, and the sign says who owes whom —
+# positive, they owe you; negative, you owe them. The freeze therefore lets
+# these close negative. List every subtree that holds them, e.g. bill splits and
+# advances an employer repays. (Formerly [counterparty], which is now an error.)
+[split_accounts]
 roots = ["Assets:Split"]
 
 # Single records whose app category is too coarse, keyed by the record's UUID

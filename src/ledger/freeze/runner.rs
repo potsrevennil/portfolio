@@ -340,7 +340,7 @@ impl fmt::Display for Report {
 }
 
 /// Verifies the journal's rows reproduce every assertion and that no asset
-/// account closes negative — except a counterparty balance, where negative just
+/// account closes negative — except a split account, where negative just
 /// means you owe them.
 fn verify(
     journal: &journal::Journal,
@@ -380,12 +380,12 @@ fn verify(
     }
 
     // Every asset account's final balance must be non-negative, bar the
-    // counterparty balances, which are payables when negative.
+    // split accounts, which are payables when negative.
     let asset_accounts: BTreeSet<&str> = movements
         .iter()
         .map(|m| m.account.as_str())
         .filter(|a| matches!(account_type(a), Ok(AccountType::Assets)))
-        .filter(|a| !chart.is_counterparty(a))
+        .filter(|a| !chart.is_split_account(a))
         .collect();
     let mut negatives = Vec::new();
     for account in asset_accounts {
