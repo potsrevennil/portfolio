@@ -7,6 +7,7 @@ use crate::currency::Currency;
 
 /// A single posting leg. `amount == None` lets Beancount infer the value, which
 /// is how the contra-leg of a two-posting transaction is normally written.
+#[derive(Debug, Clone)]
 pub struct Posting {
     pub account: String,
     pub amount: Option<Decimal>,
