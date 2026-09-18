@@ -213,6 +213,18 @@ pub struct Fallback {
     pub descriptions: HashMap<String, Account>,
 }
 
+/// Running two-way balances with a person or group — a family tab, a Splitwise
+/// group. Accountants call these current accounts: one account per
+/// counterparty, and the sign says who owes whom (positive, they owe you;
+/// negative, you owe them). Negative is therefore an ordinary state here, a
+/// payable, not a sign of a missing opening balance.
+#[derive(Debug, Default, Deserialize)]
+pub struct Counterparty {
+    /// Every account at or under one of these is a counterparty balance.
+    #[serde(default)]
+    pub roots: Vec<Account>,
+}
+
 /// A balance an account already carried before 天天記帳's history begins.
 ///
 /// The app has no opening-balance concept, so an account whose life predates
@@ -295,6 +307,9 @@ pub struct Chart {
     /// Trips whose records pick up a tag. See `Trip`.
     #[serde(default)]
     pub trips: Vec<Trip>,
+    /// Subtrees of two-way balances with a person or group. See `Counterparty`.
+    #[serde(default)]
+    pub counterparty: Counterparty,
 }
 
 impl Chart {
@@ -369,6 +384,16 @@ impl Chart {
             .collect()
     }
 
+    /// True for an account at or under a counterparty root, where a negative
+    /// balance means you owe them rather than a missing opening balance.
+    pub fn is_counterparty(&self, account: &str) -> bool {
+        self.counterparty.roots.iter().any(|root| {
+            account
+                .strip_prefix(root.as_ref())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
+        })
+    }
+
     /// Corrections that named a record the exports do not contain.
     pub fn stale_overrides(&self, used: &BTreeSet<String>) -> BTreeSet<String> {
         self.overrides
@@ -426,5 +451,31 @@ mod trip_tests {
             "krabi-2026"
         ]);
         assert!(c.trip_tags(d("2025-04-15"), "private-uuid", true).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod counterparty_tests {
+    use super::*;
+
+    /// A root covers itself and everything beneath it, but not a sibling that
+    /// merely shares its prefix; with no roots configured nothing qualifies.
+    #[test]
+    fn roots_cover_their_subtree_only() {
+        let c: Chart = toml::from_str("[counterparty]\nroots = [\"Assets:Counterparty\"]\n")
+            .expect("valid counterparty config");
+        assert!(c.is_counterparty("Assets:Counterparty"));
+        assert!(c.is_counterparty("Assets:Counterparty:Split:Friends"));
+        assert!(!c.is_counterparty("Assets:CounterpartyX"));
+        assert!(!c.is_counterparty("Assets:Cash:TWD"));
+        assert!(!Chart::default().is_counterparty("Assets:Counterparty:Family"));
+    }
+
+    /// A root must still be a valid account path.
+    #[test]
+    fn rejects_a_root_outside_the_five_roots() {
+        assert!(
+            toml::from_str::<Chart>("[counterparty]\nroots = [\"Receivable:Family\"]\n").is_err()
+        );
     }
 }

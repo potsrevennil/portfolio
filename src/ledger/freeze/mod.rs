@@ -8,7 +8,8 @@
 //! corrected 天天記帳 copies are still being audited; each run regenerates the
 //! journal. The journal is trusted only after it verifies: freeze re-reads what
 //! it wrote and proves the rows reproduce every balance assertion and that no
-//! asset account closes negative, else it removes the journal and stops.
+//! asset account closes negative (a counterparty balance may: that means you
+//! owe them), else it removes the journal and stops.
 //!
 //! ```text
 //! cargo run -- freeze --journal ledger/journal.csv \

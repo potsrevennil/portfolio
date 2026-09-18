@@ -15,8 +15,13 @@ use super::manual;
 use crate::{
     currency::Currency,
     ledger::{
-        self, accounts::AccountType, args::Args as BuildArgs, journal, journal::PLACEHOLDER_TAG,
-        model, writer::Posting,
+        self,
+        accounts::{AccountType, Chart},
+        args::Args as BuildArgs,
+        journal,
+        journal::PLACEHOLDER_TAG,
+        model,
+        writer::Posting,
     },
 };
 
@@ -335,10 +340,12 @@ impl fmt::Display for Report {
 }
 
 /// Verifies the journal's rows reproduce every assertion and that no asset
-/// account closes negative.
+/// account closes negative — except a counterparty balance, where negative just
+/// means you owe them.
 fn verify(
     journal: &journal::Journal,
     assertions: &[model::Balance],
+    chart: &Chart,
 ) -> (Vec<Mismatch>, Vec<Negative>) {
     let movements: Vec<Movement> = journal
         .openings
@@ -372,11 +379,13 @@ fn verify(
         }
     }
 
-    // Every asset account's final balance must be non-negative.
+    // Every asset account's final balance must be non-negative, bar the
+    // counterparty balances, which are payables when negative.
     let asset_accounts: BTreeSet<&str> = movements
         .iter()
         .map(|m| m.account.as_str())
         .filter(|a| matches!(account_type(a), Ok(AccountType::Assets)))
+        .filter(|a| !chart.is_counterparty(a))
         .collect();
     let mut negatives = Vec::new();
     for account in asset_accounts {
@@ -403,7 +412,8 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
 
     // Trust the journal only after re-reading what was written and checking it.
     let written = journal::read(&args.journal)?;
-    let (mismatches, negatives) = verify(&written, &assertions);
+    let chart = Chart::load(args.build.ledger_dir.join("mapping.toml"))?;
+    let (mismatches, negatives) = verify(&written, &assertions, &chart);
 
     let accounts: BTreeSet<&str> = written
         .postings
