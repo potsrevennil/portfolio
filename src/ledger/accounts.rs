@@ -462,13 +462,15 @@ mod counterparty_tests {
     /// merely shares its prefix; with no roots configured nothing qualifies.
     #[test]
     fn roots_cover_their_subtree_only() {
-        let c: Chart = toml::from_str("[counterparty]\nroots = [\"Assets:Counterparty\"]\n")
-            .expect("valid counterparty config");
-        assert!(c.is_counterparty("Assets:Counterparty"));
-        assert!(c.is_counterparty("Assets:Counterparty:Split:Friends"));
-        assert!(!c.is_counterparty("Assets:CounterpartyX"));
+        let c: Chart =
+            toml::from_str("[counterparty]\nroots = [\"Assets:Split\", \"Assets:Advance\"]\n")
+                .expect("valid counterparty config");
+        assert!(c.is_counterparty("Assets:Split"));
+        assert!(c.is_counterparty("Assets:Split:Friends"));
+        assert!(c.is_counterparty("Assets:Advance:Company"));
+        assert!(!c.is_counterparty("Assets:SplitX"));
         assert!(!c.is_counterparty("Assets:Cash:TWD"));
-        assert!(!Chart::default().is_counterparty("Assets:Counterparty:Family"));
+        assert!(!Chart::default().is_counterparty("Assets:Split:Family"));
     }
 
     /// A root must still be a valid account path.

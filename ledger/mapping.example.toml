@@ -72,14 +72,15 @@ expense = "Expenses:Uncategorized"
 "現金"  = "Assets:Cash"
 "銀行"  = "Assets:Bank"
 "信用卡" = { account = "Liabilities:Card", tags = ["card"] }
-"應收款" = "Assets:Counterparty"
+"應收款" = "Assets:Split:Others"
 "證券"  = "Assets:Securities"
 
 # Running two-way balances with a person or group (current accounts): one account
 # per counterparty, and the sign says who owes whom — positive, they owe you;
-# negative, you owe them. The freeze therefore lets these close negative.
+# negative, you owe them. The freeze therefore lets these close negative. List
+# every subtree that holds them, e.g. bill splits and advances an employer repays.
 [counterparty]
-roots = ["Assets:Counterparty"]
+roots = ["Assets:Split"]
 
 # Single records whose app category is too coarse, keyed by the record's UUID
 # (the export's last column). The app allows one category per record, so a
