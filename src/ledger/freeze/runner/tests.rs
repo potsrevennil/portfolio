@@ -29,7 +29,7 @@ fn a_balanced_single_currency_transaction_needs_no_conversion() {
 
 #[test]
 fn two_postings_on_one_account_are_both_kept() {
-    // A 錯誤更正 reversal (see PR #9, net-bank-reversals) books a debit and its
+    // A 錯誤更正 (bank error correction) reversal books a debit and its
     // correction on the same bank account in one transaction, netting to zero.
     // The balancer must keep both legs, not merge or reject them.
     let postings = balance_postings(

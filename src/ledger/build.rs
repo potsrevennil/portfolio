@@ -63,7 +63,7 @@ fn app_balances(
 /// Assembles the ledger as an in-memory model: the transactions, balance
 /// assertions and opens the reconciliation produces, with each transaction's
 /// source and dedup id attached. [`build`] renders this to the generated
-/// Beancount files; the SQLite bake (T2) consumes it directly, so nothing
+/// Beancount files; the freeze tool consumes it directly, so nothing
 /// re-parses the importer's own output.
 pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let ledger = opts.ledger_dir.as_path();

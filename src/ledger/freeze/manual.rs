@@ -7,8 +7,7 @@
 //! two-leg, single-currency** transaction — `amount` is the signed effect on
 //! `account`, and `contra` gets its negation — so a hand-typed entry cannot
 //! drift out of balance, which is the founding invariant. Cross-currency and
-//! 3+-leg entries are deliberately not expressible here; those wait for the UI
-//! (T9).
+//! 3+-leg entries are deliberately not expressible here; those wait for the UI.
 //!
 //! Columns (header row, read by name; `#` starts a comment line):
 //! `date, account, contra, amount, currency, payee, narration, tags`. Only

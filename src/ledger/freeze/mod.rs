@@ -1,4 +1,4 @@
-//! The **freeze tool** (design doc T2): the one-time / audit-time step that
+//! The **freeze tool**: the one-time / audit-time step that
 //! reconciles the full history and exports it as a trusted
 //! [`seed`](super::seed).
 //!

@@ -1,4 +1,4 @@
-//! The **seed loader** (design doc T2): the app's only historical-load path.
+//! The **seed loader**: the app's only historical-load path.
 //!
 //! It reads a trusted [`seed`](super::seed) — already reconciled and verified
 //! by the [freeze tool](super::freeze) — and writes it into the SQLite core
@@ -106,8 +106,8 @@ pub async fn run(args: &Args) -> Result<Report> {
         ids.insert(path.to_string(), id);
 
         let note = placeholder_accounts.contains(path).then_some(
-            "securities value backfilled by the T2 freeze; retire and replace with real positions \
-             in T11 (do not double-count)",
+            "securities value backfilled by the freeze; replace with real positions later (do not \
+             double-count)",
         );
         sqlx::query(
             "INSERT INTO account_events (account_id, event, note) VALUES (?, 'created', ?)",

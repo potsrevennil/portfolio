@@ -1,5 +1,5 @@
 //! The **seed**: a flat CSV that is the single source of truth of reconciled
-//! history (design doc T2). The freeze tool ([`super::freeze`]) writes it once
+//! history. The freeze tool ([`super::freeze`]) writes it once
 //! reconciliation passes and the loader ([`super::load`]) reads it into SQLite;
 //! it stays deliberately dumb — no Beancount, no chart, no reconciliation — so
 //! that load path carries none of that complexity. It is financial data, so it
@@ -24,8 +24,8 @@ pub const OPENING: &str = "opening";
 
 /// The reserved posting tag marking a securities-placeholder leg (the ETF
 /// backfill). The freeze tool stamps it, the loader reads it back to note the
-/// account, and T11 keys off it to retire the placeholder.
-pub const PLACEHOLDER_TAG: &str = "t11-securities-placeholder";
+/// account, and it marks the leg to be replaced with real positions later.
+pub const PLACEHOLDER_TAG: &str = "securities-placeholder";
 
 /// One posting of a transaction.
 #[derive(Debug, Clone, PartialEq)]

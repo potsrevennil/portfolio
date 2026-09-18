@@ -1,5 +1,5 @@
-//! The carried-over bug fix (design doc §12): statements are ordered by date,
-//! not by the order they are passed on the command line. Two statements for the
+//! Statements are ordered by date, not by the order they are passed on the
+//! command line. Two statements for the
 //! same account passed either way must produce the identical ledger.
 
 use portfolio::ledger::{self, args::Args as BuildArgs};

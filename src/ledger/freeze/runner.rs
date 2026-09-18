@@ -25,12 +25,12 @@ use crate::{
 const OPENING_EQUITY: &str = "Equity:Opening-Balances";
 
 /// Where a genuine cross-currency transfer's per-currency leftovers are booked
-/// so every currency still sums to zero without a cost/price column (T11).
+/// so every currency still sums to zero without a cost or price column.
 const CONVERSIONS: &str = "Equity:Conversions";
 
 /// The subtree the securities backfill lands in — the ~722k TWD ETF placeholder
 /// among it. Every posting here is tagged (with [`seed::PLACEHOLDER_TAG`]) so
-/// T11 can replace it without double-counting.
+/// it can be replaced with real positions later without double-counting.
 const SECURITIES_PREFIX: &str = "Assets:Securities";
 
 #[derive(clap::Parser, Debug)]
@@ -298,7 +298,7 @@ impl fmt::Display for Report {
         writeln!(f, "  {} cross-currency conversion legs via {CONVERSIONS}", self.conversions)?;
         writeln!(
             f,
-            "  {} securities-placeholder postings tagged #{PLACEHOLDER_TAG} for T11",
+            "  {} securities-placeholder postings tagged #{PLACEHOLDER_TAG}",
             self.placeholders
         )?;
         writeln!(
@@ -326,7 +326,7 @@ impl fmt::Display for Report {
             writeln!(
                 f,
                 "note: {} manual.csv entries are in the seed (and SQLite) but NOT in the Fava \
-                 ledger — reconcile cash by hand until Fava is retired (T15)",
+                 ledger — reconcile cash by hand until Fava is retired",
                 self.manual
             )?;
         }

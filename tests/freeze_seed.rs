@@ -1,4 +1,4 @@
-//! End-to-end test for the T2 freeze → seed → load pipeline.
+//! End-to-end test for the freeze → seed → load pipeline.
 //!
 //! Drives the real importer over a small synthetic ledger, freezes it to a seed
 //! CSV (verifying reconciliation against the statement/app balances), then
@@ -169,7 +169,7 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     .fetch_one(&pool)
     .await?
     .get(0);
-    assert!(note.unwrap_or_default().contains("T11"), "placeholder note missing");
+    assert!(note.unwrap_or_default().contains("backfilled"), "placeholder note missing");
 
     // Every account has exactly one 'created' event.
     let accounts: i64 = sqlx::query("SELECT COUNT(*) FROM accounts").fetch_one(&pool).await?.get(0);
@@ -216,7 +216,7 @@ async fn a_negative_asset_fails_the_freeze_and_removes_the_seed() -> anyhow::Res
 /// zero-sum transaction, not fall to Expenses/Income:Uncategorized. Balance
 /// assertions cannot catch a dropped netting (savings nets to zero either way),
 /// so this is the only guard — it checks the netting survives freeze → seed →
-/// load. See PR #9 (net-bank-reversals).
+/// load.
 #[tokio::test]
 async fn a_bank_reversal_nets_into_one_transaction_not_uncategorised() -> anyhow::Result<()> {
     const REVERSAL_MAPPING: &str = r#"
