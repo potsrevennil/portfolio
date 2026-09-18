@@ -1,5 +1,5 @@
 //! Unit tests for the freeze tool's pure transformation logic. The end-to-end
-//! freeze → seed → load pipeline is exercised in `tests/freeze_seed.rs`.
+//! freeze → journal → load pipeline is exercised in `tests/freeze_journal.rs`.
 
 use rust_decimal_macros::dec;
 
@@ -95,7 +95,7 @@ fn an_inferred_leg_is_filled_from_the_others() {
 }
 
 #[test]
-fn a_securities_posting_is_tagged_for_t11() {
+fn a_securities_posting_is_tagged_as_placeholder() {
     let postings = balance_postings(
         &[
             explicit("Assets:Securities:ETF", dec!(3000), Currency::TWD),

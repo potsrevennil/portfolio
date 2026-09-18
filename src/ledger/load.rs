@@ -1,15 +1,15 @@
-//! The **seed loader**: the app's only historical-load path.
+//! The **journal loader**: the app's only historical-load path.
 //!
-//! It reads a trusted [`seed`](super::seed) — already reconciled and verified
-//! by the [freeze tool](super::freeze) — and writes it into the SQLite core
-//! schema. Deliberately dumb: no reconciliation, no chart, no Beancount. It
-//! derives the chart of accounts from the paths the seed mentions (type from
-//! the root, label from the leaf) and, as a cheap tripwire, refuses a
+//! It reads a trusted [`journal`](super::journal) — already reconciled and
+//! verified by the [freeze tool](super::freeze) — and writes it into the SQLite
+//! core schema. Deliberately dumb: no reconciliation, no chart, no Beancount.
+//! It derives the chart of accounts from the paths the journal mentions (type
+//! from the root, label from the leaf) and, as a cheap tripwire, refuses a
 //! transaction whose legs do not sum to zero per currency. It is one-time: it
 //! refuses a non-empty database.
 //!
 //! ```text
-//! cargo run -- seed-load --seed ledger/seed.csv --database-url sqlite:ledger-app.db
+//! cargo run -- journal-load --journal ledger/journal.csv --database-url sqlite:ledger-app.db
 //! ```
 
 use std::{
@@ -22,14 +22,14 @@ use anyhow::{bail, Context, Result};
 use rust_decimal::Decimal;
 use sqlx::{Row, SqlitePool};
 
-use super::{accounts::AccountType, seed};
+use super::{accounts::AccountType, journal};
 use crate::{currency::Currency, db};
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
-    /// The reconciled seed CSV to load (produced by `freeze`).
-    #[arg(long, default_value = "ledger/seed.csv")]
-    pub seed: PathBuf,
+    /// The reconciled journal CSV to load (produced by `freeze`).
+    #[arg(long, default_value = "ledger/journal.csv")]
+    pub journal: PathBuf,
 
     /// SQLite database to load into. Must be empty of transactions.
     #[arg(long, default_value = "sqlite:ledger-app.db")]
@@ -61,7 +61,7 @@ pub struct Report {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "loaded seed into SQLite:")?;
+        writeln!(f, "loaded journal into SQLite:")?;
         writeln!(f, "  {} accounts", self.accounts)?;
         writeln!(f, "  {} opening balances", self.openings)?;
         writeln!(f, "  {} transactions, {} postings", self.transactions, self.postings)?;
@@ -70,25 +70,25 @@ impl fmt::Display for Report {
 }
 
 pub async fn run(args: &Args) -> Result<Report> {
-    let seed = seed::read(&args.seed)?;
+    let journal = journal::read(&args.journal)?;
     let pool = db::init_db(&args.database_url).await?;
     guard_empty(&pool).await?;
 
     let mut tx = pool.begin().await?;
 
-    // Accounts are exactly the paths the seed mentions. An account is a
+    // Accounts are exactly the paths the journal mentions. An account is a
     // placeholder if any of its legs carries the reserved tag.
-    let placeholder_accounts: BTreeSet<&str> = seed
+    let placeholder_accounts: BTreeSet<&str> = journal
         .postings
         .iter()
-        .filter(|p| p.tags.as_deref().is_some_and(|t| t.contains(seed::PLACEHOLDER_TAG)))
+        .filter(|p| p.tags.as_deref().is_some_and(|t| t.contains(journal::PLACEHOLDER_TAG)))
         .map(|p| p.account.as_str())
         .collect();
-    let paths: BTreeSet<&str> = seed
+    let paths: BTreeSet<&str> = journal
         .postings
         .iter()
         .map(|p| p.account.as_str())
-        .chain(seed.openings.iter().map(|o| o.account.as_str()))
+        .chain(journal.openings.iter().map(|o| o.account.as_str()))
         .collect();
 
     let mut ids: BTreeMap<String, i64> = BTreeMap::new();
@@ -118,7 +118,7 @@ pub async fn run(args: &Args) -> Result<Report> {
         .await?;
     }
 
-    for o in &seed.openings {
+    for o in &journal.openings {
         let id = ids.get(&o.account).context("opening for an account with no chart row")?;
         sqlx::query(
             "INSERT INTO opening_balances (account_id, currency, amount, date) VALUES (?, ?, ?, ?)",
@@ -133,21 +133,23 @@ pub async fn run(args: &Args) -> Result<Report> {
     }
 
     // Regroup the legs into transactions by group id.
-    let mut groups: BTreeMap<u64, Vec<&seed::Posting>> = BTreeMap::new();
-    for p in &seed.postings {
+    let mut groups: BTreeMap<u64, Vec<&journal::Posting>> = BTreeMap::new();
+    for p in &journal.postings {
         groups.entry(p.group).or_default().push(p);
     }
 
     let mut posting_count = 0;
     for (group, legs) in &groups {
         // Tripwire: a transaction whose legs do not sum to zero per currency is
-        // a corrupt seed, and loading it would break the double-entry invariant.
+        // a corrupt journal, and loading it would break the double-entry invariant.
         let mut residual: BTreeMap<Currency, Decimal> = BTreeMap::new();
         for leg in legs {
             *residual.entry(leg.currency).or_default() += leg.amount;
         }
         if let Some((currency, amount)) = residual.iter().find(|(_, a)| !a.is_zero()) {
-            bail!("seed transaction group {group} does not balance: {amount} {currency} left over");
+            bail!(
+                "journal transaction group {group} does not balance: {amount} {currency} left over"
+            );
         }
 
         let header = legs[0];
@@ -185,10 +187,10 @@ pub async fn run(args: &Args) -> Result<Report> {
     }
 
     tx.commit().await?;
-    log::info!("seed-load: committed");
+    log::info!("journal-load: committed");
     Ok(Report {
         accounts: ids.len(),
-        openings: seed.openings.len(),
+        openings: journal.openings.len(),
         transactions: groups.len(),
         postings: posting_count,
     })
@@ -199,7 +201,7 @@ async fn guard_empty(pool: &SqlitePool) -> Result<()> {
     let count: i64 = sqlx::query("SELECT COUNT(*) FROM transactions").fetch_one(pool).await?.get(0);
     if count > 0 {
         bail!(
-            "database already contains {count} transactions; the seed load is one-time — point \
+            "database already contains {count} transactions; the journal load is one-time — point \
              --database-url at a fresh file"
         );
     }

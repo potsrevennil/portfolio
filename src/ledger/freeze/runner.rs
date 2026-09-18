@@ -1,5 +1,5 @@
 //! Freeze implementation: reconcile the assembled model plus `manual.csv` into
-//! a seed, write it, and verify it before trusting it.
+//! a journal, write it, and verify it before trusting it.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,13 +15,13 @@ use super::manual;
 use crate::{
     currency::Currency,
     ledger::{
-        self, accounts::AccountType, args::Args as BuildArgs, model, seed, seed::PLACEHOLDER_TAG,
-        writer::Posting,
+        self, accounts::AccountType, args::Args as BuildArgs, journal, journal::PLACEHOLDER_TAG,
+        model, writer::Posting,
     },
 };
 
 /// The equity plug the importer books opening balances against. It never
-/// reaches the seed as a posting: its legs become opening rows instead.
+/// reaches the journal as a posting: its legs become opening rows instead.
 const OPENING_EQUITY: &str = "Equity:Opening-Balances";
 
 /// Where a genuine cross-currency transfer's per-currency leftovers are booked
@@ -29,15 +29,15 @@ const OPENING_EQUITY: &str = "Equity:Opening-Balances";
 const CONVERSIONS: &str = "Equity:Conversions";
 
 /// The subtree the securities backfill lands in — the ~722k TWD ETF placeholder
-/// among it. Every posting here is tagged (with [`seed::PLACEHOLDER_TAG`]) so
-/// it can be replaced with real positions later without double-counting.
+/// among it. Every posting here is tagged (with [`journal::PLACEHOLDER_TAG`])
+/// so it can be replaced with real positions later without double-counting.
 const SECURITIES_PREFIX: &str = "Assets:Securities";
 
 #[derive(clap::Parser, Debug)]
 pub struct FreezeArgs {
-    /// Where to write the reconciled seed CSV (financial data; gitignored).
-    #[arg(long, default_value = "ledger/seed.csv")]
-    pub seed: PathBuf,
+    /// Where to write the reconciled journal CSV (financial data; gitignored).
+    #[arg(long, default_value = "ledger/journal.csv")]
+    pub journal: PathBuf,
 
     #[command(flatten)]
     pub build: BuildArgs,
@@ -144,15 +144,15 @@ fn merge_tags(txn_tags: &Option<String>, extra: Option<String>) -> Option<String
 }
 
 /// Folds the importer's model plus the `manual.csv` transactions straight into
-/// a [`seed::Seed`], returning it with the balance assertions to check it
+/// a [`journal::Journal`], returning it with the balance assertions to check it
 /// against. Never re-decides where a posting goes; each non-opening transaction
 /// becomes one `group`.
 fn reconcile(
     model: &model::Model,
     manual: &[model::Transaction],
-) -> Result<(seed::Seed, Vec<model::Balance>)> {
+) -> Result<(journal::Journal, Vec<model::Balance>)> {
     let mut openings: BTreeMap<(String, Currency), (Decimal, NaiveDate)> = BTreeMap::new();
-    let mut postings: Vec<seed::Posting> = Vec::new();
+    let mut postings: Vec<journal::Posting> = Vec::new();
     let mut group: u64 = 0;
 
     for txn in model.transactions().chain(manual.iter()) {
@@ -176,7 +176,7 @@ fn reconcile(
             let tags = (!txn.tags.is_empty()).then(|| txn.tags.join(","));
             let payee = (!txn.payee.is_empty()).then(|| txn.payee.clone());
             for leg in balance_postings(&txn.postings, txn.date, &tags)? {
-                postings.push(seed::Posting {
+                postings.push(journal::Posting {
                     group,
                     source: txn.source.as_str().to_string(),
                     date: txn.date,
@@ -195,7 +195,7 @@ fn reconcile(
 
     let openings = openings
         .into_iter()
-        .map(|((account, currency), (amount, date))| seed::Opening {
+        .map(|((account, currency), (amount, date))| journal::Opening {
             account,
             currency,
             amount,
@@ -212,7 +212,7 @@ fn reconcile(
         })
         .collect();
 
-    Ok((seed::Seed { postings, openings }, assertions))
+    Ok((journal::Journal { postings, openings }, assertions))
 }
 
 /// A (path, currency, amount, date) figure for verification.
@@ -261,10 +261,10 @@ pub struct Negative {
     pub amount: Decimal,
 }
 
-/// What the freeze produced and whether the seed reconciles.
+/// What the freeze produced and whether the journal reconciles.
 #[derive(Debug)]
 pub struct Report {
-    pub seed: PathBuf,
+    pub journal: PathBuf,
     pub accounts: usize,
     pub transactions: usize,
     pub postings: usize,
@@ -284,12 +284,12 @@ impl Report {
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.ok() {
-            writeln!(f, "froze reconciled history to {}", self.seed.display())?;
+            writeln!(f, "froze reconciled history to {}", self.journal.display())?;
         } else {
             writeln!(
                 f,
-                "reconciliation FAILED — seed not trusted, {} removed",
-                self.seed.display()
+                "reconciliation FAILED — journal not trusted, {} removed",
+                self.journal.display()
             )?;
         }
         writeln!(f, "  {} accounts", self.accounts)?;
@@ -310,7 +310,7 @@ impl fmt::Display for Report {
         for m in &self.mismatches {
             writeln!(
                 f,
-                "  MISMATCH {} {} @ {}: expected {}, seed has {}",
+                "  MISMATCH {} {} @ {}: expected {}, journal has {}",
                 m.account, m.currency, m.date, m.expected, m.actual
             )?;
         }
@@ -325,7 +325,7 @@ impl fmt::Display for Report {
         if self.manual > 0 {
             writeln!(
                 f,
-                "note: {} manual.csv entries are in the seed (and SQLite) but NOT in the Fava \
+                "note: {} manual.csv entries are in the journal (and SQLite) but NOT in the Fava \
                  ledger — reconcile cash by hand until Fava is retired",
                 self.manual
             )?;
@@ -334,10 +334,13 @@ impl fmt::Display for Report {
     }
 }
 
-/// Verifies the seed's rows reproduce every assertion and that no asset account
-/// closes negative.
-fn verify(seed: &seed::Seed, assertions: &[model::Balance]) -> (Vec<Mismatch>, Vec<Negative>) {
-    let movements: Vec<Movement> = seed
+/// Verifies the journal's rows reproduce every assertion and that no asset
+/// account closes negative.
+fn verify(
+    journal: &journal::Journal,
+    assertions: &[model::Balance],
+) -> (Vec<Mismatch>, Vec<Negative>) {
+    let movements: Vec<Movement> = journal
         .openings
         .iter()
         .map(|o| Movement {
@@ -346,7 +349,7 @@ fn verify(seed: &seed::Seed, assertions: &[model::Balance]) -> (Vec<Mismatch>, V
             amount: o.amount,
             date: o.date,
         })
-        .chain(seed.postings.iter().map(|p| Movement {
+        .chain(journal.postings.iter().map(|p| Movement {
             account: p.account.clone(),
             currency: p.currency,
             amount: p.amount,
@@ -386,8 +389,8 @@ fn verify(seed: &seed::Seed, assertions: &[model::Balance]) -> (Vec<Mismatch>, V
     (mismatches, negatives)
 }
 
-/// Runs the freeze: reconcile, write the seed, and verify it — keeping the seed
-/// only if it reconciles.
+/// Runs the freeze: reconcile, write the journal, and verify it — keeping the
+/// journal only if it reconciles.
 pub fn run(args: &FreezeArgs) -> Result<Report> {
     let (model, summary) = ledger::build::assemble(&args.build)?;
     log::info!("freeze: assembled ledger model\n{summary}");
@@ -395,11 +398,11 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
     let manual_path = args.build.ledger_dir.join("manual.csv");
     let manual = if manual_path.exists() { manual::load(&manual_path)? } else { Vec::new() };
 
-    let (seed, assertions) = reconcile(&model, &manual)?;
-    seed::write(&args.seed, &seed)?;
+    let (journal, assertions) = reconcile(&model, &manual)?;
+    journal::write(&args.journal, &journal)?;
 
-    // Trust the seed only after re-reading what was written and checking it.
-    let written = seed::read(&args.seed)?;
+    // Trust the journal only after re-reading what was written and checking it.
+    let written = journal::read(&args.journal)?;
     let (mismatches, negatives) = verify(&written, &assertions);
 
     let accounts: BTreeSet<&str> = written
@@ -410,7 +413,7 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
         .collect();
     let transactions: BTreeSet<u64> = written.postings.iter().map(|p| p.group).collect();
     let report = Report {
-        seed: args.seed.clone(),
+        journal: args.journal.clone(),
         accounts: accounts.len(),
         transactions: transactions.len(),
         postings: written.postings.len(),
@@ -428,11 +431,11 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
     };
 
     if report.ok() {
-        log::info!("freeze: seed verified");
+        log::info!("freeze: journal verified");
     } else {
-        // Never leave an untrusted seed on disk for the loader to pick up.
-        std::fs::remove_file(&args.seed)
-            .with_context(|| format!("removing untrusted seed {}", args.seed.display()))?;
+        // Never leave an untrusted journal on disk for the loader to pick up.
+        std::fs::remove_file(&args.journal)
+            .with_context(|| format!("removing untrusted journal {}", args.journal.display()))?;
     }
     Ok(report)
 }

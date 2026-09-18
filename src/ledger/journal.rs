@@ -1,4 +1,4 @@
-//! The **seed**: a flat CSV that is the single source of truth of reconciled
+//! The **journal**: a flat CSV that is the single source of truth of reconciled
 //! history. The freeze tool ([`super::freeze`]) writes it once
 //! reconciliation passes and the loader ([`super::load`]) reads it into SQLite;
 //! it stays deliberately dumb — no Beancount, no chart, no reconciliation — so
@@ -53,9 +53,9 @@ pub struct Opening {
     pub date: NaiveDate,
 }
 
-/// A parsed seed.
+/// A parsed journal.
 #[derive(Debug, Default)]
-pub struct Seed {
+pub struct Journal {
     pub postings: Vec<Posting>,
     pub openings: Vec<Opening>,
 }
@@ -78,15 +78,15 @@ struct Row {
     tags: Option<String>,
 }
 
-/// Writes the seed CSV. Openings come first so the file reads opening balances
-/// then history, and postings keep the order they were reconciled in.
-pub fn write(path: impl AsRef<Path>, seed: &Seed) -> Result<()> {
+/// Writes the journal CSV. Openings come first so the file reads opening
+/// balances then history, and postings keep the order they were reconciled in.
+pub fn write(path: impl AsRef<Path>, journal: &Journal) -> Result<()> {
     let path = path.as_ref();
     let mut writer = csv::WriterBuilder::new()
         .from_path(path)
         .with_context(|| format!("creating {}", path.display()))?;
 
-    for o in &seed.openings {
+    for o in &journal.openings {
         writer.serialize(Row {
             group: None,
             source: OPENING.to_string(),
@@ -100,7 +100,7 @@ pub fn write(path: impl AsRef<Path>, seed: &Seed) -> Result<()> {
             tags: None,
         })?;
     }
-    for p in &seed.postings {
+    for p in &journal.postings {
         writer.serialize(Row {
             group: Some(p.group),
             source: p.source.clone(),
@@ -118,30 +118,31 @@ pub fn write(path: impl AsRef<Path>, seed: &Seed) -> Result<()> {
     Ok(())
 }
 
-/// Reads the seed CSV back — the inverse of [`write`], used by the loader and
-/// by the freeze tool's own verification. Columns are matched by header name.
-pub fn read(path: impl AsRef<Path>) -> Result<Seed> {
+/// Reads the journal CSV back — the inverse of [`write`], used by the loader
+/// and by the freeze tool's own verification. Columns are matched by header
+/// name.
+pub fn read(path: impl AsRef<Path>) -> Result<Journal> {
     let path = path.as_ref();
     let mut reader = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
         .from_path(path)
         .with_context(|| format!("opening {}", path.display()))?;
 
-    let mut seed = Seed::default();
+    let mut journal = Journal::default();
     for (row, record) in reader.deserialize::<Row>().enumerate() {
-        let record = record.with_context(|| format!("reading seed row {}", row + 1))?;
+        let record = record.with_context(|| format!("reading journal row {}", row + 1))?;
         if record.source == OPENING {
-            seed.openings.push(Opening {
+            journal.openings.push(Opening {
                 account: record.account,
                 currency: record.currency,
                 amount: record.amount,
                 date: record.date,
             });
         } else {
-            seed.postings.push(Posting {
+            journal.postings.push(Posting {
                 group: record
                     .group
-                    .with_context(|| format!("posting at seed row {} has no group", row + 1))?,
+                    .with_context(|| format!("posting at journal row {} has no group", row + 1))?,
                 source: record.source,
                 date: record.date,
                 payee: record.payee,
@@ -154,10 +155,10 @@ pub fn read(path: impl AsRef<Path>) -> Result<Seed> {
             });
         }
     }
-    if seed.postings.is_empty() && seed.openings.is_empty() {
-        bail!("seed {} contains no rows", path.display());
+    if journal.postings.is_empty() && journal.openings.is_empty() {
+        bail!("journal {} contains no rows", path.display());
     }
-    Ok(seed)
+    Ok(journal)
 }
 
 #[cfg(test)]
@@ -167,8 +168,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_seed_round_trips_through_write_and_read() -> Result<()> {
-        let seed = Seed {
+    fn a_journal_round_trips_through_write_and_read() -> Result<()> {
+        let journal = Journal {
             openings: vec![Opening {
                 account: "Assets:Cash".into(),
                 currency: Currency::TWD,
@@ -203,10 +204,10 @@ mod tests {
             ],
         };
         let file = tempfile::Builder::new().suffix(".csv").tempfile()?;
-        write(file.path(), &seed)?;
+        write(file.path(), &journal)?;
         let back = read(file.path())?;
-        assert_eq!(back.openings, seed.openings);
-        assert_eq!(back.postings, seed.postings);
+        assert_eq!(back.openings, journal.openings);
+        assert_eq!(back.postings, journal.postings);
         Ok(())
     }
 }

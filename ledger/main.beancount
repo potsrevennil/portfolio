@@ -9,7 +9,7 @@
 ;;      Then edit mapping.toml: it names your accounts, and the importer
 ;;      refuses to run until institution.* and fallback.* are filled in.
 ;;      (Hand-entered cash lives in ledger/manual.csv now — copied from
-;;      manual.example.csv — and feeds the SQLite freeze/seed load, not this
+;;      manual.example.csv — and feeds the SQLite freeze/journal load, not this
 ;;      Fava ledger.)
 ;;
 ;;   2. The imported half, which writes everything under generated/.

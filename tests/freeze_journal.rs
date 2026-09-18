@@ -1,10 +1,10 @@
-//! End-to-end test for the freeze → seed → load pipeline.
+//! End-to-end test for the freeze → journal → load pipeline.
 //!
-//! Drives the real importer over a small synthetic ledger, freezes it to a seed
-//! CSV (verifying reconciliation against the statement/app balances), then
-//! loads that seed into SQLite and checks the rows. Everything is invented and
-//! non-sensitive; inputs are written to a temp dir at runtime so no gitignored
-//! CSV is committed.
+//! Drives the real importer over a small synthetic ledger, freezes it to a
+//! journal CSV (verifying reconciliation against the statement/app balances),
+//! then loads that journal into SQLite and checks the rows. Everything is
+//! invented and non-sensitive; inputs are written to a temp dir at runtime so
+//! no gitignored CSV is committed.
 
 use portfolio::{
     db,
@@ -74,7 +74,7 @@ date,account,contra,amount,currency,payee,narration,tags
 ";
 
 /// Writes the synthetic ledger and returns args for both stages, sharing one
-/// seed path and one database.
+/// journal path and one database.
 fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
     let dir = TempDir::new().expect("temp dir");
     let root = dir.path();
@@ -94,9 +94,9 @@ fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
         backfill: true,
         ledger_dir: root.to_path_buf(),
     };
-    let freeze = freeze::FreezeArgs { seed: root.join("seed.csv"), build };
+    let freeze = freeze::FreezeArgs { journal: root.join("journal.csv"), build };
     let load = load::Args {
-        seed: root.join("seed.csv"),
+        journal: root.join("journal.csv"),
         database_url: format!("sqlite:{}", root.join("ledger-app.db").display()),
     };
     (dir, freeze, load)
@@ -106,7 +106,7 @@ fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
 async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<()> {
     let (_dir, freeze_args, load_args) = fixture();
 
-    // --- freeze: reconcile and export a verified seed ---
+    // --- freeze: reconcile and export a verified journal ---
     let frozen = freeze::run(&freeze_args)?;
     assert!(frozen.ok(), "reconciliation failed:\n{frozen}");
     assert!(frozen.negatives.is_empty(), "an asset closed negative:\n{frozen}");
@@ -114,9 +114,9 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     assert!(frozen.placeholders >= 1, "ETF placeholder not tagged:\n{frozen}");
     assert_eq!(frozen.conversions, 2, "cross-currency transfer not plugged:\n{frozen}");
     assert_eq!(frozen.manual, 1, "manual.csv entry not counted:\n{frozen}");
-    assert!(freeze_args.seed.exists(), "the verified seed was not written");
+    assert!(freeze_args.journal.exists(), "the verified journal was not written");
 
-    // --- load: the seed into SQLite ---
+    // --- load: the journal into SQLite ---
     let loaded = load::run(&load_args).await?;
     assert_eq!(loaded.transactions, frozen.transactions, "load lost transactions");
     assert!(loaded.postings > 0);
@@ -134,7 +134,7 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     assert!(sources.contains(&"import".to_string()), "no import rows: {sources:?}");
     assert!(sources.contains(&"manual".to_string()), "manual.csv not loaded: {sources:?}");
 
-    // external_ref survived the seed round-trip: statement lines carry their id.
+    // external_ref survived the journal round-trip: statement lines carry their id.
     let import_ref: String = sqlx::query(
         "SELECT external_ref FROM transactions WHERE source = 'import' AND external_ref IS NOT \
          NULL LIMIT 1",
@@ -160,7 +160,7 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
             .get(0);
     assert_eq!(equity_rows, 0, "the opening-balance equity plug leaked into the chart");
 
-    // The placeholder account carries a retirement note (derived from the seed's
+    // The placeholder account carries a retirement note (derived from the journal's
     // posting tag).
     let note: Option<String> = sqlx::query(
         "SELECT e.note FROM account_events e JOIN accounts a ON a.id = e.account_id WHERE a.path \
@@ -184,7 +184,7 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
 #[tokio::test]
 async fn the_freeze_is_re_runnable() -> anyhow::Result<()> {
     // Corrections are still being audited, so the freeze is expected to be re-run
-    // and overwrite the seed each time.
+    // and overwrite the journal each time.
     let (_dir, freeze_args, _load) = fixture();
     freeze::run(&freeze_args)?;
     let second = freeze::run(&freeze_args)?;
@@ -193,7 +193,7 @@ async fn the_freeze_is_re_runnable() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn a_negative_asset_fails_the_freeze_and_removes_the_seed() -> anyhow::Result<()> {
+async fn a_negative_asset_fails_the_freeze_and_removes_the_journal() -> anyhow::Result<()> {
     let (_dir, freeze_args, _load) = fixture();
     // Overdraw a fresh asset account the app never funded.
     std::fs::write(
@@ -208,15 +208,15 @@ async fn a_negative_asset_fails_the_freeze_and_removes_the_seed() -> anyhow::Res
         frozen.negatives.iter().any(|n| n.account == "Assets:Empty-Wallet"),
         "the overdrawn account was not reported:\n{frozen}"
     );
-    assert!(!freeze_args.seed.exists(), "an untrusted seed must be removed");
+    assert!(!freeze_args.journal.exists(), "an untrusted journal must be removed");
     Ok(())
 }
 
 /// A bank 錯誤更正 reversal must collapse with the debit it undoes into ONE
 /// zero-sum transaction, not fall to Expenses/Income:Uncategorized. Balance
 /// assertions cannot catch a dropped netting (savings nets to zero either way),
-/// so this is the only guard — it checks the netting survives freeze → seed →
-/// load.
+/// so this is the only guard — it checks the netting survives freeze → journal
+/// → load.
 #[tokio::test]
 async fn a_bank_reversal_nets_into_one_transaction_not_uncategorised() -> anyhow::Result<()> {
     const REVERSAL_MAPPING: &str = r#"
@@ -248,7 +248,7 @@ expense = "Expenses:Uncategorized"
     std::fs::write(root.join("mapping.toml"), REVERSAL_MAPPING)?;
     std::fs::write(root.join("savings.csv"), REVERSAL_STATEMENT)?;
     let freeze_args = freeze::FreezeArgs {
-        seed: root.join("seed.csv"),
+        journal: root.join("journal.csv"),
         build: BuildArgs {
             cathay_statements: vec![root.join("savings.csv")],
             daily_income_expense: None,
@@ -258,7 +258,7 @@ expense = "Expenses:Uncategorized"
         },
     };
     let load_args = load::Args {
-        seed: root.join("seed.csv"),
+        journal: root.join("journal.csv"),
         database_url: format!("sqlite:{}", root.join("ledger-app.db").display()),
     };
 
@@ -295,7 +295,7 @@ expense = "Expenses:Uncategorized"
 }
 
 #[tokio::test]
-async fn the_seed_load_refuses_a_non_empty_database() -> anyhow::Result<()> {
+async fn the_journal_load_refuses_a_non_empty_database() -> anyhow::Result<()> {
     let (_dir, freeze_args, load_args) = fixture();
     freeze::run(&freeze_args)?;
     load::run(&load_args).await?;
