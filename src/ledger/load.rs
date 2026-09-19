@@ -3,8 +3,9 @@
 //! It reads a trusted [`journal`](super::journal) — already reconciled and
 //! verified by the [freeze tool](super::freeze) — and writes it into the SQLite
 //! core schema. Deliberately dumb: no reconciliation, no chart, no Beancount.
-//! It derives the chart of accounts from the paths the journal mentions (type
-//! from the root, label from the leaf) and, as a cheap tripwire, refuses a
+//! It derives the chart of accounts from the paths the journal mentions and
+//! their ancestors (type from the root, label from `mapping.toml`, see
+//! [`labels`](super::labels)) and, as a cheap tripwire, refuses a
 //! transaction whose legs do not sum to zero per currency. It is one-time: it
 //! refuses a non-empty database. It also loads the journal's balance assertions
 //! and commits only if [`check`](crate::store::check) passes. Frozen history is
@@ -25,7 +26,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::{Row, SqlitePool};
 
-use super::{accounts::AccountType, journal, model::Source};
+use super::{accounts::AccountType, journal, labels::Labels, model::Source};
 use crate::{
     currency::Currency,
     db,
@@ -41,6 +42,10 @@ pub struct Args {
     /// SQLite database to load into. Must be empty of transactions.
     #[arg(long, default_value = "sqlite:ledger-app.db")]
     pub database_url: String,
+
+    /// The chart config whose categories and `[display]` name the accounts.
+    #[arg(long, default_value = "ledger/mapping.toml")]
+    pub mapping: PathBuf,
 }
 
 /// The `accounts.type` value for an account path.
@@ -72,6 +77,7 @@ impl fmt::Display for Report {
 pub async fn run(args: &Args) -> Result<Report> {
     let journal = journal::read(&args.journal)?;
     let assertions = journal::read_assertions(&journal::assertions_path(&args.journal))?;
+    let labels = Labels::load(&args.mapping)?;
     let pool = db::init_db(&args.database_url).await?;
     guard_empty(&pool).await?;
 
@@ -85,11 +91,18 @@ pub async fn run(args: &Args) -> Result<Report> {
         .filter(|p| p.tags.as_deref().is_some_and(|t| t.contains(journal::PLACEHOLDER_TAG)))
         .map(|p| p.account.as_str())
         .collect();
-    let paths: BTreeSet<&str> = journal.postings.iter().map(|p| p.account.as_str()).collect();
+    // Ancestors too, so every level of the tree has a label.
+    let paths: BTreeSet<&str> = journal
+        .postings
+        .iter()
+        .flat_map(|p| {
+            p.account.match_indices(':').map(|(i, _)| &p.account[..i]).chain([&*p.account])
+        })
+        .collect();
 
     let mut ids: BTreeMap<String, i64> = BTreeMap::new();
     for path in paths {
-        let label = path.rsplit(':').next().unwrap_or(path);
+        let label = labels.label(path);
         let id =
             sqlx::query("INSERT INTO accounts (path, label, type, closed) VALUES (?, ?, ?, 0)")
                 .bind(path)

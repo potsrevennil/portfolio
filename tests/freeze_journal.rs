@@ -103,6 +103,7 @@ fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
     let load = load::Args {
         journal: root.join("journal.csv"),
         database_url: format!("sqlite:{}", root.join("ledger-app.db").display()),
+        mapping: root.join("mapping.toml"),
     };
     (dir, freeze, load)
 }
@@ -248,6 +249,23 @@ async fn load_journal_requires_the_assertions_file() -> anyhow::Result<()> {
     std::fs::remove_file(journal::assertions_path(&freeze_args.journal))?;
     let err = load::run(&load_args).await.expect_err("an unchecked journal must not load");
     assert!(format!("{err:#}").contains("assertions.csv"), "{err:#}");
+
+    // Labels come from mapping.toml; ancestors are accounts too, so every tree
+    // level has one.
+    let labels: Vec<(String, String)> = sqlx::query(
+        "SELECT path, label FROM accounts WHERE path IN ('Assets', 'Assets:Cash', \
+         'Assets:Securities') ORDER BY path",
+    )
+    .fetch_all(&pool)
+    .await?
+    .iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect();
+    assert_eq!(labels, [
+        ("Assets".to_string(), "Assets".to_string()),
+        ("Assets:Cash".to_string(), "現金".to_string()),
+        ("Assets:Securities".to_string(), "Securities".to_string()),
+    ]);
     Ok(())
 }
 
@@ -364,6 +382,7 @@ expense = "Expenses:Uncategorized"
     let load_args = load::Args {
         journal: root.join("journal.csv"),
         database_url: format!("sqlite:{}", root.join("ledger-app.db").display()),
+        mapping: root.join("mapping.toml"),
     };
 
     let frozen = freeze::run(&freeze_args)?;

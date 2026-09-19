@@ -590,7 +590,11 @@ async fn freeze_and_load() -> (TempDir, SqlitePool) {
     assert_eq!(frozen.conversions, 2, "cross-currency plug not inserted:\n{frozen}");
 
     let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    let load_args = load::Args { journal: root.join("journal.csv"), database_url: url.clone() };
+    let load_args = load::Args {
+        journal: root.join("journal.csv"),
+        database_url: url.clone(),
+        mapping: root.join("mapping.toml"),
+    };
     load::run(&load_args).await.expect("load");
     let pool = db::init_db(&url).await.expect("open loaded db");
     (dir, pool)
