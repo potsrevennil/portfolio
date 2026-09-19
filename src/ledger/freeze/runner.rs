@@ -151,7 +151,7 @@ fn reconcile(
         for leg in balance_postings(&txn.postings, txn.date, &tags)? {
             postings.push(journal::Posting {
                 group,
-                source: txn.source.as_str().to_string(),
+                source: txn.source,
                 date: txn.date,
                 payee: payee.clone(),
                 narration: txn.narration.clone(),

@@ -13,6 +13,8 @@
 
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use strum_macros::Display;
 
 use super::writer::{self, Posting};
 use crate::currency::Currency;
@@ -25,8 +27,11 @@ pub fn opening_ref(account: &str, currency: Currency) -> String {
     format!("opening:{account}:{currency}")
 }
 
-/// Which pipeline produced a transaction — the `transactions.source` value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which pipeline produced a transaction. Its lowercase name is the
+/// `transactions.source` value, in the journal and the database alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Display, Serialize, Deserialize)]
+#[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum Source {
     /// Bank-statement import, and the derived history that makes it reconcile.
     Import,
@@ -34,16 +39,6 @@ pub enum Source {
     Tiantian,
     /// Hand-entered cash from `manual.csv`.
     Manual,
-}
-
-impl Source {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Source::Import => "import",
-            Source::Tiantian => "tiantian",
-            Source::Manual => "manual",
-        }
-    }
 }
 
 /// A transaction: a header, its legs, and the schema-only provenance fields.

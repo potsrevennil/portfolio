@@ -23,7 +23,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::{Row, SqlitePool};
 
-use super::{accounts::AccountType, journal};
+use super::{accounts::AccountType, journal, model::Source};
 use crate::{currency::Currency, db, store::query};
 
 #[derive(clap::Parser, Debug)]
@@ -132,7 +132,7 @@ pub async fn run(args: &Args) -> Result<Report> {
             header.date,
             header.payee.as_deref(),
             Some(&header.narration),
-            &header.source,
+            header.source,
             header.external_ref.as_deref(),
         )
         .await
@@ -164,7 +164,7 @@ async fn insert_transaction(
     date: NaiveDate,
     payee: Option<&str>,
     narration: Option<&str>,
-    source: &str,
+    source: Source,
     external_ref: Option<&str>,
 ) -> Result<i64> {
     Ok(sqlx::query(
@@ -174,7 +174,7 @@ async fn insert_transaction(
     .bind(date.to_string())
     .bind(payee)
     .bind(narration)
-    .bind(source)
+    .bind(source.to_string())
     .bind(external_ref)
     .execute(tx)
     .await?

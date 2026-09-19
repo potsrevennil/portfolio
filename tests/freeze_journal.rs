@@ -345,7 +345,7 @@ async fn the_journal_load_refuses_a_non_empty_database() -> anyhow::Result<()> {
 fn leg(group: u64, account: &str, amount: Decimal) -> journal::Posting {
     journal::Posting {
         group,
-        source: "manual".into(),
+        source: model::Source::Manual,
         date: NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
         payee: None,
         narration: String::new(),

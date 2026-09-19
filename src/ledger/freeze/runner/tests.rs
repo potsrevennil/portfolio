@@ -117,7 +117,7 @@ fn a_securities_posting_is_tagged_as_placeholder() {
 fn subtree_balance_covers_descendants_and_respects_the_cutoff() {
     let leg = |account: &str, amount: Decimal, year: i32| journal::Posting {
         group: 0,
-        source: "manual".into(),
+        source: model::Source::Manual,
         date: NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
         payee: None,
         narration: String::new(),
