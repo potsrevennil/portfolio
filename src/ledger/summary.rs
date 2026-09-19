@@ -16,7 +16,7 @@ pub struct Summary {
     /// Currency conversions paired across two statements (a subset of the
     /// internal transfers).
     pub converted: usize,
-    /// Declared `[opening_balances]` (as "account currency") left out because
+    /// Opening rows (as "account currency") left out because
     /// a statement opens that account and currency itself.
     pub superseded_openings: BTreeSet<String>,
     /// First date covered by a statement; everything earlier is backfill.
@@ -102,7 +102,7 @@ impl fmt::Display for Summary {
         if !self.superseded_openings.is_empty() {
             writeln!(
                 f,
-                "  declared opening balances superseded by a statement: {:?}",
+                "  opening rows superseded by a statement: {:?}",
                 self.superseded_openings
             )?;
         }

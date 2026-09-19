@@ -79,15 +79,35 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
 
     // The records are read once, here: the corrected aggregate, or the two
     // native 天天記帳 exports.
-    let entries = match (
+    // Only the corrected aggregate carries opening balances.
+    let corrected::Records { entries, openings: opening_rows } = match (
         opts.transactions.as_deref(),
         opts.daily_income_expense.as_deref(),
         opts.daily_transfers.as_deref(),
     ) {
-        (Some(corrected), ..) => corrected::load_entries(corrected)?,
-        (None, Some(ie), Some(xf)) => daily::load_entries(ie, xf)?,
-        _ => Vec::new(),
+        (Some(corrected), ..) => corrected::load(corrected)?,
+        (None, Some(ie), Some(xf)) => {
+            corrected::Records { entries: daily::load_entries(ie, xf)?, openings: Vec::new() }
+        }
+        _ => corrected::Records::default(),
     };
+    // Each opening on its ledger account, one per account and currency,
+    // ordered by account so the output is stable.
+    let mut declared: Vec<(String, &corrected::Opening)> = opening_rows
+        .iter()
+        .map(|o| -> Result<(String, &corrected::Opening)> {
+            let mapping = chart.account(&o.account).with_context(|| {
+                format!("opening row names {:?}, which [accounts] does not map", o.account)
+            })?;
+            Ok((mapping.account.to_string(), o))
+        })
+        .collect::<Result<_>>()?;
+    declared.sort_by(|a, b| (&a.0, a.1.currency).cmp(&(&b.0, b.1.currency)));
+    if let Some(pair) =
+        declared.windows(2).find(|w| w[0].0 == w[1].0 && w[0].1.currency == w[1].1.currency)
+    {
+        anyhow::bail!("{} {} has more than one opening row", pair[0].0, pair[0].1.currency);
+    }
 
     // One statement per account and currency, however many exports it spans.
     let mut merged = statements::cathay::load_merged(&opts.cathay_statements)?;
@@ -704,7 +724,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         // Fold in any opening balance on this account (or its subtree): the app
         // records net only the movements since, so the asserted figure must add
         // the declared starting position the build also emits below.
-        for (ob_account, ob) in &chart.opening_balances {
+        for (ob_account, ob) in &declared {
             if ob_account == account || ob_account.starts_with(&prefix) {
                 *by_currency.entry(ob.currency).or_default() += ob.amount;
             }
@@ -727,11 +747,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // Opening balances predate every record, so build their transactions first
     // and make sure their accounts are opened alongside the rest.
     let mut openings: Vec<Directive> = Vec::new();
-    let mut declared: Vec<(&String, &accounts::OpeningBalance)> =
-        chart.opening_balances.iter().collect();
-    declared.sort_by(|a, b| a.0.cmp(b.0));
     let mut superseded_openings: BTreeSet<String> = BTreeSet::new();
-    for (account, ob) in declared {
+    for (account, ob) in &declared {
         // A statement for the account and currency already opens it at the
         // bank's own figure; declaring it again would count it twice. The two
         // must agree, or one of them is wrong and neither may silently win.
@@ -744,8 +761,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             let first = statement.lines.first().expect("load rejects empty statements").book_date;
             anyhow::ensure!(
                 ob.amount == statement.opening_balance() && ob.date <= first,
-                "[opening_balances] {account} {} = {} on {} contradicts its statement, which \
-                 opens at {} before {first}",
+                "opening {account} {} = {} on {} contradicts its statement, which opens at {} \
+                 before {first}",
                 ob.currency,
                 ob.amount,
                 ob.date,

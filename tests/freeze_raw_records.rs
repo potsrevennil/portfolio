@@ -41,11 +41,6 @@ roots = ["Assets:Split"]
 "現金"     = "Assets:Cash"
 "阿明"     = "Assets:Split:Ming"
 
-[opening_balances]
-# Also what the FX statement opens at, so the statement supersedes it.
-"Assets:Cathay:FX" = { amount = "0.50", date = "2023-01-01", currency = "USD" }
-"Assets:Cash"      = { amount = "1000", date = "2024-01-01", currency = "TWD" }
-
 # Not the build's concern, but present in the real config.
 [display]
 "Assets:Cathay:FX" = "外幣"
@@ -81,6 +76,8 @@ const TRANSACTIONS: &str = "\
 id,status,date,posted_date,kind,amount,currency,account,counter_account,counter_amount,\
                             counter_currency,category,major_category,member,tags,note,\
                             source_party,source_file,source_id,origin,correction_note,updated_at
+open:1,active,2023-01-01,,opening,0.50,USD,外幣帳戶,,,,,,,,,config,m,,added,,
+open:2,active,2024-01-01,,opening,1000,TWD,現金,,,,,,,,,config,m,,added,,
 app:1,active,2024-01-15,,transfer,50,TWD,阿明,現金,50,TWD,,,,,還錢,app,x,U1,raw,,
 app:2,active,2024-06-07,,transfer,3200,TWD,國泰,外幣帳戶,100,USD,,,,,換匯,app,x,U2,raw,,
 app:3,active,2024-06-10,2024-06-12,expense,100,TWD,國泰,,,,飲食,,自己,,午餐,app,x,U3,raw,,
@@ -98,13 +95,13 @@ fn balances(journal: &journal::Journal) -> BTreeMap<(String, Currency), Decimal>
     out
 }
 
-fn args(root: &std::path::Path, mapping: &str) -> anyhow::Result<freeze::FreezeArgs> {
+fn args(root: &std::path::Path, transactions: &str) -> anyhow::Result<freeze::FreezeArgs> {
     let write = |name: &str, contents: &str| -> anyhow::Result<std::path::PathBuf> {
         let path = root.join(name);
         std::fs::write(&path, contents)?;
         Ok(path)
     };
-    write("mapping.toml", mapping)?;
+    write("mapping.toml", MAPPING)?;
     Ok(freeze::FreezeArgs {
         journal: root.join("journal.csv"),
         build: BuildArgs {
@@ -115,7 +112,7 @@ fn args(root: &std::path::Path, mapping: &str) -> anyhow::Result<freeze::FreezeA
             ],
             daily_income_expense: None,
             daily_transfers: None,
-            transactions: Some(write("transactions.csv", TRANSACTIONS)?),
+            transactions: Some(write("transactions.csv", transactions)?),
             // Nothing predates the statements, so every statement must still
             // open itself.
             backfill: true,
@@ -129,14 +126,11 @@ fn args(root: &std::path::Path, mapping: &str) -> anyhow::Result<freeze::FreezeA
 /// the two silently winning.
 #[test]
 fn a_declared_opening_contradicting_its_statement_fails() -> anyhow::Result<()> {
-    let declared =
-        r#""Assets:Cathay:FX" = { amount = "0.50", date = "2023-01-01", currency = "USD" }"#;
-    for contradiction in [
-        r#""Assets:Cathay:FX" = { amount = "0.75", date = "2023-01-01", currency = "USD" }"#,
-        r#""Assets:Cathay:FX" = { amount = "0.50", date = "2024-06-08", currency = "USD" }"#,
-    ] {
+    // Also what the FX statement opens at, so the statement supersedes it.
+    let declared = "2023-01-01,,opening,0.50,USD";
+    for contradiction in ["2023-01-01,,opening,0.75,USD", "2024-06-08,,opening,0.50,USD"] {
         let dir = TempDir::new()?;
-        let args = args(dir.path(), &MAPPING.replace(declared, contradiction))?;
+        let args = args(dir.path(), &TRANSACTIONS.replace(declared, contradiction))?;
         let err = freeze::run(&args).expect_err("a contradicting opening must fail");
         assert!(err.to_string().contains("contradicts its statement"), "{err:#}");
     }
@@ -146,7 +140,7 @@ fn a_declared_opening_contradicting_its_statement_fails() -> anyhow::Result<()> 
 #[test]
 fn freeze_reads_yearly_exports_a_foreign_account_and_corrected_records() -> anyhow::Result<()> {
     let dir = TempDir::new()?;
-    let args = args(dir.path(), MAPPING)?;
+    let args = args(dir.path(), TRANSACTIONS)?;
 
     let frozen = freeze::run(&args)?;
     assert!(frozen.ok(), "did not reconcile:\n{frozen}");

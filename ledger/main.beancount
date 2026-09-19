@@ -14,13 +14,13 @@
 ;;
 ;;   2. The imported half, which writes everything under generated/.
 ;;        cargo run -- ledger \
-;;          --cathay-statements <活存.csv> <投資.csv> \
-;;          --daily-income-expense <天天記帳_..._收支_....csv> \
-;;          --daily-transfers <天天記帳_..._轉帳_....csv> \
-;;          --daily-backfill
-;;      Both 天天記帳 exports are required: without them the app half is
-;;      silently skipped and every statement line falls back to an
-;;      uncategorised contra.
+;;          --cathay-statements <statement.csv>... \
+;;          --transactions corrected/transactions.csv
+;;      The records are required: without them the app half is silently
+;;      skipped and every statement line falls back to an uncategorised
+;;      contra. They also carry the opening balances (kind = opening), which
+;;      the two native 天天記帳 exports (--daily-income-expense and
+;;      --daily-transfers, still accepted) cannot.
 ;;
 ;;   3. The exchange rates the multi-currency balances are converted at.
 ;;        cargo run -- rates

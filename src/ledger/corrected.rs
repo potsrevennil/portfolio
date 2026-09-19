@@ -5,6 +5,10 @@
 //! rest of the build cannot tell the sources apart. Only `status = active` rows
 //! count; `removed` rows exist to retire old change-logs. `posted_date` (a
 //! card line's 入帳日) is accepted and ignored here.
+//!
+//! A `kind = opening` row is a position an account already held before its
+//! records begin (the app has no such concept). `account` is the app label, as
+//! on every row, and `amount` is signed: negative for a debt owed at the start.
 
 use std::path::Path;
 
@@ -56,6 +60,24 @@ impl Columns {
     }
 }
 
+/// A starting position, from a `kind = opening` row.
+#[derive(Debug)]
+pub struct Opening {
+    pub date: NaiveDate,
+    /// The app label, mapped through `[accounts]` like any other row.
+    pub account: String,
+    pub amount: Decimal,
+    pub currency: Currency,
+}
+
+/// The active rows: movements, and the openings kept apart from them so they
+/// don't move the date the records begin.
+#[derive(Debug, Default)]
+pub struct Records {
+    pub entries: Vec<Entry>,
+    pub openings: Vec<Opening>,
+}
+
 fn amount(s: &str) -> Result<Decimal> {
     let t = s.trim();
     if t.is_empty() {
@@ -73,9 +95,9 @@ fn currency(s: &str) -> Result<Currency> {
     }
 }
 
-/// Every active record, oldest first. Within a day, income and expense come
-/// before transfers, as with the native exports.
-pub fn load_entries(path: impl AsRef<Path>) -> Result<Vec<Entry>> {
+/// Every active record, entries oldest first. Within a day, income and expense
+/// come before transfers, as with the native exports.
+pub fn load(path: impl AsRef<Path>) -> Result<Records> {
     let path = path.as_ref();
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
@@ -86,6 +108,7 @@ pub fn load_entries(path: impl AsRef<Path>) -> Result<Vec<Entry>> {
 
     let mut flows = Vec::new();
     let mut transfers = Vec::new();
+    let mut openings = Vec::new();
     for (i, result) in rdr.records().enumerate() {
         let rec = result?;
         let get = |c: usize| rec.get(c).unwrap_or("").trim();
@@ -123,14 +146,20 @@ pub fn load_entries(path: impl AsRef<Path>) -> Result<Vec<Entry>> {
                 in_currency: currency(get(cols.counter_currency)).with_context(row)?,
                 memo,
             }),
+            "opening" => openings.push(Opening {
+                date,
+                account: get(cols.account).to_string(),
+                amount: value,
+                currency: entry_currency,
+            }),
             other => bail!("{}: unknown kind {other:?}", row()),
         }
     }
 
-    let mut out = flows;
-    out.extend(transfers);
-    out.sort_by_key(Entry::date);
-    Ok(out)
+    let mut entries = flows;
+    entries.extend(transfers);
+    entries.sort_by_key(Entry::date);
+    Ok(Records { entries, openings })
 }
 
 #[cfg(test)]
@@ -144,10 +173,26 @@ mod tests {
                           note,source_party,source_file,source_id,origin,correction_note,\
                           updated_at\n";
 
-    fn load(rows: &str) -> Result<Vec<Entry>> {
+    fn records(rows: &str) -> Result<Records> {
         let file = tempfile::NamedTempFile::new()?;
         std::fs::write(file.path(), format!("{HEADER}{rows}"))?;
-        load_entries(file.path())
+        super::load(file.path())
+    }
+
+    fn load(rows: &str) -> Result<Vec<Entry>> { Ok(records(rows)?.entries) }
+
+    /// An opening keeps its sign and stays out of the entries.
+    #[test]
+    fn an_opening_row_is_kept_apart_with_its_sign() -> Result<()> {
+        let r = records(
+            "o:1,active,2022-01-01,,opening,-500,TWD,信用卡,,,,,,,,,config,m,,added,moved,\na:1,\
+             active,2022-02-01,,expense,1,,錢包,,,,飲食,,,,,app,f,U,raw,,\n",
+        )?;
+        assert_eq!(r.entries.len(), 1);
+        assert_eq!(r.openings.len(), 1);
+        assert_eq!(r.openings[0].account, "信用卡");
+        assert_eq!(r.openings[0].amount, dec!(-500));
+        Ok(())
     }
 
     #[test]
