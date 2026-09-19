@@ -236,7 +236,8 @@ fn renamed_to_split_accounts<'de, D: serde::Deserializer<'de>>(
 /// drop every opening.
 fn moved_to_records<'de, D: serde::Deserializer<'de>>(_: D) -> std::result::Result<(), D::Error> {
     Err(serde::de::Error::custom(
-        "[opening_balances] moved to corrected/transactions.csv as kind = opening rows",
+        "[opening_balances] moved to corrected/transactions.csv as transfers with \
+         Equity:Opening-Balances",
     ))
 }
 
@@ -498,7 +499,7 @@ mod split_account_tests {
              currency = \"TWD\" }\n",
         )
         .expect_err("[opening_balances] must not parse");
-        assert!(err.to_string().contains("kind = opening"), "{err}");
+        assert!(err.to_string().contains("Equity:Opening-Balances"), "{err}");
     }
 
     /// The section's old name is an error that names the new one, not a

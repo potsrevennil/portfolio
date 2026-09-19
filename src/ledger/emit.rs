@@ -247,8 +247,6 @@ pub(super) fn emit_daily_accounts(
                     external_ref: None,
                 });
             }
-            // Emitted with the other openings.
-            daily::Entry::Opening { .. } => {}
         }
     }
 

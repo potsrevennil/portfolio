@@ -6,9 +6,7 @@
 //! is gitignored.
 //!
 //! One row per posting. Transaction-level fields (`date`, `payee`, `narration`,
-//! `external_ref`) repeat across a group's rows; `tags` is per-posting. An
-//! opening balance is an ordinary transaction against
-//! `Equity:Opening-Balances`.
+//! `external_ref`) repeat across a group's rows; `tags` is per-posting.
 
 use std::path::Path;
 

@@ -39,13 +39,14 @@ expense = "Expenses:Uncategorized"
 "美金" = "Assets:USD-Wallet"
 "國泰" = "Assets:Cathay"
 "券商" = "Assets:Securities:ETF"
+"起鼓" = "Equity:Opening-Balances"
 "#;
 
 const TRANSACTIONS: &str = "\
 id,status,date,posted_date,kind,amount,currency,account,counter_account,counter_amount,\
                             counter_currency,category,major_category,member,tags,note,\
                             source_party,source_file,source_id,origin,correction_note,updated_at
-o:1,active,2022-01-01,,opening,1000,TWD,現金,,,,,,,,,config,m,,added,,
+o:1,active,2022-01-01,,transfer,1000,TWD,起鼓,現金,1000,TWD,,,,,,config,m,,added,,
 a:1,active,2022-02-01,,expense,200,TWD,國泰,,,,飲食,,自己,,,app,f,uuid-food-2022,raw,,
 a:2,active,2022-04-01,,income,500,TWD,現金,,,,投資,,自己,,,app,f,uuid-cash-income,raw,,
 a:3,active,2022-05-01,,transfer,3000,TWD,國泰,券商,3000,TWD,,,,,,app,f,uuid-etf,raw,,
@@ -291,11 +292,11 @@ expense = "Expenses:Uncategorized"
     Ok(())
 }
 
-/// With the backfill, the opening it derives is what an opening row for the
-/// bank account must agree with, not the statement's own later figure.
+/// With the backfill, the opening it derives is what an opening for the bank
+/// account must agree with, not the statement's own later figure.
 #[test]
 fn an_opening_row_is_checked_against_the_backfill_opening() -> anyhow::Result<()> {
-    // 國泰 maps to the savings account itself, so it can name it in a row.
+    // 國泰 maps to the savings account itself, so an opening can name it.
     let mapping =
         MAPPING.replace(r#""國泰" = "Assets:Cathay""#, r#""國泰" = "Assets:Cathay:Savings""#);
     // Statement opens at 0 on 2024-03-01; backfill before it spends 200 on
@@ -303,19 +304,16 @@ fn an_opening_row_is_checked_against_the_backfill_opening() -> anyhow::Result<()
     for (amount, ok) in [("3200", true), ("0", false)] {
         let (_dir, args, _load) = fixture();
         std::fs::write(args.build.ledger_dir.join("mapping.toml"), &mapping)?;
-        let records = TRANSACTIONS.replace(
-            "o:1,active,2022-01-01,,opening,1000,TWD,現金",
-            &format!(
-                "o:1,active,2022-01-01,,opening,1000,TWD,現金,,,,,,,,,config,m,,added,,\no:2,\
-                 active,2022-01-01,,opening,{amount},TWD,國泰"
-            ),
+        let records = format!(
+            "{TRANSACTIONS}o:2,active,2022-01-01,,transfer,{amount},TWD,起鼓,國泰,{amount},TWD,,,,\
+             ,,config,m,,added,,\n"
         );
         std::fs::write(args.build.ledger_dir.join("transactions.csv"), records)?;
         let result = freeze::run(&args);
         match ok {
-            true => assert!(result?.ok(), "a correct opening row was rejected"),
+            true => assert!(result?.ok(), "a correct opening was rejected"),
             false => {
-                let err = result.expect_err("a contradicting opening row must fail");
+                let err = result.expect_err("a contradicting opening must fail");
                 assert!(err.to_string().contains("contradicts the backfill"), "{err:#}");
             }
         }

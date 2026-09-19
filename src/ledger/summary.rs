@@ -13,7 +13,7 @@ pub struct Summary {
     pub folded: usize,
     /// Conversions among the internal transfers.
     pub converted: usize,
-    /// Opening rows a statement already covers, as "account currency".
+    /// Openings a statement already covers, as "account currency".
     pub superseded_openings: BTreeSet<String>,
     /// First date covered by a statement; everything earlier is backfill.
     pub anchor: NaiveDate,
@@ -96,11 +96,7 @@ impl fmt::Display for Summary {
             )?;
         }
         if !self.superseded_openings.is_empty() {
-            writeln!(
-                f,
-                "  opening rows superseded by a statement: {:?}",
-                self.superseded_openings
-            )?;
+            writeln!(f, "  openings superseded by a statement: {:?}", self.superseded_openings)?;
         }
         if !self.unmapped.is_empty() {
             writeln!(f, "  unmapped names in mapping.toml: {:?}", self.unmapped)?;

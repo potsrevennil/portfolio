@@ -42,7 +42,8 @@ expense = "Expenses:Uncategorized"
 "跨行費用" = "Expenses:Fees:Bank"
 "手續費"  = "Expenses:Fees:Bank"
 
-# Opening balances are `kind = opening` rows in corrected/transactions.csv.
+# Opening balances are transfers in corrected/transactions.csv between the
+# account and 起鼓 (Equity:Opening-Balances, below).
 
 # Spending categories, as the app names them. Several may share one account;
 # the 中文總覽 page shows the first and lists the rest as a tooltip.
@@ -69,6 +70,7 @@ expense = "Expenses:Uncategorized"
 "信用卡" = { account = "Liabilities:Card", tags = ["card"] }
 "應收款" = "Assets:Split:Others"
 "證券"  = "Assets:Securities"
+"起鼓"  = "Equity:Opening-Balances"                         # opening balances
 
 # Split accounts: running two-way balances with a person or group (current
 # accounts), one account per person or group, and the sign says who owes whom —

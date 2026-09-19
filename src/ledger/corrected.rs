@@ -1,7 +1,6 @@
 //! Parser for `corrected/transactions.csv`, yielding the same
 //! [`daily::Entry`] records as the native 天天記帳 exports. Only
-//! `status = active` rows count; `posted_date` is ignored. A `kind = opening`
-//! row has a signed amount (negative for a debt).
+//! `status = active` rows count; `posted_date` is ignored.
 
 use std::path::Path;
 
@@ -26,7 +25,6 @@ enum Kind {
     Income,
     Expense,
     Transfer,
-    Opening,
 }
 
 /// The columns the build reads; the rest are ignored. A blank currency is TWD,
@@ -87,12 +85,6 @@ pub fn load(path: impl AsRef<Path>) -> Result<Vec<Entry>> {
                 in_currency: row.counter_currency.unwrap_or(Currency::TWD),
                 memo: row.note,
             }),
-            Kind::Opening => flows.push(Entry::Opening {
-                date: row.date,
-                account: row.account,
-                amount: row.amount,
-                currency,
-            }),
         }
     }
 
@@ -117,19 +109,6 @@ mod tests {
         let file = tempfile::NamedTempFile::new()?;
         std::fs::write(file.path(), format!("{HEADER}{rows}"))?;
         super::load(file.path())
-    }
-
-    /// An opening keeps its sign.
-    #[test]
-    fn an_opening_row_keeps_its_sign() -> Result<()> {
-        let entries = load(
-            "o:1,active,2022-01-01,,opening,-500,TWD,信用卡,,,,,,,,,config,m,,added,moved,\n",
-        )?;
-        assert!(matches!(
-            &entries[..],
-            [Entry::Opening { account, amount, .. }] if account == "信用卡" && *amount == dec!(-500)
-        ));
-        Ok(())
     }
 
     #[test]

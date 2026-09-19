@@ -55,12 +55,34 @@ fn app_balances(
                 add(from, -*out, *out_currency);
                 add(to, *inn, *in_currency);
             }
-            daily::Entry::Opening { account, amount, currency, .. } => {
-                add(account, *amount, *currency);
-            }
         }
     }
     bal
+}
+
+/// A transfer between an account and the opening equity, as that account's
+/// starting position: (ledger account, currency, signed amount, date).
+fn opening(
+    chart: &accounts::Chart,
+    record: &daily::Entry,
+) -> Result<Option<(String, Currency, Decimal, NaiveDate)>> {
+    let is_equity =
+        |name: &str| chart.account(name).is_some_and(|m| &*m.account == model::OPENING_EQUITY);
+    match record {
+        daily::Entry::Transfer { date, from, out, out_currency, to, inn, in_currency, .. }
+            if is_equity(from) || is_equity(to) =>
+        {
+            let (label, amount, currency) = match is_equity(from) {
+                true => (to, *inn, *in_currency),
+                false => (from, -*out, *out_currency),
+            };
+            let account = chart.account(label).with_context(|| {
+                format!("opening names {label:?}, which [accounts] does not map")
+            })?;
+            Ok(Some((account.account.to_string(), currency, amount, *date)))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Assembles the ledger as an in-memory model: the transactions, balance
@@ -80,8 +102,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let settlement_source = chart.institution.settlement_app_account.clone();
     let institution_app: &str = &chart.institution.app_account;
 
-    // Only the corrected records carry opening balances.
-    let entries = match (
+    let records = match (
         opts.transactions.as_deref(),
         opts.daily_income_expense.as_deref(),
         opts.daily_transfers.as_deref(),
@@ -90,33 +111,26 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         (None, Some(ie), Some(xf)) => daily::load_entries(ie, xf)?,
         _ => Vec::new(),
     };
-    // Each opening on its ledger account, as (account, currency, amount, date).
-    let mut declared: Vec<(String, Currency, Decimal, NaiveDate)> = entries
-        .iter()
-        .filter_map(|e| match e {
-            daily::Entry::Opening { date, account, amount, currency } => {
-                Some((account, *currency, *amount, *date))
-            }
-            _ => None,
-        })
-        .map(|(label, currency, amount, date)| {
-            let mapping = chart.account(label).with_context(|| {
-                format!("opening row names {label:?}, which [accounts] does not map")
-            })?;
-            Ok((mapping.account.to_string(), currency, amount, date))
-        })
-        .collect::<Result<_>>()?;
+    // Transfers with the opening equity are set apart: they are starting
+    // positions, not movements a statement line could explain.
+    let mut entries: Vec<daily::Entry> = Vec::new();
+    let mut declared: Vec<(String, Currency, Decimal, NaiveDate)> = Vec::new();
+    for record in records {
+        match opening(&chart, &record)? {
+            Some(position) => declared.push(position),
+            None => entries.push(record),
+        }
+    }
     declared.sort();
     if let Some(pair) = declared.windows(2).find(|w| (&w[0].0, w[0].1) == (&w[1].0, w[1].1)) {
-        anyhow::bail!("{} {} has more than one opening row", pair[0].0, pair[0].1);
+        anyhow::bail!("{} {} has more than one opening", pair[0].0, pair[0].1);
     }
 
     let mut merged = statements::cathay::load_merged(&opts.cathay_statements)?;
 
     // Lines before the records begin have nothing to match; fold them into
     // the opening balance.
-    let records_start =
-        entries.iter().find(|e| !matches!(e, daily::Entry::Opening { .. })).map(daily::Entry::date);
+    let records_start = entries.first().map(daily::Entry::date);
     let mut n_folded = 0usize;
     if let Some(start) = records_start {
         for m in &mut merged {
@@ -717,6 +731,11 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         let prefix = format!("{account}:");
         let mut by_currency: BTreeMap<Currency, Decimal> = BTreeMap::new();
         for ((a, currency), amount) in &leaf_bal {
+            if a == account || a.starts_with(&prefix) {
+                *by_currency.entry(*currency).or_default() += *amount;
+            }
+        }
+        for (a, currency, amount, _) in &declared {
             if a == account || a.starts_with(&prefix) {
                 *by_currency.entry(*currency).or_default() += *amount;
             }

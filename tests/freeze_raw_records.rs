@@ -39,6 +39,7 @@ roots = ["Assets:Split"]
 "美金"     = "Assets:USD-Wallet"
 "現金"     = "Assets:Cash"
 "阿明"     = "Assets:Split:Ming"
+"起鼓"     = "Equity:Opening-Balances"
 
 [display]
 "Assets:Cathay:FX" = "外幣"
@@ -74,8 +75,8 @@ const TRANSACTIONS: &str = "\
 id,status,date,posted_date,kind,amount,currency,account,counter_account,counter_amount,\
                             counter_currency,category,major_category,member,tags,note,\
                             source_party,source_file,source_id,origin,correction_note,updated_at
-open:1,active,2023-01-01,,opening,0.50,USD,外幣帳戶,,,,,,,,,config,m,,added,,
-open:2,active,2024-01-01,,opening,1000,TWD,現金,,,,,,,,,config,m,,added,,
+open:1,active,2023-01-01,,transfer,0.50,USD,起鼓,外幣帳戶,0.50,USD,,,,,,config,m,,added,,
+open:2,active,2024-01-01,,transfer,1000,TWD,起鼓,現金,1000,TWD,,,,,,config,m,,added,,
 app:1,active,2024-01-15,,transfer,50,TWD,阿明,現金,50,TWD,,,,,還錢,app,x,U1,raw,,
 app:2,active,2024-06-07,,transfer,3200,TWD,國泰,外幣帳戶,100,USD,,,,,換匯,app,x,U2,raw,,
 app:3,active,2024-06-10,2024-06-12,expense,100,TWD,國泰,,,,飲食,,自己,,午餐,app,x,U3,raw,,
@@ -201,25 +202,29 @@ a:3,active,2024-06-07,,transfer,9000,TWD,國泰,外幣帳戶,45000,JPY,,,,,,app,
     Ok(())
 }
 
-/// Two opening rows for one account and currency: neither may silently win.
+/// Two openings for one account and currency: neither may silently win.
 #[test]
 fn a_second_opening_for_one_account_and_currency_fails() -> anyhow::Result<()> {
     let dir = TempDir::new()?;
-    let row = "open:2,active,2024-01-01,,opening,1000,TWD,現金,,,,,,,,,config,m,,added,,\n";
+    let row =
+        "open:2,active,2024-01-01,,transfer,1000,TWD,起鼓,現金,1000,TWD,,,,,,config,m,,added,,\n";
     let args = args(
         dir.path(),
         &TRANSACTIONS.replacen(row, &format!("{row}{}", row.replace("open:2", "open:3")), 1),
     )?;
     let err = freeze::run(&args).expect_err("a duplicate opening must fail");
-    assert!(err.to_string().contains("more than one opening row"), "{err:#}");
+    assert!(err.to_string().contains("more than one opening"), "{err:#}");
     Ok(())
 }
 
 /// An opening that contradicts its statement (amount, or a later date) fails.
 #[test]
 fn a_declared_opening_contradicting_its_statement_fails() -> anyhow::Result<()> {
-    let declared = "2023-01-01,,opening,0.50,USD";
-    for contradiction in ["2023-01-01,,opening,0.75,USD", "2024-06-08,,opening,0.50,USD"] {
+    let declared = "2023-01-01,,transfer,0.50,USD,起鼓,外幣帳戶,0.50";
+    for contradiction in [
+        "2023-01-01,,transfer,0.75,USD,起鼓,外幣帳戶,0.75",
+        "2024-06-08,,transfer,0.50,USD,起鼓,外幣帳戶,0.50",
+    ] {
         let dir = TempDir::new()?;
         let args = args(dir.path(), &TRANSACTIONS.replace(declared, contradiction))?;
         let err = freeze::run(&args).expect_err("a contradicting opening must fail");
