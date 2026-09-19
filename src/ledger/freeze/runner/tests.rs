@@ -172,3 +172,33 @@ fn a_non_beancount_root_is_rejected() {
     assert!(account_type("Assets:Cash").is_ok());
     assert!(account_type("Nonsense:Root").is_err());
 }
+
+#[test]
+fn two_inferred_legs_are_rejected() {
+    let err = balance_postings(
+        &[
+            explicit("Expenses:Food", dec!(100), Currency::TWD),
+            Posting::inferred("Assets:Cash"),
+            Posting::inferred("Assets:Wallet"),
+        ],
+        day(),
+        &None,
+    )
+    .expect_err("which leg takes the remainder is ambiguous");
+    assert!(format!("{err:#}").contains("more than one inferred"), "got: {err:#}");
+}
+
+#[test]
+fn an_inferred_leg_in_a_multi_currency_transaction_is_rejected() {
+    let err = balance_postings(
+        &[
+            explicit("Assets:Cash", dec!(-300), Currency::TWD),
+            explicit("Assets:USD-Wallet", dec!(10), Currency::USD),
+            Posting::inferred("Expenses:Fees"),
+        ],
+        day(),
+        &None,
+    )
+    .expect_err("the inferred leg has no single currency to take");
+    assert!(format!("{err:#}").contains("multi-currency"), "got: {err:#}");
+}

@@ -607,4 +607,40 @@ mod tests {
         assert_eq!(dropped, 1);
         assert_eq!(s.opening_balance(), dec!(100));
     }
+
+    #[test]
+    fn info_names_an_account_by_its_digits() {
+        // Masked incoming rows, zero padding, and another digit run first.
+        assert!(info_names_account("(013)0000123***789012", "123456789012"));
+        assert!(info_names_account("(822)000999 0123456789012", "123456789012"));
+        assert!(!info_names_account("(013)0000123456789013", "123456789012"));
+        // An all-zero account number names nothing.
+        assert!(!info_names_account("000000", "000"));
+    }
+
+    #[test]
+    fn a_dash_cell_reads_as_empty() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let s = load(write(
+            &dir,
+            "savings.csv",
+            "123456789012 \
+             活存\n幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n2024/06/01,\
+             2024/06/01,存入,,100,100,−,−\n",
+        ))
+        .expect("loads");
+        assert!(s.lines[0].info.is_empty() && s.lines[0].memo.is_empty());
+    }
+
+    #[test]
+    fn a_statement_with_no_rows_is_rejected() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let err = load(write(
+            &dir,
+            "empty.csv",
+            "123456789012 活存\n幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n",
+        ))
+        .expect_err("a statement with no rows");
+        assert!(format!("{err:#}").contains("no statement rows"), "{err:#}");
+    }
 }

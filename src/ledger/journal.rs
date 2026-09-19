@@ -160,4 +160,13 @@ mod tests {
         assert_eq!(back.postings, journal.postings);
         Ok(())
     }
+
+    #[test]
+    fn a_journal_with_no_rows_is_rejected() -> Result<()> {
+        let file = tempfile::Builder::new().suffix(".csv").tempfile()?;
+        write(file.path(), &Journal::default())?;
+        let err = read(file.path()).expect_err("an empty journal must not load");
+        assert!(format!("{err:#}").contains("contains no rows"), "got: {err:#}");
+        Ok(())
+    }
 }

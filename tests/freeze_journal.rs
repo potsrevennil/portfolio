@@ -6,10 +6,14 @@
 //! invented and non-sensitive; inputs are written to a temp dir at runtime so
 //! no gitignored CSV is committed.
 
+use chrono::NaiveDate;
 use portfolio::{
+    currency::Currency,
     db,
-    ledger::{args::Args as BuildArgs, freeze, load, model},
+    ledger::{args::Args as BuildArgs, freeze, journal, load, model},
 };
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use sqlx::Row;
 use tempfile::TempDir;
 
@@ -112,11 +116,15 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     assert_eq!(frozen.conversions, 2, "cross-currency transfer not plugged:\n{frozen}");
     assert_eq!(frozen.manual, 1, "manual.csv entry not counted:\n{frozen}");
     assert!(freeze_args.journal.exists(), "the verified journal was not written");
+    let shown = frozen.to_string();
+    assert!(shown.contains("froze reconciled history"), "{shown}");
+    assert!(shown.contains("1 manual.csv entries are in the journal"), "{shown}");
 
     // --- load: the journal into SQLite ---
     let loaded = load::run(&load_args).await?;
     assert_eq!(loaded.transactions, frozen.transactions, "load lost transactions");
     assert!(loaded.postings > 0);
+    assert!(loaded.to_string().contains(&format!("{} transactions", loaded.transactions)));
 
     let pool = db::init_db(&load_args.database_url).await?;
 
@@ -205,6 +213,7 @@ async fn a_negative_asset_fails_the_freeze_and_removes_the_journal() -> anyhow::
         frozen.negatives.iter().any(|n| n.account == "Assets:Empty-Wallet"),
         "the overdrawn account was not reported:\n{frozen}"
     );
+    assert!(frozen.to_string().contains("Assets:Empty-Wallet TWD = -600"), "{frozen}");
     assert!(!freeze_args.journal.exists(), "an untrusted journal must be removed");
     Ok(())
 }
@@ -329,5 +338,71 @@ async fn the_journal_load_refuses_a_non_empty_database() -> anyhow::Result<()> {
 
     let err = load::run(&load_args).await.expect_err("re-loading should be refused");
     assert!(format!("{err:#}").contains("one-time"), "wrong error: {err:#}");
+    Ok(())
+}
+
+/// A journal leg as the freeze would write it, for hand-built journals.
+fn leg(group: u64, account: &str, amount: Decimal) -> journal::Posting {
+    journal::Posting {
+        group,
+        source: "manual".into(),
+        date: NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
+        payee: None,
+        narration: String::new(),
+        external_ref: None,
+        account: account.into(),
+        amount,
+        currency: Currency::TWD,
+        tags: None,
+    }
+}
+
+/// Writes `postings` as a journal and loads it into a fresh database.
+async fn load_journal(postings: Vec<journal::Posting>) -> anyhow::Result<(TempDir, load::Report)> {
+    let dir = TempDir::new()?;
+    let args = load::Args {
+        journal: dir.path().join("journal.csv"),
+        database_url: format!("sqlite:{}", dir.path().join("ledger-app.db").display()),
+    };
+    journal::write(&args.journal, &journal::Journal { postings })?;
+    let report = load::run(&args).await?;
+    Ok((dir, report))
+}
+
+/// The loader trusts the journal but not blindly: a group whose legs do not
+/// sum to zero is a corrupt file, and loading it would break double entry.
+#[tokio::test]
+async fn the_journal_load_refuses_an_unbalanced_transaction() -> anyhow::Result<()> {
+    let err =
+        load_journal(vec![leg(0, "Assets:Cash", dec!(-120)), leg(0, "Expenses:Food", dec!(100))])
+            .await
+            .expect_err("an unbalanced group must not load");
+    assert!(format!("{err:#}").contains("does not balance: -20 TWD"), "wrong error: {err:#}");
+    Ok(())
+}
+
+/// Every account's type comes from its root; a path without a known root has
+/// none.
+#[tokio::test]
+async fn the_journal_load_types_accounts_by_their_root() -> anyhow::Result<()> {
+    let (dir, report) = load_journal(vec![
+        leg(0, "Liabilities:Card", dec!(-120)),
+        leg(0, "Expenses:Food", dec!(120)),
+    ])
+    .await?;
+    assert_eq!(report.accounts, 2);
+    let pool =
+        db::init_db(&format!("sqlite:{}", dir.path().join("ledger-app.db").display())).await?;
+    let kind: String = sqlx::query("SELECT type FROM accounts WHERE path = 'Liabilities:Card'")
+        .fetch_one(&pool)
+        .await?
+        .get(0);
+    assert_eq!(kind, "liability");
+
+    let err =
+        load_journal(vec![leg(0, "Spending:Food", dec!(120)), leg(0, "Assets:Cash", dec!(-120))])
+            .await
+            .expect_err("a rootless account must not load");
+    assert!(format!("{err:#}").contains("\"Spending:Food\" is not a Beancount account"), "{err:#}");
     Ok(())
 }
