@@ -144,21 +144,21 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     .get(0);
     assert!(import_ref.contains("111111111111"), "statement external_ref lost: {import_ref}");
 
-    // The declared opening balance landed in opening_balances, not as a posting.
-    let cash_opening: String = sqlx::query(
-        "SELECT o.amount FROM opening_balances o JOIN accounts a ON a.id = o.account_id WHERE \
-         a.path = 'Assets:Cash'",
+    // The declared opening balance is a transaction against the equity plug.
+    let cash_opening: Vec<(String, String)> = sqlx::query(
+        "SELECT a.path, p.amount FROM transactions t JOIN postings p ON p.transaction_id = t.id \
+         JOIN accounts a ON a.id = p.account_id WHERE t.external_ref = 'opening:Assets:Cash:TWD' \
+         ORDER BY a.path",
     )
-    .fetch_one(&pool)
+    .fetch_all(&pool)
     .await?
-    .get(0);
-    assert_eq!(cash_opening, "1000");
-    let equity_rows: i64 =
-        sqlx::query("SELECT COUNT(*) FROM accounts WHERE path = 'Equity:Opening-Balances'")
-            .fetch_one(&pool)
-            .await?
-            .get(0);
-    assert_eq!(equity_rows, 0, "the opening-balance equity plug leaked into the chart");
+    .iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect();
+    assert_eq!(cash_opening, [
+        ("Assets:Cash".to_string(), "1000".to_string()),
+        (load::OPENING_EQUITY.to_string(), "-1000".to_string()),
+    ]);
 
     // The placeholder account carries a retirement note (derived from the journal's
     // posting tag).

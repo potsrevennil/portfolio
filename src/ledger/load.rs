@@ -5,8 +5,9 @@
 //! core schema. Deliberately dumb: no reconciliation, no chart, no Beancount.
 //! It derives the chart of accounts from the paths the journal mentions (type
 //! from the root, label from the leaf) and, as a cheap tripwire, refuses a
-//! transaction whose legs do not sum to zero per currency. It is one-time: it
-//! refuses a non-empty database.
+//! transaction whose legs do not sum to zero per currency. Each opening row
+//! becomes an ordinary transaction against [`OPENING_EQUITY`]. It is one-time:
+//! it refuses a non-empty database.
 //!
 //! ```text
 //! cargo run -- journal-load --journal ledger/journal.csv --database-url sqlite:ledger-app.db
@@ -19,11 +20,25 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::{Row, SqlitePool};
 
 use super::{accounts::AccountType, journal};
 use crate::{currency::Currency, db};
+
+/// The equity account every opening balances against.
+pub const OPENING_EQUITY: &str = "Equity:Opening-Balances";
+
+/// `transactions.source` of an opening. Openings are declared by hand, and the
+/// `opening:` prefix on `external_ref` namespaces them within that source.
+const OPENING_SOURCE: &str = "manual";
+
+/// The `external_ref` marking the opening of one (account, currency). Also what
+/// makes a second opening for the pair fail the dedup index.
+pub fn opening_ref(account: &str, currency: Currency) -> String {
+    format!("opening:{account}:{currency}")
+}
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -63,7 +78,7 @@ impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "loaded journal into SQLite:")?;
         writeln!(f, "  {} accounts", self.accounts)?;
-        writeln!(f, "  {} opening balances", self.openings)?;
+        writeln!(f, "  {} opening-balance transactions", self.openings)?;
         writeln!(f, "  {} transactions, {} postings", self.transactions, self.postings)?;
         Ok(())
     }
@@ -73,6 +88,15 @@ pub async fn run(args: &Args) -> Result<Report> {
     let journal = journal::read(&args.journal)?;
     let pool = db::init_db(&args.database_url).await?;
     guard_empty(&pool).await?;
+
+    // Replaces the old (account, currency) primary key; checked up front for a
+    // clearer error than the dedup index would give.
+    let mut opened: BTreeSet<(&str, Currency)> = BTreeSet::new();
+    for o in &journal.openings {
+        if !opened.insert((o.account.as_str(), o.currency)) {
+            bail!("journal has a second opening for {} {}", o.account, o.currency);
+        }
+    }
 
     let mut tx = pool.begin().await?;
 
@@ -89,6 +113,7 @@ pub async fn run(args: &Args) -> Result<Report> {
         .iter()
         .map(|p| p.account.as_str())
         .chain(journal.openings.iter().map(|o| o.account.as_str()))
+        .chain((!journal.openings.is_empty()).then_some(OPENING_EQUITY))
         .collect();
 
     let mut ids: BTreeMap<String, i64> = BTreeMap::new();
@@ -118,18 +143,24 @@ pub async fn run(args: &Args) -> Result<Report> {
         .await?;
     }
 
+    let mut posting_count = 0;
+    let equity_id = ids.get(OPENING_EQUITY).copied();
     for o in &journal.openings {
-        let id = ids.get(&o.account).context("opening for an account with no chart row")?;
-        sqlx::query(
-            "INSERT INTO opening_balances (account_id, currency, amount, date) VALUES (?, ?, ?, ?)",
+        let account_id = ids.get(&o.account).context("opening for an account with no chart row")?;
+        let equity_id = equity_id.context("openings without an equity chart row")?;
+        let txn_id = insert_transaction(
+            &mut tx,
+            o.date,
+            None,
+            None,
+            OPENING_SOURCE,
+            Some(&opening_ref(&o.account, o.currency)),
         )
-        .bind(id)
-        .bind(o.currency.to_string())
-        .bind(o.amount.to_string())
-        .bind(o.date.to_string())
-        .execute(&mut *tx)
         .await
-        .with_context(|| format!("inserting opening balance for {}", o.account))?;
+        .with_context(|| format!("inserting opening for {} {}", o.account, o.currency))?;
+        insert_posting(&mut tx, txn_id, *account_id, o.amount, o.currency, None).await?;
+        insert_posting(&mut tx, txn_id, equity_id, -o.amount, o.currency, None).await?;
+        posting_count += 2;
     }
 
     // Regroup the legs into transactions by group id.
@@ -138,7 +169,6 @@ pub async fn run(args: &Args) -> Result<Report> {
         groups.entry(p.group).or_default().push(p);
     }
 
-    let mut posting_count = 0;
     for (group, legs) in &groups {
         // Tripwire: a transaction whose legs do not sum to zero per currency is
         // a corrupt journal, and loading it would break the double-entry invariant.
@@ -153,35 +183,29 @@ pub async fn run(args: &Args) -> Result<Report> {
         }
 
         let header = legs[0];
-        let txn_id = sqlx::query(
-            "INSERT INTO transactions (date, payee, narration, source, external_ref, reviewed) \
-             VALUES (?, ?, ?, ?, ?, 0)",
+        let txn_id = insert_transaction(
+            &mut tx,
+            header.date,
+            header.payee.as_deref(),
+            Some(&header.narration),
+            &header.source,
+            header.external_ref.as_deref(),
         )
-        .bind(header.date.to_string())
-        .bind(&header.payee)
-        .bind(&header.narration)
-        .bind(&header.source)
-        .bind(&header.external_ref)
-        .execute(&mut *tx)
         .await
-        .context("inserting transaction")?
-        .last_insert_rowid();
+        .context("inserting transaction")?;
 
         for leg in legs {
             let account_id =
                 ids.get(&leg.account).context("posting to an account with no chart row")?;
-            sqlx::query(
-                "INSERT INTO postings (transaction_id, account_id, amount, currency, tags) VALUES \
-                 (?, ?, ?, ?, ?)",
+            insert_posting(
+                &mut tx,
+                txn_id,
+                *account_id,
+                leg.amount,
+                leg.currency,
+                leg.tags.as_deref(),
             )
-            .bind(txn_id)
-            .bind(account_id)
-            .bind(leg.amount.to_string())
-            .bind(leg.currency.to_string())
-            .bind(&leg.tags)
-            .execute(&mut *tx)
-            .await
-            .context("inserting posting")?;
+            .await?;
             posting_count += 1;
         }
     }
@@ -194,6 +218,51 @@ pub async fn run(args: &Args) -> Result<Report> {
         transactions: groups.len(),
         postings: posting_count,
     })
+}
+
+async fn insert_transaction(
+    tx: &mut sqlx::SqliteConnection,
+    date: NaiveDate,
+    payee: Option<&str>,
+    narration: Option<&str>,
+    source: &str,
+    external_ref: Option<&str>,
+) -> Result<i64> {
+    Ok(sqlx::query(
+        "INSERT INTO transactions (date, payee, narration, source, external_ref, reviewed) VALUES \
+         (?, ?, ?, ?, ?, 0)",
+    )
+    .bind(date.to_string())
+    .bind(payee)
+    .bind(narration)
+    .bind(source)
+    .bind(external_ref)
+    .execute(tx)
+    .await?
+    .last_insert_rowid())
+}
+
+async fn insert_posting(
+    tx: &mut sqlx::SqliteConnection,
+    transaction_id: i64,
+    account_id: i64,
+    amount: Decimal,
+    currency: Currency,
+    tags: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO postings (transaction_id, account_id, amount, currency, tags) VALUES (?, ?, \
+         ?, ?, ?)",
+    )
+    .bind(transaction_id)
+    .bind(account_id)
+    .bind(amount.to_string())
+    .bind(currency.to_string())
+    .bind(tags)
+    .execute(tx)
+    .await
+    .context("inserting posting")?;
+    Ok(())
 }
 
 /// Refuses a database that already holds history — the load is one-time.

@@ -7,8 +7,8 @@
 //!
 //! One row per posting. Transaction-level fields (`date`, `payee`, `narration`,
 //! `external_ref`) repeat across a group's rows; `tags` is per-posting. The
-//! reserved `source` value `opening` marks an opening-balance row, which
-//! becomes an `opening_balances` entry rather than a posting.
+//! reserved `source` value `opening` marks an opening-balance row, which the
+//! loader turns into a transaction against `Equity:Opening-Balances`.
 
 use std::path::Path;
 
