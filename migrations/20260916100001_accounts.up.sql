@@ -37,15 +37,3 @@ CREATE TABLE account_events (
 ) STRICT;
 
 CREATE INDEX idx_account_events_account ON account_events (account_id, at);
-
--- Opening balances, one row per (account, currency). A multi-currency account
--- (e.g. brokerage cash in USD + TWD) holds several rows and needs no
--- sub-accounts. Every account should carry at least one; that minimum can't be
--- expressed in DDL, so it is enforced on account creation in the app.
-CREATE TABLE opening_balances (
-    account_id  INTEGER NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
-    currency    TEXT NOT NULL,                                 -- ISO 4217, or a commodity symbol
-    amount      TEXT NOT NULL,                                 -- signed decimal string
-    date        TEXT NOT NULL,                                 -- ISO-8601 date 'YYYY-MM-DD'
-    PRIMARY KEY (account_id, currency)
-) STRICT;
