@@ -5,9 +5,8 @@
 //! core schema. Deliberately dumb: no reconciliation, no chart, no Beancount.
 //! It derives the chart of accounts from the paths the journal mentions (type
 //! from the root, label from the leaf) and, as a cheap tripwire, refuses a
-//! transaction whose legs do not sum to zero per currency. Each opening row
-//! becomes an ordinary transaction against [`OPENING_EQUITY`]. It is one-time:
-//! it refuses a non-empty database.
+//! transaction whose legs do not sum to zero per currency. It is one-time: it
+//! refuses a non-empty database.
 //!
 //! ```text
 //! cargo run -- journal-load --journal ledger/journal.csv --database-url sqlite:ledger-app.db
@@ -26,19 +25,6 @@ use sqlx::{Row, SqlitePool};
 
 use super::{accounts::AccountType, journal};
 use crate::{currency::Currency, db};
-
-/// The equity account every opening balances against.
-pub const OPENING_EQUITY: &str = "Equity:Opening-Balances";
-
-/// `transactions.source` of an opening. Openings are declared by hand, and the
-/// `opening:` prefix on `external_ref` namespaces them within that source.
-const OPENING_SOURCE: &str = "manual";
-
-/// The `external_ref` marking the opening of one (account, currency). Also what
-/// makes a second opening for the pair fail the dedup index.
-pub fn opening_ref(account: &str, currency: Currency) -> String {
-    format!("opening:{account}:{currency}")
-}
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -69,7 +55,6 @@ fn schema_type(path: &str) -> Result<&'static str> {
 #[derive(Debug)]
 pub struct Report {
     pub accounts: usize,
-    pub openings: usize,
     pub transactions: usize,
     pub postings: usize,
 }
@@ -78,7 +63,6 @@ impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "loaded journal into SQLite:")?;
         writeln!(f, "  {} accounts", self.accounts)?;
-        writeln!(f, "  {} opening-balance transactions", self.openings)?;
         writeln!(f, "  {} transactions, {} postings", self.transactions, self.postings)?;
         Ok(())
     }
@@ -88,15 +72,6 @@ pub async fn run(args: &Args) -> Result<Report> {
     let journal = journal::read(&args.journal)?;
     let pool = db::init_db(&args.database_url).await?;
     guard_empty(&pool).await?;
-
-    // At most one opening per (account, currency); checked up front for a
-    // clearer error than the dedup index would give.
-    let mut opened: BTreeSet<(&str, Currency)> = BTreeSet::new();
-    for o in &journal.openings {
-        if !opened.insert((o.account.as_str(), o.currency)) {
-            bail!("journal has a second opening for {} {}", o.account, o.currency);
-        }
-    }
 
     let mut tx = pool.begin().await?;
 
@@ -108,13 +83,7 @@ pub async fn run(args: &Args) -> Result<Report> {
         .filter(|p| p.tags.as_deref().is_some_and(|t| t.contains(journal::PLACEHOLDER_TAG)))
         .map(|p| p.account.as_str())
         .collect();
-    let paths: BTreeSet<&str> = journal
-        .postings
-        .iter()
-        .map(|p| p.account.as_str())
-        .chain(journal.openings.iter().map(|o| o.account.as_str()))
-        .chain((!journal.openings.is_empty()).then_some(OPENING_EQUITY))
-        .collect();
+    let paths: BTreeSet<&str> = journal.postings.iter().map(|p| p.account.as_str()).collect();
 
     let mut ids: BTreeMap<String, i64> = BTreeMap::new();
     for path in paths {
@@ -144,25 +113,6 @@ pub async fn run(args: &Args) -> Result<Report> {
     }
 
     let mut posting_count = 0;
-    let equity_id = ids.get(OPENING_EQUITY).copied();
-    for o in &journal.openings {
-        let account_id = ids.get(&o.account).context("opening for an account with no chart row")?;
-        let equity_id = equity_id.context("openings without an equity chart row")?;
-        let txn_id = insert_transaction(
-            &mut tx,
-            o.date,
-            None,
-            None,
-            OPENING_SOURCE,
-            Some(&opening_ref(&o.account, o.currency)),
-        )
-        .await
-        .with_context(|| format!("inserting opening for {} {}", o.account, o.currency))?;
-        insert_posting(&mut tx, txn_id, *account_id, o.amount, o.currency, None).await?;
-        insert_posting(&mut tx, txn_id, equity_id, -o.amount, o.currency, None).await?;
-        posting_count += 2;
-    }
-
     // Regroup the legs into transactions by group id.
     let mut groups: BTreeMap<u64, Vec<&journal::Posting>> = BTreeMap::new();
     for p in &journal.postings {
@@ -212,12 +162,7 @@ pub async fn run(args: &Args) -> Result<Report> {
 
     tx.commit().await?;
     log::info!("journal-load: committed");
-    Ok(Report {
-        accounts: ids.len(),
-        openings: journal.openings.len(),
-        transactions: groups.len(),
-        postings: posting_count,
-    })
+    Ok(Report { accounts: ids.len(), transactions: groups.len(), postings: posting_count })
 }
 
 async fn insert_transaction(

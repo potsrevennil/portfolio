@@ -1,11 +1,11 @@
 //! Freeze over per-year bank exports, a 外幣 account and
 //! `corrected/transactions.csv`. All data invented.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use portfolio::{
     currency::Currency,
-    ledger::{args::Args as BuildArgs, freeze, journal},
+    ledger::{args::Args as BuildArgs, freeze, journal, model},
 };
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -85,10 +85,8 @@ app:5,active,2024-06-11,,transfer,100,USD,外幣帳戶,美金,100,USD,,,,,,app,x
 
 fn balances(journal: &journal::Journal) -> BTreeMap<(String, Currency), Decimal> {
     let mut out: BTreeMap<(String, Currency), Decimal> = BTreeMap::new();
-    let openings = journal.openings.iter().map(|o| (&o.account, o.currency, o.amount));
-    let postings = journal.postings.iter().map(|p| (&p.account, p.currency, p.amount));
-    for (account, currency, amount) in openings.chain(postings) {
-        *out.entry((account.clone(), currency)).or_default() += amount;
+    for p in &journal.postings {
+        *out.entry((p.account.clone(), p.currency)).or_default() += p.amount;
     }
     out
 }
@@ -203,6 +201,20 @@ a:3,active,2024-06-07,,transfer,9000,TWD,國泰,外幣帳戶,45000,JPY,,,,,,app,
     Ok(())
 }
 
+/// Two opening rows for one account and currency: neither may silently win.
+#[test]
+fn a_second_opening_for_one_account_and_currency_fails() -> anyhow::Result<()> {
+    let dir = TempDir::new()?;
+    let row = "open:2,active,2024-01-01,,opening,1000,TWD,現金,,,,,,,,,config,m,,added,,\n";
+    let args = args(
+        dir.path(),
+        &TRANSACTIONS.replacen(row, &format!("{row}{}", row.replace("open:2", "open:3")), 1),
+    )?;
+    let err = freeze::run(&args).expect_err("a duplicate opening must fail");
+    assert!(err.to_string().contains("more than one opening row"), "{err:#}");
+    Ok(())
+}
+
 /// An opening that contradicts its statement (amount, or a later date) fails.
 #[test]
 fn a_declared_opening_contradicting_its_statement_fails() -> anyhow::Result<()> {
@@ -243,10 +255,17 @@ fn freeze_reads_yearly_exports_a_foreign_account_and_corrected_records() -> anyh
         );
     }
 
-    let savings_opening = written
-        .openings
+    // The opening is an ordinary transaction against the equity plug.
+    let opening_groups: BTreeSet<u64> = written
+        .postings
         .iter()
-        .find(|o| o.account == "Assets:Cathay:Savings")
+        .filter(|p| p.account == model::OPENING_EQUITY)
+        .map(|p| p.group)
+        .collect();
+    let savings_opening = written
+        .postings
+        .iter()
+        .find(|p| p.account == "Assets:Cathay:Savings" && opening_groups.contains(&p.group))
         .expect("savings opening");
     assert_eq!(savings_opening.amount, dec!(5000), "the 2023 line was not folded in");
 

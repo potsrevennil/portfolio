@@ -10,21 +10,8 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use super::{daily::Entry, journal::Opening};
+use super::daily::Entry;
 use crate::currency::Currency;
-
-/// Openings are kept apart so they don't move the date the records begin.
-/// Their `account` is the app label, as on every row.
-#[derive(Debug, Default)]
-pub struct Records {
-    pub entries: Vec<Entry>,
-    pub openings: Vec<Opening>,
-}
-
-/// The native exports carry no openings.
-impl From<Vec<Entry>> for Records {
-    fn from(entries: Vec<Entry>) -> Self { Records { entries, openings: Vec::new() } }
-}
 
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -62,7 +49,7 @@ struct Row {
 
 /// Entries oldest first; within a day, income and expense before transfers, as
 /// in the native exports.
-pub fn load(path: impl AsRef<Path>) -> Result<Records> {
+pub fn load(path: impl AsRef<Path>) -> Result<Vec<Entry>> {
     let path = path.as_ref();
     let mut rdr = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
@@ -71,7 +58,6 @@ pub fn load(path: impl AsRef<Path>) -> Result<Records> {
 
     let mut flows = Vec::new();
     let mut transfers = Vec::new();
-    let mut openings = Vec::new();
     for (i, row) in rdr.deserialize::<Row>().enumerate() {
         let row = row.with_context(|| format!("{} record {}", path.display(), i + 1))?;
         if row.status == Status::Removed {
@@ -101,7 +87,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Records> {
                 in_currency: row.counter_currency.unwrap_or(Currency::TWD),
                 memo: row.note,
             }),
-            Kind::Opening => openings.push(Opening {
+            Kind::Opening => flows.push(Entry::Opening {
                 date: row.date,
                 account: row.account,
                 amount: row.amount,
@@ -113,7 +99,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Records> {
     let mut entries = flows;
     entries.extend(transfers);
     entries.sort_by_key(Entry::date);
-    Ok(Records { entries, openings })
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -127,25 +113,22 @@ mod tests {
                           note,source_party,source_file,source_id,origin,correction_note,\
                           updated_at\n";
 
-    fn records(rows: &str) -> Result<Records> {
+    fn load(rows: &str) -> Result<Vec<Entry>> {
         let file = tempfile::NamedTempFile::new()?;
         std::fs::write(file.path(), format!("{HEADER}{rows}"))?;
         super::load(file.path())
     }
 
-    fn load(rows: &str) -> Result<Vec<Entry>> { Ok(records(rows)?.entries) }
-
-    /// An opening keeps its sign and stays out of the entries.
+    /// An opening keeps its sign.
     #[test]
-    fn an_opening_row_is_kept_apart_with_its_sign() -> Result<()> {
-        let r = records(
-            "o:1,active,2022-01-01,,opening,-500,TWD,信用卡,,,,,,,,,config,m,,added,moved,\na:1,\
-             active,2022-02-01,,expense,1,,錢包,,,,飲食,,,,,app,f,U,raw,,\n",
+    fn an_opening_row_keeps_its_sign() -> Result<()> {
+        let entries = load(
+            "o:1,active,2022-01-01,,opening,-500,TWD,信用卡,,,,,,,,,config,m,,added,moved,\n",
         )?;
-        assert_eq!(r.entries.len(), 1);
-        assert_eq!(r.openings.len(), 1);
-        assert_eq!(r.openings[0].account, "信用卡");
-        assert_eq!(r.openings[0].amount, dec!(-500));
+        assert!(matches!(
+            &entries[..],
+            [Entry::Opening { account, amount, .. }] if account == "信用卡" && *amount == dec!(-500)
+        ));
         Ok(())
     }
 

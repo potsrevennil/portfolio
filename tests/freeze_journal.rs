@@ -8,7 +8,7 @@
 
 use portfolio::{
     db,
-    ledger::{args::Args as BuildArgs, freeze, load},
+    ledger::{args::Args as BuildArgs, freeze, load, model},
 };
 use sqlx::Row;
 use tempfile::TempDir;
@@ -153,7 +153,7 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     .collect();
     assert_eq!(cash_opening, [
         ("Assets:Cash".to_string(), "1000".to_string()),
-        (load::OPENING_EQUITY.to_string(), "-1000".to_string()),
+        (model::OPENING_EQUITY.to_string(), "-1000".to_string()),
     ]);
 
     // The placeholder account carries a retirement note (derived from the journal's

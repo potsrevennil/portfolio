@@ -116,6 +116,8 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                     });
                 }
             }
+            // Not a movement a statement line could explain.
+            Entry::Opening { .. } => {}
         }
     }
     out
@@ -153,19 +155,24 @@ pub enum Entry {
         in_currency: Currency,
         memo: String,
     },
+    /// What an account already held before its records begin; the other side
+    /// is the opening-balance equity. Signed: negative for a debt.
+    Opening { date: NaiveDate, account: String, amount: Decimal, currency: Currency },
 }
 
 impl Entry {
     pub fn date(&self) -> NaiveDate {
         match self {
-            Entry::Flow { date, .. } | Entry::Transfer { date, .. } => *date,
+            Entry::Flow { date, .. }
+            | Entry::Transfer { date, .. }
+            | Entry::Opening { date, .. } => *date,
         }
     }
 
     /// Accounts this record touches.
     pub fn accounts(&self) -> Vec<&str> {
         match self {
-            Entry::Flow { account, .. } => vec![account.as_str()],
+            Entry::Flow { account, .. } | Entry::Opening { account, .. } => vec![account.as_str()],
             Entry::Transfer { from, to, .. } => vec![from.as_str(), to.as_str()],
         }
     }

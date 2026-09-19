@@ -19,6 +19,14 @@ use rust_decimal::Decimal;
 use super::writer::{self, Posting};
 use crate::currency::Currency;
 
+/// The equity account every opening balance is booked against.
+pub const OPENING_EQUITY: &str = "Equity:Opening-Balances";
+
+/// The `external_ref` of a declared opening; one per (account, currency).
+pub fn opening_ref(account: &str, currency: Currency) -> String {
+    format!("opening:{account}:{currency}")
+}
+
 /// Which pipeline produced a transaction — the `transactions.source` value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {

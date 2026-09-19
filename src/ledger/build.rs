@@ -14,7 +14,7 @@ use super::{
     args::Args,
     corrected, daily,
     emit::{contra_posting, emit_daily_accounts, narration_for, resolve},
-    journal, matching,
+    matching,
     model::{self, Directive},
     names::{fallback_account, statement_account},
     statements,
@@ -55,6 +55,9 @@ fn app_balances(
                 add(from, -*out, *out_currency);
                 add(to, *inn, *in_currency);
             }
+            daily::Entry::Opening { account, amount, currency, .. } => {
+                add(account, *amount, *currency);
+            }
         }
     }
     bal
@@ -78,37 +81,42 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let institution_app: &str = &chart.institution.app_account;
 
     // Only the corrected records carry opening balances.
-    let corrected::Records { entries, openings: opening_rows } = match (
+    let entries = match (
         opts.transactions.as_deref(),
         opts.daily_income_expense.as_deref(),
         opts.daily_transfers.as_deref(),
     ) {
         (Some(corrected), ..) => corrected::load(corrected)?,
-        (None, Some(ie), Some(xf)) => daily::load_entries(ie, xf)?.into(),
-        _ => corrected::Records::default(),
+        (None, Some(ie), Some(xf)) => daily::load_entries(ie, xf)?,
+        _ => Vec::new(),
     };
-    // Opening rows name the app account; put each on its ledger account.
-    let mut declared: Vec<journal::Opening> = opening_rows
-        .into_iter()
-        .map(|o| -> Result<journal::Opening> {
-            let mapping = chart.account(&o.account).with_context(|| {
-                format!("opening row names {:?}, which [accounts] does not map", o.account)
+    // Each opening on its ledger account, as (account, currency, amount, date).
+    let mut declared: Vec<(String, Currency, Decimal, NaiveDate)> = entries
+        .iter()
+        .filter_map(|e| match e {
+            daily::Entry::Opening { date, account, amount, currency } => {
+                Some((account, *currency, *amount, *date))
+            }
+            _ => None,
+        })
+        .map(|(label, currency, amount, date)| {
+            let mapping = chart.account(label).with_context(|| {
+                format!("opening row names {label:?}, which [accounts] does not map")
             })?;
-            Ok(journal::Opening { account: mapping.account.to_string(), ..o })
+            Ok((mapping.account.to_string(), currency, amount, date))
         })
         .collect::<Result<_>>()?;
-    declared.sort_by(|a, b| (&a.account, a.currency).cmp(&(&b.account, b.currency)));
-    if let Some(pair) =
-        declared.windows(2).find(|w| w[0].account == w[1].account && w[0].currency == w[1].currency)
-    {
-        anyhow::bail!("{} {} has more than one opening row", pair[0].account, pair[0].currency);
+    declared.sort();
+    if let Some(pair) = declared.windows(2).find(|w| (&w[0].0, w[0].1) == (&w[1].0, w[1].1)) {
+        anyhow::bail!("{} {} has more than one opening row", pair[0].0, pair[0].1);
     }
 
     let mut merged = statements::cathay::load_merged(&opts.cathay_statements)?;
 
     // Lines before the records begin have nothing to match; fold them into
     // the opening balance.
-    let records_start = entries.first().map(daily::Entry::date);
+    let records_start =
+        entries.iter().find(|e| !matches!(e, daily::Entry::Opening { .. })).map(daily::Entry::date);
     let mut n_folded = 0usize;
     if let Some(start) = records_start {
         for m in &mut merged {
@@ -409,7 +417,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 postings: vec![
                     writer::Posting::new(savings, savings_open, Currency::TWD),
                     writer::Posting::new(investment, opening_of(investment), Currency::TWD),
-                    writer::Posting::inferred("Equity:Opening-Balances"),
+                    writer::Posting::inferred(model::OPENING_EQUITY),
                 ],
                 source: model::Source::Import,
                 external_ref: None,
@@ -504,7 +512,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 tags: Vec::new(),
                 postings: vec![
                     writer::Posting::new(account, statement.opening_balance(), currency),
-                    writer::Posting::inferred("Equity:Opening-Balances"),
+                    writer::Posting::inferred(model::OPENING_EQUITY),
                 ],
                 source: model::Source::Import,
                 external_ref: None,
@@ -713,14 +721,6 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 *by_currency.entry(*currency).or_default() += *amount;
             }
         }
-        // Fold in any opening balance on this account (or its subtree): the app
-        // records net only the movements since, so the asserted figure must add
-        // the declared starting position the build also emits below.
-        for ob in &declared {
-            if ob.account == account || ob.account.starts_with(&prefix) {
-                *by_currency.entry(ob.currency).or_default() += ob.amount;
-            }
-        }
         // Emit an account's assertions ordered by currency code, not by the
         // enum's declaration order, so the output is stable and alphabetical.
         let mut per_currency: Vec<(Currency, Decimal)> = by_currency.into_iter().collect();
@@ -740,48 +740,46 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // and make sure their accounts are opened alongside the rest.
     let mut openings: Vec<Directive> = Vec::new();
     let mut superseded_openings: BTreeSet<String> = BTreeSet::new();
-    for ob in &declared {
-        let account = &ob.account;
+    for (account, currency, amount, date) in &declared {
         // The backfill or a statement already opens this account; the two must
         // agree, else neither may silently win.
         let derived = derived_openings
             .get(account.as_str())
-            .filter(|_| ob.currency == Currency::TWD)
-            .map(|&(amount, date)| (amount, date, "the backfill"));
+            .filter(|_| *currency == Currency::TWD)
+            .map(|&(expected, from)| (expected, from, "the backfill"));
         let covering = derived.or_else(|| {
             statements
                 .iter()
                 .zip(&bank_accounts)
-                .find(|(s, a)| **a == account && s.currency == ob.currency)
+                .find(|(s, a)| **a == account && s.currency == *currency)
                 .map(|(s, _)| {
                     let first = s.lines.first().expect("load rejects empty statements");
                     (s.opening_balance(), first.book_date, "its statement")
                 })
         });
-        if let Some((amount, from, by)) = covering {
+        if let Some((expected, from, by)) = covering {
             anyhow::ensure!(
-                ob.amount == amount && ob.date <= from,
-                "opening {account} {} = {} on {} contradicts {by}, which opens at {amount} before \
-                 {from}",
-                ob.currency,
-                ob.amount,
-                ob.date,
+                *amount == expected && *date <= from,
+                "opening {account} {currency} = {amount} on {date} contradicts {by}, which opens \
+                 at {expected} before {from}"
             );
-            superseded_openings.insert(format!("{account} {}", ob.currency));
+            superseded_openings.insert(format!("{account} {currency}"));
             continue;
         }
         used_accounts.insert(account.clone());
         openings.push(Directive::Transaction(model::Transaction {
-            date: ob.date,
+            date: *date,
             payee: String::new(),
             narration: "Opening balance".to_string(),
             tags: Vec::new(),
             postings: vec![
-                writer::Posting::new(account.clone(), ob.amount, ob.currency),
-                writer::Posting::inferred("Equity:Opening-Balances"),
+                writer::Posting::new(account.clone(), *amount, *currency),
+                writer::Posting::inferred(model::OPENING_EQUITY),
             ],
-            source: model::Source::Import,
-            external_ref: None,
+            // Declared by hand; the ref makes a second opening for the pair
+            // fail the dedup index.
+            source: model::Source::Manual,
+            external_ref: Some(model::opening_ref(account, *currency)),
         }));
     }
 
