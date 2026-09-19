@@ -168,9 +168,10 @@ fn placeholder_and_subtree_predicates_match_only_the_right_paths() {
 }
 
 #[test]
-fn a_non_beancount_root_is_rejected() {
-    assert!(account_type("Assets:Cash").is_ok());
-    assert!(account_type("Nonsense:Root").is_err());
+fn an_account_path_parses_to_its_root() {
+    assert_eq!("Assets:Cash:Petty".parse(), Ok(AccountType::Assets));
+    assert_eq!("Liabilities".parse(), Ok(AccountType::Liabilities));
+    assert_eq!("Nonsense:Root".parse::<AccountType>(), Err(()));
 }
 
 #[test]

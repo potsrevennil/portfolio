@@ -744,9 +744,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // Assert every used asset or liability account, except 國泰's — those are
     // asserted against the bank statement, not the app.
     let assertable = accounts.into_iter().filter(|&account| {
-        let root = account.split(':').next().unwrap_or("").parse::<AccountType>();
         used_accounts.contains(account)
-            && matches!(root, Ok(AccountType::Assets | AccountType::Liabilities))
+            && matches!(account.parse(), Ok(AccountType::Assets | AccountType::Liabilities))
             && !bank_asserted.contains(account)
     });
     for account in assertable {

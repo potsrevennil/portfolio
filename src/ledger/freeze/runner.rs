@@ -53,14 +53,6 @@ struct PostingRow {
     tags: Option<String>,
 }
 
-fn account_type(path: &str) -> Result<AccountType> {
-    path.split(':')
-        .next()
-        .unwrap_or("")
-        .parse()
-        .map_err(|_| anyhow::anyhow!("{path:?} has no root"))
-}
-
 /// True when an account is or lies under `root` (Beancount subtree semantics).
 fn in_subtree(account: &str, root: &str) -> bool {
     account == root || account.starts_with(&format!("{root}:"))
@@ -325,7 +317,7 @@ fn verify(
         .postings
         .iter()
         .map(|m| m.account.as_str())
-        .filter(|a| matches!(account_type(a), Ok(AccountType::Assets)))
+        .filter(|a| matches!(a.parse(), Ok(AccountType::Assets)))
         .filter(|a| !chart.is_split_account(a))
         .collect();
     let mut negatives = Vec::new();

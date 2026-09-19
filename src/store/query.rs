@@ -55,6 +55,20 @@ pub enum AccountType {
     Expense,
 }
 
+/// The schema word for each Beancount root.
+impl From<crate::ledger::accounts::AccountType> for AccountType {
+    fn from(root: crate::ledger::accounts::AccountType) -> Self {
+        use crate::ledger::accounts::AccountType as Root;
+        match root {
+            Root::Assets => Self::Asset,
+            Root::Liabilities => Self::Liability,
+            Root::Equity => Self::Equity,
+            Root::Income => Self::Income,
+            Root::Expenses => Self::Expense,
+        }
+    }
+}
+
 /// The calendar granularity a report is grouped by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
