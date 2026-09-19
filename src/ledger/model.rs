@@ -11,8 +11,6 @@
 //! needs. Transactions additionally carry [`Source`] and `external_ref`, which
 //! the text has no place for but the schema does.
 
-use std::fmt::Write as _;
-
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
@@ -78,8 +76,6 @@ pub enum Directive {
     Blank,
     /// A `;;` comment line (the leading `;;` is part of the text).
     Comment(String),
-    /// `YYYY-MM-DD open <account>` — the fixed epoch date the importer uses.
-    Open(String),
     Transaction(Transaction),
     Balance(Balance),
 }
@@ -129,9 +125,6 @@ pub fn render(directives: &[Directive]) -> String {
             Directive::Comment(text) => {
                 out.push_str(text);
                 out.push('\n');
-            }
-            Directive::Open(account) => {
-                let _ = writeln!(out, "2000-01-01 open {account}");
             }
             Directive::Transaction(t) => {
                 out.push_str(&writer::transaction(
