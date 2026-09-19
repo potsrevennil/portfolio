@@ -213,6 +213,28 @@ pub struct Fallback {
     pub descriptions: HashMap<String, Account>,
 }
 
+/// Split accounts: running two-way balances with a person or group — a family
+/// tab, a Splitwise group. Accountants call these current accounts: one account
+/// per person or group, and the sign says who owes whom (positive, they owe
+/// you; negative, you owe them). Negative is therefore an ordinary state here,
+/// a payable, not a sign of a missing opening balance.
+#[derive(Debug, Default, Deserialize)]
+pub struct SplitAccounts {
+    /// Every account at or under one of these is a split account.
+    #[serde(default)]
+    pub roots: Vec<Account>,
+}
+
+/// Rejects the section's old name. `Chart` ignores unknown sections, so a
+/// leftover `[counterparty]` would otherwise be dropped silently: the
+/// exemption would switch off and the freeze would fail on a negative split
+/// account with no hint why.
+fn renamed_to_split_accounts<'de, D: serde::Deserializer<'de>>(
+    _: D,
+) -> std::result::Result<(), D::Error> {
+    Err(serde::de::Error::custom("[counterparty] was renamed to [split_accounts]"))
+}
+
 /// A balance an account already carried before 天天記帳's history begins.
 ///
 /// The app has no opening-balance concept, so an account whose life predates
@@ -295,6 +317,14 @@ pub struct Chart {
     /// Trips whose records pick up a tag. See `Trip`.
     #[serde(default)]
     pub trips: Vec<Trip>,
+    /// Subtrees of two-way balances with a person or group. See
+    /// `SplitAccounts`.
+    #[serde(default)]
+    pub split_accounts: SplitAccounts,
+    /// The old name of `split_accounts`, refused. See
+    /// `renamed_to_split_accounts`.
+    #[serde(default, rename = "counterparty", deserialize_with = "renamed_to_split_accounts")]
+    _counterparty: (),
 }
 
 impl Chart {
@@ -369,6 +399,16 @@ impl Chart {
             .collect()
     }
 
+    /// True for an account at or under a split-account root, where a negative
+    /// balance means you owe them rather than a missing opening balance.
+    pub fn is_split_account(&self, account: &str) -> bool {
+        self.split_accounts.roots.iter().any(|root| {
+            account
+                .strip_prefix(root.as_ref())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
+        })
+    }
+
     /// Corrections that named a record the exports do not contain.
     pub fn stale_overrides(&self, used: &BTreeSet<String>) -> BTreeSet<String> {
         self.overrides
@@ -426,5 +466,41 @@ mod trip_tests {
             "krabi-2026"
         ]);
         assert!(c.trip_tags(d("2025-04-15"), "private-uuid", true).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod split_account_tests {
+    use super::*;
+
+    /// A root covers itself and everything beneath it, but not a sibling that
+    /// merely shares its prefix; with no roots configured nothing qualifies.
+    #[test]
+    fn roots_cover_their_subtree_only() {
+        let c: Chart = toml::from_str("[split_accounts]\nroots = [\"Assets:Split\"]\n")
+            .expect("valid split_accounts config");
+        assert!(c.is_split_account("Assets:Split"));
+        assert!(c.is_split_account("Assets:Split:Friends"));
+        assert!(c.is_split_account("Assets:Split:Wisroot:Advance"));
+        assert!(!c.is_split_account("Assets:SplitX"));
+        assert!(!c.is_split_account("Assets:Cash:TWD"));
+        assert!(!Chart::default().is_split_account("Assets:Split:Family"));
+    }
+
+    /// A root must still be a valid account path.
+    #[test]
+    fn rejects_a_root_outside_the_five_roots() {
+        assert!(
+            toml::from_str::<Chart>("[split_accounts]\nroots = [\"Receivable:Family\"]\n").is_err()
+        );
+    }
+
+    /// The section's old name is an error that names the new one, not a
+    /// silently ignored table.
+    #[test]
+    fn rejects_the_old_counterparty_section() {
+        let err = toml::from_str::<Chart>("[counterparty]\nroots = [\"Assets:Split\"]\n")
+            .expect_err("a stale [counterparty] section must not parse");
+        assert!(err.to_string().contains("renamed to [split_accounts]"), "{err}");
     }
 }

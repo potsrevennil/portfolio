@@ -56,7 +56,7 @@ option "inferred_tolerance_default" "*:0.01"
 
 ;; Deep, rarely-inspected branches start folded.
 2000-01-01 custom "fava-option" "collapse-pattern" "Expenses:Travel"
-2000-01-01 custom "fava-option" "collapse-pattern" "Assets:Receivable"
+2000-01-01 custom "fava-option" "collapse-pattern" "Assets:Split"
 2000-01-01 custom "fava-option" "collapse-pattern" "Assets:Currency"
 
 ;; Offer these in the conversion selector, so every report can be read in one
