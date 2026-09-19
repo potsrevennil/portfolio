@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use portfolio::{
     currency::Currency,
-    ledger::{args::Args as BuildArgs, freeze, journal},
+    ledger::{args::Args as BuildArgs, build, freeze, journal, load},
 };
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -48,6 +48,7 @@ expense = "Expenses:Uncategorized"
 
 [overrides]
 "U-GIFT" = { account = "Expenses:Gifts", narration = "禮物" }
+"U-CASH" = { account = "Expenses:Gifts", narration = "不應套用" }
 "#;
 
 const HEADER: &str = "交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n";
@@ -304,21 +305,27 @@ a:6,active,2024-06-15,,transfer,3000,TWD,國泰,美金,100,USD,,,,,,app,f,U-USD,
     // +40 near side of the salary record, -5000 for the matched line whose
     // category is unmapped.
     assert_eq!(balance(&written, "Income:Uncategorized", Currency::TWD), dec!(-4960));
-    // One transaction per record; the zero record on the 14th is not among them.
-    let unmatched: BTreeSet<String> = written
+    // One transaction per record, each keyed by its app id — transfers
+    // included; the zero record is not among them.
+    let unmatched: BTreeSet<&str> = written
         .postings
         .iter()
         .filter(|p| p.payee.as_deref() == Some("未對應紀錄"))
-        .map(|p| p.date.to_string())
+        .filter_map(|p| p.external_ref.as_deref())
         .collect();
-    assert_eq!(
-        unmatched,
-        BTreeSet::from(["2024-06-12", "2024-06-13", "2024-06-15"].map(String::from))
-    );
+    assert_eq!(unmatched, BTreeSet::from(["U-CASH", "U-SALARY", "U-USD"]));
 
-    // The correction beat the 飲食 category on the matched line.
+    // The correction beat the 飲食 category on the matched line — and only
+    // there: U-CASH names a 轉帳 row, whose far side is an account already, so
+    // the correction has no category to replace and must not rewrite it.
     assert_eq!(balance(&written, "Expenses:Gifts", Currency::TWD), dec!(100));
     assert_eq!(balance(&written, "Expenses:Food", Currency::TWD), dec!(0));
+    assert!(
+        written.postings.iter().any(|p| p.external_ref.as_deref() == Some("U-CASH")
+            && p.account == "Assets:Cash"
+            && p.narration.is_empty()),
+        "a correction rewrote a 轉帳 row"
+    );
     // An opening can be a transfer into the equity, which makes it negative.
     assert_eq!(balance(&written, "Liabilities:Card", Currency::TWD), dec!(-500));
     Ok(())
@@ -359,6 +366,7 @@ fn freeze_reads_the_raw_app_exports() -> anyhow::Result<()> {
 日期,從帳戶,轉出金額,幣別,到帳戶,轉入金額,幣別,標籤,備註,上次更新,UUID
 20240101,起鼓,500,TWD,現金,500,TWD,,,2024-01-01 00:00:00,T1
 20240606,現金,0,TWD,美金,0,USD,,,2024-06-06 00:00:00,T2
+20240608,現金,60,TWD,美金,2,USD,,,2024-06-08 00:00:00,T3
 合計,,500,,,500,,,,,
 ";
     let dir = TempDir::new()?;
@@ -384,12 +392,22 @@ fn freeze_reads_the_raw_app_exports() -> anyhow::Result<()> {
         dec!(100),
         "a blank row was read"
     );
-    assert_eq!(balance(&written, "Assets:Cash", Currency::TWD), dec!(490));
+    assert_eq!(balance(&written, "Assets:Cash", Currency::TWD), dec!(430));
     // An unmapped category falls to the bucket for its direction.
     assert_eq!(balance(&written, "Expenses:Uncategorized", Currency::TWD), dec!(20));
     assert_eq!(balance(&written, "Income:Uncategorized", Currency::TWD), dec!(-10));
     assert_eq!(balance(&written, "Assets:Unmapped", Currency::TWD), dec!(30));
-    assert!(!written.postings.iter().any(|p| p.account == "Assets:USD-Wallet"), "zero transfer");
+    // A transfer between two accounts with no statement is one transaction
+    // keyed by its app id; the zero one is dropped.
+    let transfer: Vec<(&str, Decimal, Currency)> = written
+        .postings
+        .iter()
+        .filter(|p| p.external_ref.as_deref() == Some("T3"))
+        .map(|p| (p.account.as_str(), p.amount, p.currency))
+        .collect();
+    assert!(transfer.contains(&("Assets:Cash", dec!(-60), Currency::TWD)), "{transfer:?}");
+    assert!(transfer.contains(&("Assets:USD-Wallet", dec!(2), Currency::USD)), "{transfer:?}");
+    assert!(!written.postings.iter().any(|p| p.external_ref.as_deref() == Some("T2")));
     Ok(())
 }
 
@@ -421,5 +439,104 @@ fn a_statement_that_does_not_add_up_fails_the_freeze() -> anyhow::Result<()> {
     assert!(shown.contains("reconciliation FAILED"), "{shown}");
     assert!(shown.contains("MISMATCH Assets:Cathay:Savings TWD"), "{shown}");
     assert!(!args.journal.exists(), "an untrusted journal must be removed");
+    Ok(())
+}
+
+/// A transfer between two accounts that each have a statement is one record
+/// seen from both pools. Emitting it once per pool would write the same record
+/// twice under one id, which the dedup index then refuses at load.
+#[tokio::test]
+async fn a_transfer_between_two_statement_accounts_is_emitted_once() -> anyhow::Result<()> {
+    const FX: &str = "\
+222222222222 活存外幣
+幣別：USD
+交易日期,帳務日期,提出,存入,餘額,成交匯率,交易資訊
+2024/06/07,2024/06/07,−,USD 100.00,USD 100.00,32,台幣存 111111111111TWD
+";
+    let dir = TempDir::new()?;
+    let args = inputs(
+        &dir,
+        &[
+            (
+                "savings.csv",
+                &statement(
+                    "111111111111",
+                    "2024/06/07,2024/06/07,網銀外存,3200,,1800,,222222222222\n2024/06/01,2024/06/\
+                     01,存入,,5000,5000,,\n",
+                ),
+            ),
+            ("fx.csv", FX),
+        ],
+        // The 外幣 → 國泰 move is dated after both statements end, so no line
+        // can explain it and no assertion covers it.
+        Records::Corrected(
+            "a:0,active,2024-06-01,,income,5000,TWD,國泰,,,,薪資,,自己,,,app,f,U-PAY,raw,,
+a:1,active,2024-07-01,,transfer,15,USD,外幣帳戶,國泰,500,TWD,,,,,,app,f,U-LATE,raw,,
+",
+        ),
+    )?;
+
+    let frozen = freeze::run(&args)?;
+    assert!(frozen.ok(), "did not reconcile:\n{frozen}");
+    let written = journal::read(&args.journal)?;
+    let groups: BTreeSet<u64> = written
+        .postings
+        .iter()
+        .filter(|p| p.external_ref.as_deref() == Some("U-LATE"))
+        .map(|p| p.group)
+        .collect();
+    assert_eq!(groups.len(), 1, "the record was emitted {} times", groups.len());
+
+    // The dedup index is the real judge of one-record-one-transaction.
+    let load_args = load::Args {
+        journal: args.journal.clone(),
+        database_url: format!("sqlite:{}", dir.path().join("ledger-app.db").display()),
+    };
+    load::run(&load_args).await?;
+    Ok(())
+}
+
+/// The same record, but pre-anchor and with the backfill on: the backfill
+/// emits the institution pool's side, so the other pool must not emit it again
+/// under the same id. Checked on the assembled model, because this shape also
+/// breaks the far account's balance assertion — which stops the freeze, but
+/// only by luck, and says nothing about the duplicate.
+#[test]
+fn a_pre_anchor_transfer_is_not_emitted_twice() -> anyhow::Result<()> {
+    const FX: &str = "\
+222222222222 活存外幣
+幣別：USD
+交易日期,帳務日期,提出,存入,餘額,成交匯率,交易資訊
+2024/06/07,2024/06/07,−,USD 100.00,USD 100.00,32,台幣存 111111111111TWD
+";
+    let dir = TempDir::new()?;
+    let mut args = inputs(
+        &dir,
+        &[
+            (
+                "savings.csv",
+                &statement(
+                    "111111111111",
+                    "2024/06/07,2024/06/07,網銀外存,3200,,1800,,222222222222\n2024/06/01,2024/06/\
+                     01,存入,,5000,5000,,\n",
+                ),
+            ),
+            ("fx.csv", FX),
+        ],
+        Records::Corrected(
+            "a:0,active,2024-05-01,,transfer,15,USD,外幣帳戶,國泰,500,TWD,,,,,,app,f,U-PRE,raw,,
+a:1,active,2024-06-01,,income,5000,TWD,國泰,,,,薪資,,自己,,,app,f,U-PAY,raw,,
+",
+        ),
+    )?;
+    args.build.backfill = true;
+
+    let (model, _summary) = build::assemble(&args.build)?;
+    let carrying: Vec<&str> = model
+        .transactions()
+        .filter(|t| t.external_ref.as_deref() == Some("U-PRE"))
+        .map(|t| t.payee.as_str())
+        .collect();
+    assert_eq!(carrying.len(), 1, "the record was emitted {} times", carrying.len());
     Ok(())
 }

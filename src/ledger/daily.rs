@@ -35,12 +35,24 @@ pub struct AppEvent {
     /// currency. Differs from `delta` whenever the two sides are not the same
     /// currency, which is the whole reason it is carried.
     pub far: Option<(Decimal, Currency)>,
-    /// The app's UUID for the record this view came from, so a per-record
-    /// correction applies whichever path the record reaches the ledger by.
-    /// Empty for a 轉帳 row, whose two sides are one record with one id but two
-    /// accounts — a correction there would have to name a side, and the
-    /// categories a correction exists to fix are on 收支 rows only.
+    /// The app's UUID for the record this view came from — its dedup key, and
+    /// the same id on both sides of a 轉帳 row. See [`AppEvent::correction_id`]
+    /// for why a correction may not name every one of them.
     pub id: String,
+}
+
+impl AppEvent {
+    /// The id a per-record correction may name: 收支 rows only. A correction
+    /// replaces the account a *category* resolved to, and a 轉帳 row has an
+    /// account on the far side already — one id shared by both of its sides, so
+    /// naming it would rewrite both, and the path that emits a 轉帳 with no
+    /// statement never consults corrections at all.
+    pub fn correction_id(&self) -> &str {
+        match self.contra {
+            Contra::Category(_) => &self.id,
+            Contra::Account(_) => "",
+        }
+    }
 }
 
 fn parse_date(s: &str) -> Result<NaiveDate> {
@@ -92,7 +104,17 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
             }
             // A transfer between two of the subject's own accounts is recorded
             // once but seen twice, from each side.
-            Entry::Transfer { date, from, out: sent, out_currency, to, inn, in_currency, memo } => {
+            Entry::Transfer {
+                date,
+                from,
+                out: sent,
+                out_currency,
+                to,
+                inn,
+                in_currency,
+                memo,
+                id,
+            } => {
                 if from == subject {
                     out.push(AppEvent {
                         date: *date,
@@ -101,7 +123,7 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                         contra: Contra::Account(to.clone()),
                         memo: memo.clone(),
                         far: Some((*inn, *in_currency)),
-                        id: String::new(),
+                        id: id.clone(),
                     });
                 }
                 if to == subject {
@@ -112,7 +134,7 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                         contra: Contra::Account(from.clone()),
                         memo: memo.clone(),
                         far: Some((*sent, *out_currency)),
-                        id: String::new(),
+                        id: id.clone(),
                     });
                 }
             }
@@ -152,6 +174,9 @@ pub enum Entry {
         inn: Decimal,
         in_currency: Currency,
         memo: String,
+        /// The app's UUID for the row — one id for both sides, which is why
+        /// only one transaction may ever carry it.
+        id: String,
     },
 }
 
@@ -233,6 +258,7 @@ pub fn load_entries(
             inn: parse_amount(rec.get(5).unwrap_or(""))?,
             in_currency: parse_currency(rec.get(6))?,
             memo: rec.get(8).unwrap_or("").trim().to_string(),
+            id: rec.get(10).unwrap_or("").trim().to_string(),
         });
     }
 

@@ -385,6 +385,12 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         .min()
         .context("statements contain no lines")?;
     let backfilling = opts.backfill && !app_events.is_empty();
+    // A record is one movement carrying one dedup id, but it can be reached by
+    // two passes — the backfill below, then the records no statement line
+    // explains — and, when it names two accounts that each have a statement,
+    // from either pool. Whichever gets there first emits it; this is what stops
+    // the rest from repeating it under the same id.
+    let mut emitted: BTreeSet<String> = BTreeSet::new();
 
     if backfilling {
         // A claimed record must not be replayed here. The date tolerance reaches
@@ -449,9 +455,10 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                     daily::Contra::Category(n) | daily::Contra::Account(n) => n.as_str(),
                 };
                 let memo = if event.memo.is_empty() { raw } else { &event.memo };
-                let narration = narration_for(&chart, &event.id, memo);
+                let narration = narration_for(&chart, event.correction_id(), memo);
 
                 let external_ref = (!event.id.is_empty()).then(|| event.id.clone());
+                emitted.extend(external_ref.clone());
                 if matches!(&event.contra, daily::Contra::Account(n) if *n == settlement_source) {
                     // The 資金調撥 funding leg is synthetic (no source row of its
                     // own), so only the settlement transaction carries the
@@ -648,17 +655,34 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // two cancel: the far account gets its posting and Cathay's asserted
     // balance is untouched.
     let mut n_unmatched_records = 0;
+    // A transfer between two accounts that each have a statement is one record
+    // in two pools. Emitting it from both would double its far side and repeat
+    // its dedup id, so a record a statement line already took — in any pool —
+    // or one the backfill or an earlier pool already emitted, is left alone.
+    let claimed_ids: BTreeSet<&str> = pools
+        .iter()
+        .flat_map(|(pool, events)| {
+            let taken = claimed.get(*pool);
+            events.iter().enumerate().filter(move |(i, _)| taken.is_some_and(|c| c.contains(i)))
+        })
+        .map(|(_, event)| event.id.as_str())
+        .filter(|id| !id.is_empty())
+        .collect();
     for (&pool, events) in &pools {
         let pool_claimed = claimed.get(pool);
         for (index, event) in events.iter().enumerate() {
             // Only the institution pool has a backfill.
             let backfill_era = pool == institution_app && event.date < anchor;
+            let seen = !event.id.is_empty()
+                && (claimed_ids.contains(event.id.as_str()) || emitted.contains(&event.id));
             if pool_claimed.is_some_and(|c| c.contains(&index))
                 || backfill_era
                 || event.delta.is_zero()
+                || seen
             {
                 continue;
             }
+            emitted.insert(event.id.clone());
             let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
             used_accounts.insert(target.clone());
             let near: &str = if event.delta.is_sign_negative() {
@@ -670,7 +694,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             cathay.push(Directive::Transaction(model::Transaction {
                 date: event.date,
                 payee: "未對應紀錄".to_string(),
-                narration: narration_for(&chart, &event.id, &event.memo).to_string(),
+                narration: narration_for(&chart, event.correction_id(), &event.memo).to_string(),
                 tags,
                 postings: vec![
                     contra_posting(target, event),

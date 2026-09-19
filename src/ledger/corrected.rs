@@ -84,6 +84,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Vec<Entry>> {
                 inn: row.counter_amount.unwrap_or_default(),
                 in_currency: row.counter_currency.unwrap_or(Currency::TWD),
                 memo: row.note,
+                id: row.source_id,
             }),
         }
     }
