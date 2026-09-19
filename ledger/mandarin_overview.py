@@ -40,7 +40,7 @@ class MandarinOverview(FavaExtensionBase):
 
     @extension_endpoint
     def config(self):
-        """What the JS module needs: labels to swap, reports to hide."""
+        """What the JS module needs: labels to swap, reports to hide, card limits."""
         self._load_labels()
         labels = {}
         for account in set(self._derived) | set(self._explicit):
@@ -52,6 +52,7 @@ class MandarinOverview(FavaExtensionBase):
                 "labels": labels,
                 "hide": HIDDEN_REPORTS,
                 "conversion": DEFAULT_CONVERSION,
+                "credit_limits": self._credit_limits,
             }
         )
 
@@ -80,6 +81,7 @@ class MandarinOverview(FavaExtensionBase):
         self._derived = derived
         self._plain = plain
         self._explicit = data.get("display", {})
+        self._credit_limits = data.get("credit_limits", {})
 
     def _label(self, account: str) -> str:
         """The account's Chinese label.
