@@ -214,8 +214,10 @@ struct Columns {
     memo: Option<usize>,
 }
 
-impl Columns {
-    fn from_header(rec: &csv::StringRecord) -> Result<Self> {
+impl TryFrom<&csv::StringRecord> for Columns {
+    type Error = anyhow::Error;
+
+    fn try_from(rec: &csv::StringRecord) -> Result<Self> {
         let find = |name: &str| rec.iter().position(|f| f.trim() == name);
         let need = |name: &str| find(name).with_context(|| format!("no {name} column"));
         Ok(Columns {
@@ -256,7 +258,7 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
             }
             if f0 == "交易日期" {
                 columns = Some(
-                    Columns::from_header(&rec)
+                    Columns::try_from(&rec)
                         .with_context(|| format!("header of {}", file_path.display()))?,
                 );
             } else if account_no.is_empty() && f0.contains(' ') {

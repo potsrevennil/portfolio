@@ -215,6 +215,22 @@ pub struct Negative {
     pub amount: Decimal,
 }
 
+impl fmt::Display for Mismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "MISMATCH {} {} @ {}: expected {}, journal has {}",
+            self.account, self.currency, self.date, self.expected, self.actual
+        )
+    }
+}
+
+impl fmt::Display for Negative {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} = {}", self.account, self.currency, self.amount)
+    }
+}
+
 /// What the freeze produced and whether the journal reconciles.
 #[derive(Debug)]
 pub struct Report {
@@ -262,18 +278,14 @@ impl fmt::Display for Report {
             self.mismatches.len()
         )?;
         for m in &self.mismatches {
-            writeln!(
-                f,
-                "  MISMATCH {} {} @ {}: expected {}, journal has {}",
-                m.account, m.currency, m.date, m.expected, m.actual
-            )?;
+            writeln!(f, "  {m}")?;
         }
         if self.negatives.is_empty() {
             writeln!(f, "no asset account closes negative")?;
         } else {
             writeln!(f, "NEGATIVE asset balances (opening balance missing?):")?;
             for n in &self.negatives {
-                writeln!(f, "  {} {} = {}", n.account, n.currency, n.amount)?;
+                writeln!(f, "  {n}")?;
             }
         }
         if self.manual > 0 {
