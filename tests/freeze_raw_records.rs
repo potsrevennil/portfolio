@@ -1,6 +1,5 @@
-//! Freeze over the records layout: per-year bank exports (one of them a
-//! foreign-currency account) plus `corrected/transactions.csv`. Everything is
-//! invented; inputs are written to a temp dir at runtime.
+//! Freeze over per-year bank exports, a 外幣 account and
+//! `corrected/transactions.csv`. All data invented.
 
 use std::collections::BTreeMap;
 
@@ -41,7 +40,6 @@ roots = ["Assets:Split"]
 "現金"     = "Assets:Cash"
 "阿明"     = "Assets:Split:Ming"
 
-# Not the build's concern, but present in the real config.
 [display]
 "Assets:Cathay:FX" = "外幣"
 "#;
@@ -113,20 +111,15 @@ fn args(root: &std::path::Path, transactions: &str) -> anyhow::Result<freeze::Fr
             daily_income_expense: None,
             daily_transfers: None,
             transactions: Some(write("transactions.csv", transactions)?),
-            // Nothing predates the statements, so every statement must still
-            // open itself.
             backfill: true,
             ledger_dir: root.to_path_buf(),
         },
     })
 }
 
-/// A declared opening the statement contradicts — another amount, or a date
-/// after the statement already starts — fails the freeze instead of one of
-/// the two silently winning.
+/// An opening that contradicts its statement (amount, or a later date) fails.
 #[test]
 fn a_declared_opening_contradicting_its_statement_fails() -> anyhow::Result<()> {
-    // Also what the FX statement opens at, so the statement supersedes it.
     let declared = "2023-01-01,,opening,0.50,USD";
     for contradiction in ["2023-01-01,,opening,0.75,USD", "2024-06-08,,opening,0.50,USD"] {
         let dir = TempDir::new()?;
@@ -171,7 +164,6 @@ fn freeze_reads_yearly_exports_a_foreign_account_and_corrected_records() -> anyh
         .expect("savings opening");
     assert_eq!(savings_opening.amount, dec!(5000), "the 2023 line was not folded in");
 
-    // Foreign lines carry the shared content-based dedup key.
     assert!(
         written
             .postings

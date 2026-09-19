@@ -16,11 +16,8 @@
 ;;        cargo run -- ledger \
 ;;          --cathay-statements <statement.csv>... \
 ;;          --transactions corrected/transactions.csv
-;;      The records are required: without them the app half is silently
-;;      skipped and every statement line falls back to an uncategorised
-;;      contra. They also carry the opening balances (kind = opening), which
-;;      the two native 天天記帳 exports (--daily-income-expense and
-;;      --daily-transfers, still accepted) cannot.
+;;      Without the records every statement line is uncategorised, and
+;;      only they carry the opening balances (kind = opening).
 ;;
 ;;   3. The exchange rates the multi-currency balances are converted at.
 ;;        cargo run -- rates

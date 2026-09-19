@@ -5,8 +5,7 @@ use std::path::PathBuf;
 /// What to import, and where the ledger lives.
 #[derive(clap::Parser, Debug)]
 pub struct Args {
-    /// Cathay bank statement exports. Files of one account and currency (the
-    /// per-year exports) are joined into one statement.
+    /// Cathay bank statement exports, joined per account and currency
     #[arg(long, num_args = 1..)]
     pub cathay_statements: Vec<PathBuf>,
 
@@ -18,8 +17,7 @@ pub struct Args {
     #[arg(long, conflicts_with = "transactions")]
     pub daily_transfers: Option<PathBuf>,
 
-    /// The corrected records (`corrected/transactions.csv`), in place of the
-    /// two 天天記帳 exports
+    /// corrected/transactions.csv, in place of the two 天天記帳 exports
     #[arg(long)]
     pub transactions: Option<PathBuf>,
 

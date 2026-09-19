@@ -41,8 +41,6 @@ expense = "Expenses:Uncategorized"
 "券商" = "Assets:Securities:ETF"
 "#;
 
-/// The corrected records, with the cash already held before they begin as an
-/// opening row.
 const TRANSACTIONS: &str = "\
 id,status,date,posted_date,kind,amount,currency,account,counter_account,counter_amount,\
                             counter_currency,category,major_category,member,tags,note,\

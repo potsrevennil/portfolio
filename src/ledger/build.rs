@@ -30,8 +30,8 @@ use crate::currency::Currency;
 /// backfill, all reach the same account by different code paths above, and this
 /// sums none of that, only the raw records. Asserting these values therefore
 /// makes `bean-check` prove the emitted ledger matches the app, rather than
-/// restating what the importer just wrote. The statement-driven app accounts
-/// are excluded: those are asserted against the bank statement.
+/// restating what the importer just wrote. Statement-driven app accounts are
+/// asserted against their statements instead.
 fn app_balances(
     entries: &[daily::Entry],
     chart: &accounts::Chart,
@@ -77,9 +77,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let settlement_source = chart.institution.settlement_app_account.clone();
     let institution_app: &str = &chart.institution.app_account;
 
-    // The records are read once, here: the corrected aggregate, or the two
-    // native 天天記帳 exports.
-    // Only the corrected aggregate carries opening balances.
+    // Only the corrected records carry opening balances.
     let corrected::Records { entries, openings: opening_rows } = match (
         opts.transactions.as_deref(),
         opts.daily_income_expense.as_deref(),
@@ -91,8 +89,6 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         }
         _ => corrected::Records::default(),
     };
-    // Each opening on its ledger account, one per account and currency,
-    // ordered by account so the output is stable.
     let mut declared: Vec<(String, &corrected::Opening)> = opening_rows
         .iter()
         .map(|o| -> Result<(String, &corrected::Opening)> {
@@ -109,11 +105,10 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         anyhow::bail!("{} {} has more than one opening row", pair[0].0, pair[0].1.currency);
     }
 
-    // One statement per account and currency, however many exports it spans.
     let mut merged = statements::cathay::load_merged(&opts.cathay_statements)?;
 
-    // Lines booked before the records begin have nothing to be matched
-    // against, so the balance they leave becomes the statement's opening.
+    // Lines before the records begin have nothing to match; fold them into
+    // the opening balance.
     let records_start = entries.first().map(daily::Entry::date);
     let mut n_folded = 0usize;
     if let Some(start) = records_start {
@@ -140,10 +135,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let (statements, statement_paths): (Vec<statements::cathay::BankStatement>, Vec<_>) =
         merged.into_iter().map(|m| (m.statement, m.paths)).unzip();
 
-    // The app account each statement's lines are matched against. 天天記帳
-    // lumps the TWD Cathay accounts into one institution account, so those
-    // share a pool; an account the app keeps separately (the foreign-currency
-    // one) is matched against its own records only.
+    // 天天記帳 lumps the TWD Cathay accounts into one app account, so they share
+    // a pool of records; an account the app keeps separately (外幣) gets its own.
     let pool_of: Vec<String> = statements
         .iter()
         .map(|s| -> Result<String> {
@@ -156,8 +149,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let no_events: Vec<daily::AppEvent> = Vec::new();
     let app_events: &[daily::AppEvent] = pools.get(institution_app).unwrap_or(&no_events);
 
-    // Flatten to (statement index, line index) so lines from every account can
-    // be matched against their pool of app records.
+    // (statement index, line index) over every statement.
     let mut flat: Vec<(usize, usize)> = Vec::new();
     for (si, s) in statements.iter().enumerate() {
         for li in 0..s.lines.len() {
@@ -205,11 +197,9 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         }
     }
 
-    // A currency conversion between two accounts: same day, opposite
-    // directions, each naming the other. The TWD side names the foreign account
-    // only in 備註, so both fields count here. The app records the conversion
-    // as one transfer between the two pools; it is reserved so neither pool
-    // spends it on another line.
+    // Currency conversions: same day, opposite directions, each naming the
+    // other (the TWD side only in 備註). The app's transfer record is reserved
+    // on both sides so the matcher can't spend it on another line.
     let names = |line: &statements::cathay::StatementLine,
                  s: &statements::cathay::BankStatement| {
         statements::cathay::info_names_account(&line.info, &s.account_no)
@@ -291,8 +281,6 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let in_reversal: HashSet<(usize, usize)> =
         reversed_by.iter().flat_map(|(debit, reversal)| [*debit, *reversal]).collect();
 
-    // Each pool is matched per currency, against its records in that currency
-    // not already reserved by a conversion.
     let mut assignment: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
     for (&pool, events) in &pools {
         let currencies: BTreeSet<Currency> = (0..statements.len())
@@ -333,9 +321,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             }
         }
     }
-    // Records already accounted for, per pool: spent by the matcher on a
-    // statement line, or reserved by a conversion. Both the backfill and the
-    // unmatched-record pass below need to exclude these.
+    // Records already used, per pool; the backfill and unmatched pass skip them.
     let mut claimed: HashMap<&str, HashSet<usize>> = reserved;
     for (&(si, _), subset) in &assignment {
         claimed.entry(pool_of[si].as_str()).or_default().extend(subset.iter().copied());
@@ -354,8 +340,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let mut n_in_transit = 0usize;
     let mut n_reversed = 0usize;
     let mut n_backfill = 0usize;
-    // Accounts whose opening the backfill derives; every other statement
-    // opens at its own first balance.
+    // Accounts whose opening the backfill derives; other statements open
+    // themselves.
     let mut derived_openings: BTreeSet<&str> = BTreeSet::new();
 
     // --- history from before the statements begin ---
@@ -636,8 +622,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     for (&pool, events) in &pools {
         let pool_claimed = claimed.get(pool);
         for (index, event) in events.iter().enumerate() {
-            // Only the institution's records before the anchor are the
-            // backfill's; a separate pool has no backfill.
+            // Only the institution pool has a backfill.
             let backfill_era = pool == institution_app && event.date < anchor;
             if pool_claimed.is_some_and(|c| c.contains(&index))
                 || backfill_era
@@ -749,9 +734,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let mut openings: Vec<Directive> = Vec::new();
     let mut superseded_openings: BTreeSet<String> = BTreeSet::new();
     for (account, ob) in &declared {
-        // A statement for the account and currency already opens it at the
-        // bank's own figure; declaring it again would count it twice. The two
-        // must agree, or one of them is wrong and neither may silently win.
+        // A statement already opens this account; the two must agree, else
+        // neither may silently win.
         let covering = statements
             .iter()
             .zip(&bank_accounts)

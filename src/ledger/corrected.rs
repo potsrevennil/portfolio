@@ -1,14 +1,7 @@
-//! Parser for `corrected/transactions.csv`: every non-investment money
-//! movement, 天天記帳's records with corrections applied, one row per record.
-//!
-//! Yields the same [`daily::Entry`] records as the two native exports, so the
-//! rest of the build cannot tell the sources apart. Only `status = active` rows
-//! count; `removed` rows exist to retire old change-logs. `posted_date` (a
-//! card line's 入帳日) is accepted and ignored here.
-//!
-//! A `kind = opening` row is a position an account already held before its
-//! records begin (the app has no such concept). `account` is the app label, as
-//! on every row, and `amount` is signed: negative for a debt owed at the start.
+//! Parser for `corrected/transactions.csv`, yielding the same
+//! [`daily::Entry`] records as the native 天天記帳 exports. Only
+//! `status = active` rows count; `posted_date` is ignored. A `kind = opening`
+//! row has a signed amount (negative for a debt).
 
 use std::path::Path;
 
@@ -19,7 +12,6 @@ use rust_decimal::Decimal;
 use super::daily::Entry;
 use crate::currency::Currency;
 
-/// Positions of the columns the build reads, found by header name.
 struct Columns {
     status: usize,
     date: usize,
@@ -64,14 +56,12 @@ impl Columns {
 #[derive(Debug)]
 pub struct Opening {
     pub date: NaiveDate,
-    /// The app label, mapped through `[accounts]` like any other row.
     pub account: String,
     pub amount: Decimal,
     pub currency: Currency,
 }
 
-/// The active rows: movements, and the openings kept apart from them so they
-/// don't move the date the records begin.
+/// Openings are kept apart so they don't move the date the records begin.
 #[derive(Debug, Default)]
 pub struct Records {
     pub entries: Vec<Entry>,
@@ -95,8 +85,8 @@ fn currency(s: &str) -> Result<Currency> {
     }
 }
 
-/// Every active record, entries oldest first. Within a day, income and expense
-/// come before transfers, as with the native exports.
+/// Entries oldest first; within a day, income and expense before transfers, as
+/// in the native exports.
 pub fn load(path: impl AsRef<Path>) -> Result<Records> {
     let path = path.as_ref();
     let mut rdr = csv::ReaderBuilder::new()
@@ -133,7 +123,6 @@ pub fn load(path: impl AsRef<Path>) -> Result<Records> {
                 currency: entry_currency,
                 category: get(cols.category).to_string(),
                 memo,
-                // The app's UUID, which [overrides] and [[trips]] key on.
                 id: get(cols.source_id).to_string(),
             }),
             "transfer" => transfers.push(Entry::Transfer {

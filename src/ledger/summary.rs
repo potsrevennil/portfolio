@@ -8,16 +8,12 @@ use chrono::NaiveDate;
 pub struct Summary {
     /// The file `build` wrote; `None` when the model was only assembled.
     pub output: Option<PathBuf>,
-    /// Date of the earliest record, when records were given.
     pub records_start: Option<NaiveDate>,
-    /// Statement lines booked before `records_start`, folded into the
-    /// statement's opening balance.
+    /// Statement lines before `records_start`, folded into openings.
     pub folded: usize,
-    /// Currency conversions paired across two statements (a subset of the
-    /// internal transfers).
+    /// Conversions among the internal transfers.
     pub converted: usize,
-    /// Opening rows (as "account currency") left out because
-    /// a statement opens that account and currency itself.
+    /// Opening rows a statement already covers, as "account currency".
     pub superseded_openings: BTreeSet<String>,
     /// First date covered by a statement; everything earlier is backfill.
     pub anchor: NaiveDate,

@@ -110,8 +110,8 @@ impl BankStatement {
         pairs
     }
 
-    /// Drops the lines booked before `date`; the balance they left becomes the
-    /// opening balance. Returns how many were dropped.
+    /// Drops lines before `date` (their balance becomes the opening); returns
+    /// how many.
     pub fn trim_before(&mut self, date: NaiveDate) -> usize {
         let keep = self.lines.partition_point(|l| l.book_date < date);
         self.lines.drain(..keep).count()
@@ -134,8 +134,7 @@ impl BankStatement {
 
 /// `−` (U+2212) is the export's placeholder for an absent value. A real
 /// negative uses an ASCII hyphen, so only the bare placeholder maps to zero.
-/// A foreign-currency account prefixes each amount with its code (`USD 12.50`),
-/// which must be the statement's own currency.
+/// 外幣 amounts carry a currency prefix (`USD 12.50`).
 fn parse_amount(s: &str, currency: Currency) -> Result<Decimal> {
     let t = s.trim();
     let t = match t.split_once(' ') {
@@ -204,8 +203,7 @@ pub fn info_names_account(info: &str, account_no: &str) -> bool {
     false
 }
 
-/// Where each field sits in a data row. Looked up by header name: the 外幣
-/// export drops 說明 and 備註 and adds 成交匯率, shifting every later column.
+/// Columns by header name: the 外幣 export has a different layout.
 struct Columns {
     book_date: usize,
     description: Option<usize>,
@@ -305,19 +303,14 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
     Ok(BankStatement { account_no, account_kind, currency, period_end, lines })
 }
 
-/// A statement merged from consecutive exports, with the files it came from.
 pub struct Merged {
     pub statement: BankStatement,
     pub paths: Vec<PathBuf>,
 }
 
-/// Loads every export and joins those of one account and currency into a
-/// single statement, oldest first — the bank exports at most a year per file,
-/// and a multi-currency account one file per currency.
-///
-/// Joined files must follow on: no overlapping days, and each file's opening
-/// balance equal to the previous file's closing one. A missing download would
-/// otherwise hide inside the merged statement as an unexplained jump.
+/// Joins the exports of each account and currency into one statement. They
+/// must follow on (no overlap, no balance gap), or a missing download would
+/// hide as an unexplained jump.
 pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
     let mut groups: BTreeMap<(String, Currency), Vec<(BankStatement, PathBuf)>> = BTreeMap::new();
     for path in paths {
@@ -469,8 +462,6 @@ mod tests {
         path
     }
 
-    /// The 外幣 layout: no 說明 or 備註, an extra 成交匯率, and every amount
-    /// prefixed with the currency. Newest first, as exported.
     const FOREIGN: &str = "\
 \"123456789012 活存外幣\"
 \"幣別：USD\"
@@ -514,8 +505,6 @@ mod tests {
         )
     }
 
-    /// Per-year exports of one account join into one statement, whatever
-    /// order they are given in; the other currency stays separate.
     #[test]
     fn yearly_exports_merge_per_account_and_currency() {
         let dir = tempfile::TempDir::new().expect("temp dir");
@@ -533,8 +522,6 @@ mod tests {
         assert_eq!(twd.statement.closing_balance(), dec!(150));
     }
 
-    /// A year whose opening does not follow on from the previous closing means
-    /// an export is missing, and the error names both sides of the gap.
     #[test]
     fn a_missing_export_is_a_gap_not_a_silent_jump() {
         let dir = tempfile::TempDir::new().expect("temp dir");

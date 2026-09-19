@@ -235,9 +235,8 @@ fn renamed_to_split_accounts<'de, D: serde::Deserializer<'de>>(
     Err(serde::de::Error::custom("[counterparty] was renamed to [split_accounts]"))
 }
 
-/// Rejects `[opening_balances]`: amounts are records, so openings live in
-/// `corrected/transactions.csv` as `kind = opening` rows. Ignoring a leftover
-/// section would silently drop every opening.
+/// Rejects `[opening_balances]`, which would otherwise be silently ignored and
+/// drop every opening.
 fn moved_to_records<'de, D: serde::Deserializer<'de>>(_: D) -> std::result::Result<(), D::Error> {
     Err(serde::de::Error::custom(
         "[opening_balances] moved to corrected/transactions.csv as kind = opening rows",
@@ -311,8 +310,6 @@ pub struct Chart {
     /// `renamed_to_split_accounts`.
     #[serde(default, rename = "counterparty", deserialize_with = "renamed_to_split_accounts")]
     _counterparty: (),
-    /// Opening balances are records now, refused here. See
-    /// `moved_to_records`.
     #[serde(default, rename = "opening_balances", deserialize_with = "moved_to_records")]
     _opening_balances: (),
 }
@@ -365,8 +362,7 @@ impl Chart {
 
     pub fn account(&self, name: &str) -> Option<&Mapping> { Self::get(&self.accounts, name) }
 
-    /// The app account mapped to exactly this ledger account, if any — how a
-    /// statement account the app keeps separately finds its own records.
+    /// The app account mapped to exactly this ledger account, if any.
     pub fn app_account_for(&self, account: &str) -> Result<Option<&str>> {
         let names: Vec<&str> = self
             .accounts
@@ -498,8 +494,6 @@ mod split_account_tests {
         );
     }
 
-    /// Openings are records now; a leftover section is an error, not a
-    /// silently dropped table.
     #[test]
     fn rejects_opening_balances_in_the_config() {
         let err = toml::from_str::<Chart>(

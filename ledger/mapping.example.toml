@@ -23,8 +23,7 @@ settlement             = "Assets:Bank:Investment"        # where securities sett
 settlement_app_account = "證券"                            # app account that means settlement
 clearing               = "Assets:Bank:Transfer-Clearing" # internal transfers still in flight
 
-# Statement account number → ledger account. An account's yearly exports (and,
-# for a foreign-currency account, its per-currency ones) join into one statement.
+# Statement account number → ledger account.
 [institution.accounts]
 "123456789012" = "Assets:Bank:Savings"
 "210987654321" = "Assets:Bank:Investment"
@@ -43,9 +42,7 @@ expense = "Expenses:Uncategorized"
 "跨行費用" = "Expenses:Fees:Bank"
 "手續費"  = "Expenses:Fees:Bank"
 
-# Opening balances (positions held before the records begin) are records, not
-# config: `kind = opening` rows in corrected/transactions.csv, naming the app
-# account and a signed amount. An [opening_balances] section here is an error.
+# Opening balances are `kind = opening` rows in corrected/transactions.csv.
 
 # Spending categories, as the app names them. Several may share one account;
 # the 中文總覽 page shows the first and lists the rest as a tooltip.
@@ -67,8 +64,7 @@ expense = "Expenses:Uncategorized"
 [accounts]
 "現金" = "Assets:Cash"
 "銀行" = "Assets:Bank"
-# An app account mapped to exactly a statement account's ledger account is
-# matched against that statement alone, not pooled under app_account.
+# Mapped to exactly a statement's account: matched against that statement only.
 "外幣"  = "Assets:Bank:FX"
 "信用卡" = { account = "Liabilities:Card", tags = ["card"] }
 "應收款" = "Assets:Split:Others"
