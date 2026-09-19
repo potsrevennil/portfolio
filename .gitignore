@@ -12,11 +12,12 @@ securities.toml
 *.xls
 # PDF e-statements (credit cards, banks) are financial data too.
 *.pdf
-sqlite.db
+# The build's database and its -wal/-shm side files.
+sqlite.db*
 
 # The baked SQLite ledger — the app's source of truth, so real financial data.
 # The bake writes it here by default; keep it out of git like every other input.
-ledger-app.db
+ledger-app.db*
 
 # Imported transaction history — same financial data the *.csv rule keeps out.
 ledger/generated/
