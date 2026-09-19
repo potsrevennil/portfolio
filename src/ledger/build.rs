@@ -365,6 +365,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         }));
         cathay.push(Directive::Blank);
 
+        let refs = statement.dedup_refs();
         for (li, line) in statement.lines.iter().enumerate() {
             // The receiving half of a paired transfer is emitted by its partner.
             if paired.contains(&(si, li)) && !partner.contains_key(&(si, li)) {
@@ -441,13 +442,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 tags,
                 postings,
                 source: model::Source::Import,
-                // A stable per-line id: the account number is unique per
-                // statement and the line index unique within it, so no two lines
-                // collide, and the running balance keeps it legible.
-                external_ref: Some(format!(
-                    "{}:{}:{}:{}",
-                    statement.account_no, li, line.book_date, line.balance
-                )),
+                external_ref: Some(refs[li].clone()),
             }));
             cathay.push(Directive::Blank);
         }

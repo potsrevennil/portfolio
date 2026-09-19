@@ -21,31 +21,34 @@ const MAX_SUBSET: usize = 4;
 
 fn search(
     pool: &[usize],
-    events: &[AppEvent],
+    events: &[(NaiveDate, Decimal)],
     remaining: Decimal,
     size: usize,
     start: usize,
     chosen: &mut Vec<usize>,
 ) -> Option<Vec<usize>> {
     if size == 0 {
-        return remaining.is_zero().then(|| chosen.clone());
-    }
-    for i in start..pool.len() {
-        chosen.push(pool[i]);
-        let found =
-            search(pool, events, remaining - events[pool[i]].delta, size - 1, i + 1, chosen);
-        chosen.pop();
-        if found.is_some() {
-            return found;
+        remaining.is_zero().then(|| chosen.clone())
+    } else {
+        let mut found = None;
+        for i in start..pool.len() {
+            chosen.push(pool[i]);
+            found = search(pool, events, remaining - events[pool[i]].1, size - 1, i + 1, chosen);
+            chosen.pop();
+            if found.is_some() {
+                break;
+            }
         }
+        found
     }
-    None
 }
 
-/// For each line, the app records that account for it. `None` means the line
-/// has no counterpart in 天天記帳 and must fall back to an uncategorised
-/// posting.
-pub fn match_lines(lines: &[(NaiveDate, Decimal)], events: &[AppEvent]) -> Vec<Option<Vec<usize>>> {
+/// For each line, the indices of `events` summing to it; `None` if unmatched.
+/// Shared by the bake and the matcher's statement-line mode.
+pub fn match_subsets(
+    lines: &[(NaiveDate, Decimal)],
+    events: &[(NaiveDate, Decimal)],
+) -> Vec<Option<Vec<usize>>> {
     let mut assigned: Vec<Option<Vec<usize>>> = vec![None; lines.len()];
     let mut used = vec![false; events.len()];
 
@@ -58,15 +61,15 @@ pub fn match_lines(lines: &[(NaiveDate, Decimal)], events: &[AppEvent]) -> Vec<O
             let mut pool: Vec<usize> = events
                 .iter()
                 .enumerate()
-                .filter(|(ei, e)| {
+                .filter(|(ei, (edate, edelta))| {
                     !used[*ei]
-                        && !e.delta.is_zero()
-                        && e.delta.is_sign_negative() == delta.is_sign_negative()
-                        && (e.date - *date).num_days().abs() <= tol
+                        && !edelta.is_zero()
+                        && edelta.is_sign_negative() == delta.is_sign_negative()
+                        && (*edate - *date).num_days().abs() <= tol
                 })
                 .map(|(ei, _)| ei)
                 .collect();
-            pool.sort_by_key(|ei| (events[*ei].date - *date).num_days().abs());
+            pool.sort_by_key(|ei| (events[*ei].0 - *date).num_days().abs());
             pool.truncate(POOL_CAP);
 
             let mut chosen = Vec::new();
@@ -88,4 +91,12 @@ pub fn match_lines(lines: &[(NaiveDate, Decimal)], events: &[AppEvent]) -> Vec<O
     }
 
     assigned
+}
+
+/// For each line, the app records that account for it. `None` means the line
+/// has no counterpart in 天天記帳 and must fall back to an uncategorised
+/// posting.
+pub fn match_lines(lines: &[(NaiveDate, Decimal)], events: &[AppEvent]) -> Vec<Option<Vec<usize>>> {
+    let projected: Vec<(NaiveDate, Decimal)> = events.iter().map(|e| (e.date, e.delta)).collect();
+    match_subsets(lines, &projected)
 }

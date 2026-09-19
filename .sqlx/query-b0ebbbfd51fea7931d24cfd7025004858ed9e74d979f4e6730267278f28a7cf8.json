@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO transactions (date, payee, narration, source, external_ref)\n            VALUES (?, ?, ?, ?, ?)\n            ON CONFLICT (source, external_ref) WHERE external_ref IS NOT NULL DO NOTHING\n            RETURNING id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b0ebbbfd51fea7931d24cfd7025004858ed9e74d979f4e6730267278f28a7cf8"
+}
