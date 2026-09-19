@@ -89,7 +89,7 @@ pub async fn run(args: &Args) -> Result<Report> {
     let pool = db::init_db(&args.database_url).await?;
     guard_empty(&pool).await?;
 
-    // Replaces the old (account, currency) primary key; checked up front for a
+    // At most one opening per (account, currency); checked up front for a
     // clearer error than the dedup index would give.
     let mut opened: BTreeSet<(&str, Currency)> = BTreeSet::new();
     for o in &journal.openings {
