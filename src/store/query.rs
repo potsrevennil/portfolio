@@ -456,7 +456,7 @@ pub async fn periodic_report(
 /// Loads the FX pairs needed to quote every ledger currency in `base` from the
 /// shared `stock_prices` table, up to `end`. Both directions of each pair are
 /// fetched so an inverse rate can stand in when only one side was recorded.
-async fn load_fx_prices(
+pub async fn load_fx_prices(
     pool: &SqlitePool,
     currencies: &BTreeSet<Currency>,
     base: Currency,
@@ -602,6 +602,17 @@ fn rate_as_of(
              `portfolio rates`"
         ),
     }
+}
+
+/// [`rate_as_of`] as an option: a page that shows several currencies names the
+/// unpriced ones instead of failing whole.
+pub fn rate(
+    from: Currency,
+    to: Currency,
+    as_of: NaiveDate,
+    prices: &PriceTable,
+) -> Option<Decimal> {
+    rate_as_of(from, to, as_of, prices).ok()
 }
 
 /// The recorded rate for one ticker as of a date: the last quote dated on or

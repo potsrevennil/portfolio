@@ -43,6 +43,13 @@
                 sqlx-cli
                 sqlite
 
+                # Web UI build (web/): cargo-leptos drives the server and wasm
+                # builds; its bundled wasm-bindgen must match the crate's,
+                # which web/Cargo.toml pins. binaryen's wasm-opt shrinks the
+                # release wasm.
+                cargo-leptos
+                binaryen
+
                 beancount
                 hledger
                 fava
