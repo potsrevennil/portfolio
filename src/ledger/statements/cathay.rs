@@ -7,7 +7,7 @@
 //! One row per cash movement, with a running 餘額 column. That running balance
 //! is what lets the ledger assert a figure the transactions must agree with.
 
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
@@ -30,13 +30,6 @@ impl StatementLine {
     /// Signed effect on the account. `withdrawal` can be negative on 錯誤更正
     /// (error-correction) rows, which reverse an earlier debit.
     pub fn delta(&self) -> Decimal { self.deposit - self.withdrawal }
-
-    /// Dedup key shared by the freeze bake and importers. Not the line index:
-    /// statements get re-split per year, which shifts indices. The running
-    /// balance keeps same-day, same-amount lines distinct.
-    pub fn dedup_ref(&self, account_no: &str) -> String {
-        format!("{}:{}:{}:{}", account_no, self.book_date, self.delta(), self.balance)
-    }
 }
 
 #[derive(Debug)]
@@ -58,6 +51,30 @@ impl BankStatement {
 
     pub fn closing_balance(&self) -> Decimal {
         self.lines.last().map(|l| l.balance).unwrap_or_default()
+    }
+
+    /// Dedup key per line, shared by the freeze bake and importers.
+    ///
+    /// Not the line index: statements get re-split per year, which shifts
+    /// indices. Same-day out-and-back sequences (−X, +X, −X) repeat the running
+    /// balance, so repeats of an identical key get `:2`, `:3`. That suffix is
+    /// stable because a whole day always lands in one file, in order.
+    pub fn dedup_refs(&self) -> Vec<String> {
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        self.lines
+            .iter()
+            .map(|l| {
+                let base =
+                    format!("{}:{}:{}:{}", self.account_no, l.book_date, l.delta(), l.balance);
+                let n = seen.entry(base.clone()).or_default();
+                *n += 1;
+                if *n == 1 {
+                    base
+                } else {
+                    format!("{base}:{n}")
+                }
+            })
+            .collect()
     }
 
     /// Debits the bank itself undid, as `(debit, reversal)` line indices.
@@ -287,19 +304,48 @@ mod tests {
         assert!(s.reversals().is_empty());
     }
 
-    #[test]
-    fn dedup_ref_is_content_based() {
-        let mut l = line(29, "電子轉出", dec!(500), "(822)0000000000000001");
-        l.balance = dec!(1000);
-        assert_eq!(l.dedup_ref("123456789012"), "123456789012:2026-06-29:-500:1000");
+    fn with_balance(mut l: StatementLine, balance: Decimal) -> StatementLine {
+        l.balance = balance;
+        l
     }
 
     #[test]
-    fn dedup_ref_distinguishes_repeated_amounts_by_balance() {
-        let mut first = line(29, "電子轉出", dec!(500), "(822)0000000000000001");
-        first.balance = dec!(1500);
-        let mut second = line(29, "電子轉出", dec!(500), "(807)0000000000000002");
-        second.balance = dec!(1000);
-        assert_ne!(first.dedup_ref("123456789012"), second.dedup_ref("123456789012"));
+    fn dedup_refs_are_content_based() {
+        let s = statement(vec![with_balance(line(29, "電子轉出", dec!(500), ""), dec!(1000))]);
+        assert_eq!(s.dedup_refs(), vec!["123456789012:2026-06-29:-500:1000"]);
+    }
+
+    /// Out, back, out again on one day: the first and third lines match on
+    /// date, amount and running balance, so only the suffix tells them
+    /// apart.
+    #[test]
+    fn dedup_refs_disambiguate_out_and_back() {
+        let s = statement(vec![
+            with_balance(line(29, "網銀轉帳", dec!(500), ""), dec!(500)),
+            with_balance(line(29, "網銀轉帳", dec!(-500), ""), dec!(1000)),
+            with_balance(line(29, "自行提款", dec!(500), ""), dec!(500)),
+        ]);
+        assert_eq!(s.dedup_refs(), vec![
+            "123456789012:2026-06-29:-500:500",
+            "123456789012:2026-06-29:500:1000",
+            "123456789012:2026-06-29:-500:500:2",
+        ]);
+    }
+
+    /// Other days in the file don't shift a day's keys, so re-splitting the
+    /// statements by year leaves them unchanged.
+    #[test]
+    fn dedup_refs_ignore_other_days() {
+        let day = || {
+            vec![
+                with_balance(line(29, "網銀轉帳", dec!(500), ""), dec!(500)),
+                with_balance(line(29, "自行提款", dec!(500), ""), dec!(500)),
+            ]
+        };
+        let alone = statement(day()).dedup_refs();
+        let mut lines = vec![with_balance(line(28, "網銀轉帳", dec!(500), ""), dec!(500))];
+        lines.extend(day());
+        let with_earlier_day = statement(lines).dedup_refs();
+        assert_eq!(with_earlier_day[1..], alone[..]);
     }
 }

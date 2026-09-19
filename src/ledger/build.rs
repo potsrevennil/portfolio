@@ -365,6 +365,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         }));
         cathay.push(Directive::Blank);
 
+        let refs = statement.dedup_refs();
         for (li, line) in statement.lines.iter().enumerate() {
             // The receiving half of a paired transfer is emitted by its partner.
             if paired.contains(&(si, li)) && !partner.contains_key(&(si, li)) {
@@ -441,7 +442,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 tags,
                 postings,
                 source: model::Source::Import,
-                external_ref: Some(line.dedup_ref(&statement.account_no)),
+                external_ref: Some(refs[li].clone()),
             }));
             cathay.push(Directive::Blank);
         }

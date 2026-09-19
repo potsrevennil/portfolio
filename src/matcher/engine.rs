@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
@@ -62,32 +64,35 @@ impl Pool {
         self.candidates.iter().position(|c| c.ref_id == ref_id)
     }
 
-    /// Validates every leg before mutating, so a rejected proposal leaves the
-    /// pool untouched.
+    /// Validates the whole proposal before mutating, so a rejected one leaves
+    /// the pool untouched. Legs on the same candidate are totalled first, or
+    /// two draws that each fit could together overdraw it.
     fn commit(&mut self, consumed: &[Consumption]) -> Result<(), CommitError> {
+        let mut totals: BTreeMap<i64, Decimal> = BTreeMap::new();
         for c in consumed {
-            match self.index_of(c.source) {
-                None => return Err(CommitError::UnknownSource(c.source)),
+            *totals.entry(c.source).or_default() += c.amount;
+        }
+
+        let mut draws = Vec::with_capacity(totals.len());
+        for (&source, &want) in &totals {
+            match self.index_of(source) {
+                None => return Err(CommitError::UnknownSource(source)),
                 Some(i) => {
                     let left = self.remaining[i];
-                    let overdrawn = if left.is_sign_negative() {
-                        c.amount < left || c.amount.is_sign_positive()
-                    } else {
-                        c.amount > left || c.amount.is_sign_negative()
-                    };
-                    if overdrawn {
-                        return Err(CommitError::Overdrawn {
-                            source: c.source,
-                            left,
-                            want: c.amount,
-                        });
+                    let wrong_sign = consumed.iter().any(|c| {
+                        c.source == source && c.amount.is_sign_negative() != left.is_sign_negative()
+                    });
+                    let overdrawn = if left.is_sign_negative() { want < left } else { want > left };
+                    if wrong_sign || overdrawn {
+                        return Err(CommitError::Overdrawn { source, left, want });
                     }
+                    draws.push((i, want));
                 }
             }
         }
-        for c in consumed {
-            let i = self.index_of(c.source).expect("validated above");
-            self.remaining[i] -= c.amount;
+
+        for (i, want) in draws {
+            self.remaining[i] -= want;
         }
         Ok(())
     }
@@ -202,6 +207,21 @@ mod tests {
             pool.commit(&[Consumption { source: 1, amount: dec!(-60) }]),
             Err(CommitError::Overdrawn { source: 1, left: dec!(-40), want: dec!(-60) })
         );
+    }
+
+    #[test]
+    fn pool_totals_legs_on_the_same_candidate() {
+        let mut pool = Pool::new(vec![rec(1, "2026-01-01", dec!(-100))]);
+        let two_legs = [Consumption { source: 1, amount: dec!(-60) }, Consumption {
+            source: 1,
+            amount: dec!(-60),
+        }];
+        assert_eq!(
+            pool.commit(&two_legs),
+            Err(CommitError::Overdrawn { source: 1, left: dec!(-100), want: dec!(-120) })
+        );
+        // Rejected without mutating: the full amount is still available.
+        assert_eq!(pool.commit(&[Consumption { source: 1, amount: dec!(-100) }]), Ok(()));
     }
 
     #[test]

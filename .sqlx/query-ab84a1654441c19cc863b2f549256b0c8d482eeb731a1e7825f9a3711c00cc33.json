@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id FROM transactions WHERE source = ? AND external_ref = ?",
+  "query": "SELECT id AS \"id!\" FROM transactions WHERE source = ? AND external_ref = ?",
   "describe": {
     "columns": [
       {
-        "name": "id",
+        "name": "id!",
         "ordinal": 0,
         "type_info": "Integer"
       }
@@ -16,5 +16,5 @@
       true
     ]
   },
-  "hash": "bd65f051cf97d90adf68e13cb381ad0a6a0128ac5ec377060bb865ff6c19121f"
+  "hash": "ab84a1654441c19cc863b2f549256b0c8d482eeb731a1e7825f9a3711c00cc33"
 }

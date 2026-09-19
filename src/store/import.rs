@@ -2,8 +2,8 @@
 //!
 //! `source` is the coarse class (`import`/`manual`/`tiantian`), so all
 //! importers share one scope: `external_ref` must be unique across importers.
-//! For Cathay lines, build it with `StatementLine::dedup_ref` — the same helper
-//! the freeze bake uses — or frozen and re-imported lines won't collide.
+//! For Cathay lines, build it with `BankStatement::dedup_refs` — the same
+//! helper the freeze bake uses — or frozen and re-imported lines won't collide.
 
 use std::collections::BTreeMap;
 
@@ -64,6 +64,10 @@ impl ImportStore {
 
     /// Inserts atomically unless `(source, external_ref)` already exists.
     /// Rejects postings that don't balance per currency before writing.
+    ///
+    /// The conflict is resolved by the insert itself, not a prior lookup, so
+    /// two overlapping imports of one statement still yield `Duplicate` rather
+    /// than a unique-index error.
     pub async fn insert_deduped(
         &self,
         txn: &NewTransaction,
@@ -71,16 +75,13 @@ impl ImportStore {
     ) -> Result<InsertOutcome> {
         validate_balanced(postings)?;
 
-        if let Some(existing) = self.find_existing(&txn.source, txn.external_ref.as_deref()).await?
-        {
-            return Ok(InsertOutcome::Duplicate(existing));
-        }
-
         let mut db = self.pool.begin().await?;
-        let txn_id = sqlx::query!(
+        let inserted = sqlx::query_scalar!(
             r#"
             INSERT INTO transactions (date, payee, narration, source, external_ref)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (source, external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+            RETURNING id
             "#,
             txn.date,
             txn.payee,
@@ -88,44 +89,39 @@ impl ImportStore {
             txn.source,
             txn.external_ref,
         )
-        .execute(&mut *db)
-        .await?
-        .last_insert_rowid();
+        .fetch_optional(&mut *db)
+        .await?;
 
-        for p in postings {
-            let amount = p.amount.to_string();
-            sqlx::query!(
-                r#"
-                INSERT INTO postings (transaction_id, account_id, amount, currency, tags)
-                VALUES (?, ?, ?, ?, ?)
-                "#,
-                txn_id,
-                p.account_id,
-                amount,
-                p.currency,
-                p.tags,
-            )
-            .execute(&mut *db)
-            .await?;
-        }
-
-        db.commit().await?;
-        Ok(InsertOutcome::Inserted(txn_id))
-    }
-
-    async fn find_existing(&self, source: &str, external_ref: Option<&str>) -> Result<Option<i64>> {
-        match external_ref {
-            None => Ok(None),
-            Some(reference) => {
-                let row = sqlx::query!(
-                    "SELECT id FROM transactions WHERE source = ? AND external_ref = ?",
-                    source,
-                    reference,
+        match inserted {
+            Some(txn_id) => {
+                for p in postings {
+                    let amount = p.amount.to_string();
+                    sqlx::query!(
+                        r#"
+                        INSERT INTO postings (transaction_id, account_id, amount, currency, tags)
+                        VALUES (?, ?, ?, ?, ?)
+                        "#,
+                        txn_id,
+                        p.account_id,
+                        amount,
+                        p.currency,
+                        p.tags,
+                    )
+                    .execute(&mut *db)
+                    .await?;
+                }
+                db.commit().await?;
+                Ok(InsertOutcome::Inserted(txn_id))
+            }
+            None => {
+                let existing = sqlx::query_scalar!(
+                    r#"SELECT id AS "id!" FROM transactions WHERE source = ? AND external_ref = ?"#,
+                    txn.source,
+                    txn.external_ref,
                 )
-                .fetch_optional(&self.pool)
+                .fetch_one(&mut *db)
                 .await?;
-                // sqlx types the PK projection as nullable.
-                Ok(row.and_then(|r| r.id))
+                Ok(InsertOutcome::Duplicate(existing))
             }
         }
     }
