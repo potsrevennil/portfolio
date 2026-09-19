@@ -320,7 +320,15 @@ pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
 
     let mut merged = Vec::new();
     for ((account_no, currency), mut parts) in groups {
-        parts.sort_by_key(|(s, _)| s.lines.first().map(|l| l.book_date));
+        // Adjacent exports can share a boundary book date, so break ties on
+        // where each ends.
+        parts.sort_by_key(|(s, _)| {
+            (
+                s.lines.first().map(|l| l.book_date),
+                s.lines.last().map(|l| l.book_date),
+                s.period_end,
+            )
+        });
         let mut parts = parts.into_iter();
         let (mut statement, first_path) = parts.next().expect("a group has a member");
         let mut paths = vec![first_path];
@@ -539,8 +547,12 @@ mod tests {
     fn overlapping_exports_are_rejected() {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let paths = [
-            write(&dir, "a.csv", &export(&[("2023/03/01", 100, 100), ("2023/06/01", 50, 150)])),
-            write(&dir, "b.csv", &export(&[("2023/04/01", 0, 150)])),
+            write(
+                &dir,
+                "a.csv",
+                &export(None, &[("2023/03/01", 100, 100), ("2023/06/01", 50, 150)]),
+            ),
+            write(&dir, "b.csv", &export(None, &[("2023/04/01", 0, 150)])),
         ];
         assert!(load_merged(&paths).is_err());
     }
@@ -550,9 +562,22 @@ mod tests {
     #[test]
     fn exports_may_share_a_boundary_book_date() {
         let dir = tempfile::TempDir::new().expect("temp dir");
+        // Given newest first, so argument order can't be what joins them.
         let paths = [
-            write(&dir, "2023.csv", &export(&[("2024/01/02", 100, 100)])),
-            write(&dir, "2024.csv", &export(&[("2024/01/02", 50, 150)])),
+            write(
+                &dir,
+                "2024.csv",
+                &export(None, &[("2024/01/02", 50, 150), ("2024/03/01", 5, 155)]),
+            ),
+            write(&dir, "2023.csv", &export(None, &[("2024/01/02", 100, 100)])),
+        ];
+        let merged = load_merged(&paths).expect("merges");
+        assert_eq!(merged[0].statement.closing_balance(), dec!(155));
+
+        // Both only on the boundary date: the export period decides.
+        let paths = [
+            write(&dir, "b.csv", &export(Some("2024/12/31"), &[("2024/01/02", 50, 150)])),
+            write(&dir, "a.csv", &export(Some("2023/12/31"), &[("2024/01/02", 100, 100)])),
         ];
         let merged = load_merged(&paths).expect("merges");
         assert_eq!(merged[0].statement.closing_balance(), dec!(150));
@@ -560,10 +585,12 @@ mod tests {
 
     /// An export of deposits, given oldest first as (book date, deposit,
     /// balance).
-    fn export(lines: &[(&str, u32, u32)]) -> String {
-        let mut out = "123456789012 \
-                       活存\n幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n"
-            .to_string();
+    fn export(period_end: Option<&str>, lines: &[(&str, u32, u32)]) -> String {
+        let period = period_end.map(|end| format!("筆數,(自 2023/01/01 至 {end})\n"));
+        let mut out = format!(
+            "123456789012 活存\n{}幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n",
+            period.unwrap_or_default()
+        );
         for (date, deposit, balance) in lines.iter().rev() {
             out.push_str(&format!("{date},{date},存入,,{deposit},{balance},,\n"));
         }
