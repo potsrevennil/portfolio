@@ -360,6 +360,28 @@ async fn a_base_currency_ledger_reports_without_rates() {
     assert_eq!(report.periods[0].expense, dec!(120));
 }
 
+/// A posting whose account is gone would drop out of every report without a
+/// trace, so loading refuses it.
+#[tokio::test]
+async fn a_posting_naming_a_missing_account_fails_the_load() {
+    let (_dir, pool) = fresh_db().await;
+    let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
+    let food = add_account(&pool, "Expenses:Food", "Food", "expense").await;
+    add_txn(&pool, "2026-01-10", "lunch", &[(food, "120", "TWD"), (cash, "-120", "TWD")]).await;
+    // Only a database with its foreign keys off can hold such a row.
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query("PRAGMA foreign_keys = OFF").execute(&mut *conn).await.unwrap();
+    sqlx::query("UPDATE postings SET account_id = 999 WHERE account_id = ?")
+        .bind(food)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    drop(conn);
+
+    let err = account_balances(&pool, d(2026, 1, 31)).await.expect_err("an orphan posting");
+    assert!(format!("{err:#}").contains("account id 999"), "{err:#}");
+}
+
 /// Builds a portfolio holding 10 AAPL bought at 100 USD, reported in `broker`'s
 /// currency. Used by the holdings tests.
 fn aapl_portfolio(broker: Broker) -> Portfolio {

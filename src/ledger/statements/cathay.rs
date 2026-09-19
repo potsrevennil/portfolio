@@ -250,11 +250,9 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
         let f0 = rec.get(0).unwrap_or("").trim();
 
         let Some(cols) = &columns else {
-            if let Some(range) = rec.iter().find(|f| f.contains('至')) {
-                if let Some((_, tail)) = range.split_once('至') {
-                    let end = tail.trim_matches(|c: char| !c.is_ascii_digit() && c != '/');
-                    period_end = parse_slash_date(end).ok();
-                }
+            if let Some((_, tail)) = rec.iter().find_map(|f| f.split_once('至')) {
+                let end = tail.trim_matches(|c: char| !c.is_ascii_digit() && c != '/');
+                period_end = parse_slash_date(end).ok();
             }
             if f0 == "交易日期" {
                 columns = Some(
