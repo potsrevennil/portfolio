@@ -13,10 +13,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
-use rust_decimal::Decimal;
 use serde::Deserialize;
-
-use crate::currency::Currency;
 
 /// One of Beancount's five account roots — the part of an account name that
 /// fixes its sign convention and which statement it lands on.

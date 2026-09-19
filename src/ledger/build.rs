@@ -14,7 +14,7 @@ use super::{
     args::Args,
     corrected, daily,
     emit::{contra_posting, emit_daily_accounts, narration_for, resolve},
-    matching,
+    journal, matching,
     model::{self, Directive},
     names::{fallback_account, statement_account},
     statements,
@@ -84,25 +84,24 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         opts.daily_transfers.as_deref(),
     ) {
         (Some(corrected), ..) => corrected::load(corrected)?,
-        (None, Some(ie), Some(xf)) => {
-            corrected::Records { entries: daily::load_entries(ie, xf)?, openings: Vec::new() }
-        }
+        (None, Some(ie), Some(xf)) => daily::load_entries(ie, xf)?.into(),
         _ => corrected::Records::default(),
     };
-    let mut declared: Vec<(String, &corrected::Opening)> = opening_rows
-        .iter()
-        .map(|o| -> Result<(String, &corrected::Opening)> {
+    // Opening rows name the app account; put each on its ledger account.
+    let mut declared: Vec<journal::Opening> = opening_rows
+        .into_iter()
+        .map(|o| -> Result<journal::Opening> {
             let mapping = chart.account(&o.account).with_context(|| {
                 format!("opening row names {:?}, which [accounts] does not map", o.account)
             })?;
-            Ok((mapping.account.to_string(), o))
+            Ok(journal::Opening { account: mapping.account.to_string(), ..o })
         })
         .collect::<Result<_>>()?;
-    declared.sort_by(|a, b| (&a.0, a.1.currency).cmp(&(&b.0, b.1.currency)));
+    declared.sort_by(|a, b| (&a.account, a.currency).cmp(&(&b.account, b.currency)));
     if let Some(pair) =
-        declared.windows(2).find(|w| w[0].0 == w[1].0 && w[0].1.currency == w[1].1.currency)
+        declared.windows(2).find(|w| w[0].account == w[1].account && w[0].currency == w[1].currency)
     {
-        anyhow::bail!("{} {} has more than one opening row", pair[0].0, pair[0].1.currency);
+        anyhow::bail!("{} {} has more than one opening row", pair[0].account, pair[0].currency);
     }
 
     let mut merged = statements::cathay::load_merged(&opts.cathay_statements)?;
@@ -717,8 +716,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         // Fold in any opening balance on this account (or its subtree): the app
         // records net only the movements since, so the asserted figure must add
         // the declared starting position the build also emits below.
-        for (ob_account, ob) in &declared {
-            if ob_account == account || ob_account.starts_with(&prefix) {
+        for ob in &declared {
+            if ob.account == account || ob.account.starts_with(&prefix) {
                 *by_currency.entry(ob.currency).or_default() += ob.amount;
             }
         }
@@ -741,7 +740,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // and make sure their accounts are opened alongside the rest.
     let mut openings: Vec<Directive> = Vec::new();
     let mut superseded_openings: BTreeSet<String> = BTreeSet::new();
-    for (account, ob) in &declared {
+    for ob in &declared {
+        let account = &ob.account;
         // The backfill or a statement already opens this account; the two must
         // agree, else neither may silently win.
         let derived = derived_openings
