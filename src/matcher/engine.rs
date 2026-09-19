@@ -232,4 +232,64 @@ mod tests {
             Err(CommitError::UnknownSource(999))
         );
     }
+
+    /// Proposes candidate 101 for every target, in full, ignoring what an
+    /// earlier proposal already took.
+    struct Greedy;
+
+    impl MatchMode for Greedy {
+        fn name(&self) -> &'static str { "greedy" }
+
+        fn propose(&self, targets: &[Record], _pool: &Pool) -> Vec<Match> {
+            targets
+                .iter()
+                .map(|t| Match {
+                    mode: self.name(),
+                    target: t.ref_id,
+                    consumed: vec![Consumption { source: 101, amount: t.amount }],
+                    residual: Decimal::ZERO,
+                })
+                .collect()
+        }
+    }
+
+    /// Fails the test if the engine ever asks it for proposals.
+    struct Unreachable;
+
+    impl MatchMode for Unreachable {
+        fn name(&self) -> &'static str { "unreachable" }
+
+        fn propose(&self, _targets: &[Record], _pool: &Pool) -> Vec<Match> {
+            panic!("a later mode ran after every target was matched")
+        }
+    }
+
+    #[test]
+    fn a_proposal_that_double_spends_is_rejected_not_applied() {
+        let targets = vec![rec(1, "2026-01-10", dec!(-100)), rec(2, "2026-01-10", dec!(-100))];
+        let candidates = vec![rec(101, "2026-01-10", dec!(-100))];
+
+        let outcome = Engine::new(vec![Box::new(Greedy)]).run(targets, candidates);
+
+        assert_eq!(outcome.matches.iter().map(|m| m.target).collect::<Vec<_>>(), vec![1]);
+        let [(rejected, error)] = outcome.rejected.as_slice() else {
+            panic!("expected one rejection, got {:?}", outcome.rejected);
+        };
+        assert_eq!(rejected.target, 2);
+        assert_eq!(*error, CommitError::Overdrawn { source: 101, left: dec!(0), want: dec!(-100) });
+        assert_eq!(outcome.unmatched, vec![2]);
+    }
+
+    #[test]
+    fn later_modes_do_not_run_once_every_target_is_matched() {
+        let targets = vec![rec(1, "2026-01-10", dec!(-100))];
+        let candidates = vec![rec(101, "2026-01-10", dec!(-100))];
+
+        let outcome = Engine::new(vec![Box::new(StatementLineMode), Box::new(Unreachable)])
+            .run(targets, candidates);
+
+        assert_eq!(outcome.matches.len(), 1);
+        assert_eq!(outcome.matches[0].mode, StatementLineMode.name());
+        assert!(outcome.unmatched.is_empty());
+    }
 }

@@ -54,6 +54,9 @@ async fn duplicate_within_a_source_is_rejected_same_ref_across_sources_is_allowe
 
     let again = store.insert_deduped(&txn("import", Some("L1")), &ps).await.unwrap();
     assert_eq!(again, InsertOutcome::Duplicate(first_id));
+    // A duplicate wrote nothing but still names the row it matched.
+    assert_eq!(again.inserted_id(), None);
+    assert_eq!((first.transaction_id(), again.transaction_id()), (first_id, first_id));
 
     let other = store.insert_deduped(&txn("manual", Some("L1")), &ps).await.unwrap();
     assert!(matches!(other, InsertOutcome::Inserted(id) if id != first_id));
