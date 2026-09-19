@@ -7,6 +7,7 @@
 pub mod accounts;
 pub mod args;
 pub mod build;
+pub mod corrected;
 pub mod daily;
 pub mod emit;
 pub mod freeze;

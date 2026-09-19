@@ -378,6 +378,22 @@ impl Chart {
 
     pub fn account(&self, name: &str) -> Option<&Mapping> { Self::get(&self.accounts, name) }
 
+    /// The app account mapped to exactly this ledger account, if any — how a
+    /// statement account the app keeps separately finds its own records.
+    pub fn app_account_for(&self, account: &str) -> Result<Option<&str>> {
+        let names: Vec<&str> = self
+            .accounts
+            .iter()
+            .filter(|(_, m)| m.account.as_ref() == account)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        match names.as_slice() {
+            [] => Ok(None),
+            [one] => Ok(Some(one)),
+            many => anyhow::bail!("{account} is mapped from several app accounts: {many:?}"),
+        }
+    }
+
     pub fn override_for(&self, id: &str) -> Option<&Override> {
         self.overrides.get(id).filter(|o| !o.account.is_empty())
     }

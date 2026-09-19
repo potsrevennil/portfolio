@@ -91,6 +91,7 @@ fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
         cathay_statements: vec![root.join("savings.csv")],
         daily_income_expense: Some(root.join("income_expense.csv")),
         daily_transfers: Some(root.join("transfers.csv")),
+        transactions: None,
         backfill: true,
         ledger_dir: root.to_path_buf(),
     };
@@ -253,6 +254,7 @@ expense = "Expenses:Uncategorized"
             cathay_statements: vec![root.join("savings.csv")],
             daily_income_expense: None,
             daily_transfers: None,
+            transactions: None,
             backfill: false,
             ledger_dir: root.to_path_buf(),
         },

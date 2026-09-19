@@ -23,10 +23,12 @@ settlement             = "Assets:Bank:Investment"        # where securities sett
 settlement_app_account = "證券"                            # app account that means settlement
 clearing               = "Assets:Bank:Transfer-Clearing" # internal transfers still in flight
 
-# Statement account number → ledger account. One entry per statement file.
+# Statement account number → ledger account. An account's yearly exports (and,
+# for a foreign-currency account, its per-currency ones) join into one statement.
 [institution.accounts]
 "123456789012" = "Assets:Bank:Savings"
 "210987654321" = "Assets:Bank:Investment"
+"345678901234" = "Assets:Bank:FX"         # foreign-currency account, one per currency
 
 # Where a statement line goes when no app record explains it. The statement
 # alone tells us only the direction, so that is all the default can use.
@@ -69,8 +71,11 @@ expense = "Expenses:Uncategorized"
 
 # Accounts the app names, including the ones no statement covers.
 [accounts]
-"現金"  = "Assets:Cash"
-"銀行"  = "Assets:Bank"
+"現金" = "Assets:Cash"
+"銀行" = "Assets:Bank"
+# An app account mapped to exactly a statement account's ledger account is
+# matched against that statement alone, not pooled under app_account.
+"外幣"  = "Assets:Bank:FX"
 "信用卡" = { account = "Liabilities:Card", tags = ["card"] }
 "應收款" = "Assets:Split:Others"
 "證券"  = "Assets:Securities"

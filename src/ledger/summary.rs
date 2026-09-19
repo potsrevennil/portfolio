@@ -6,7 +6,19 @@ use chrono::NaiveDate;
 
 /// What a run produced, for the caller to report.
 pub struct Summary {
-    pub output: PathBuf,
+    /// The file `build` wrote; `None` when the model was only assembled.
+    pub output: Option<PathBuf>,
+    /// Date of the earliest record, when records were given.
+    pub records_start: Option<NaiveDate>,
+    /// Statement lines booked before `records_start`, folded into the
+    /// statement's opening balance.
+    pub folded: usize,
+    /// Currency conversions paired across two statements (a subset of the
+    /// internal transfers).
+    pub converted: usize,
+    /// Declared `[opening_balances]` (as "account currency") left out because
+    /// a statement opens that account and currency itself.
+    pub superseded_openings: BTreeSet<String>,
     /// First date covered by a statement; everything earlier is backfill.
     pub anchor: NaiveDate,
     pub backfilled: usize,
@@ -35,7 +47,17 @@ pub struct Summary {
 
 impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "wrote {}", self.output.display())?;
+        if let Some(output) = &self.output {
+            writeln!(f, "wrote {}", output.display())?;
+        }
+        if let (Some(start), true) = (self.records_start, self.folded > 0) {
+            writeln!(
+                f,
+                "  {} statement lines before the records begin ({start}) folded into opening \
+                 balances",
+                self.folded
+            )?;
+        }
         if self.backfilled > 0 {
             writeln!(
                 f,
@@ -49,6 +71,9 @@ impl fmt::Display for Summary {
              clearing, {} uncategorised",
             self.categorised, self.internal, self.in_transit, self.uncategorised
         )?;
+        if self.converted > 0 {
+            writeln!(f, "  {} of the internal transfers are currency conversions", self.converted)?;
+        }
         if self.reversed > 0 {
             writeln!(f, "  {} bank reversals netted against the debit they undid", self.reversed)?;
         }
@@ -72,6 +97,13 @@ impl fmt::Display for Summary {
                 "  {} 天天記帳 records matched no statement line (far side kept, near side \
                  uncategorised)",
                 self.unmatched_records
+            )?;
+        }
+        if !self.superseded_openings.is_empty() {
+            writeln!(
+                f,
+                "  declared opening balances superseded by a statement: {:?}",
+                self.superseded_openings
             )?;
         }
         if !self.unmapped.is_empty() {

@@ -12,7 +12,7 @@ use rust_decimal::Decimal;
 use super::{
     accounts::{self, AccountType},
     args::Args,
-    daily,
+    corrected, daily,
     emit::{contra_posting, emit_daily_accounts, narration_for, resolve},
     matching,
     model::{self, Directive},
@@ -30,17 +30,17 @@ use crate::currency::Currency;
 /// backfill, all reach the same account by different code paths above, and this
 /// sums none of that, only the raw records. Asserting these values therefore
 /// makes `bean-check` prove the emitted ledger matches the app, rather than
-/// restating what the importer just wrote. 國泰 itself is excluded: it is
-/// driven by the bank statement, and asserted against it.
+/// restating what the importer just wrote. The statement-driven app accounts
+/// are excluded: those are asserted against the bank statement.
 fn app_balances(
     entries: &[daily::Entry],
     chart: &accounts::Chart,
+    statement_pools: &BTreeSet<&str>,
 ) -> BTreeMap<(String, Currency), Decimal> {
     let mut bal: BTreeMap<(String, Currency), Decimal> = BTreeMap::new();
-    let app_account = chart.institution.app_account.as_str();
     for entry in entries {
         let mut add = |name: &str, amount: Decimal, currency: Currency| {
-            if name == app_account {
+            if statement_pools.contains(name) {
                 return;
             }
             if let Some(mapping) = chart.account(name) {
@@ -75,37 +75,69 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let investment: &str = &chart.institution.settlement;
     let clearing: &str = &chart.institution.clearing;
     let settlement_source = chart.institution.settlement_app_account.clone();
+    let institution_app: &str = &chart.institution.app_account;
 
-    // Both exports are read once, here. 天天記帳 lumps the two Cathay accounts
-    // into a single 國泰 account, so its records are matched against the two
-    // statements pooled together; `view` is that account's slice of this parse.
-    let entries = match (opts.daily_income_expense.as_deref(), opts.daily_transfers.as_deref()) {
-        (Some(ie), Some(xf)) => daily::load_entries(ie, xf)?,
+    // The records are read once, here: the corrected aggregate, or the two
+    // native 天天記帳 exports.
+    let entries = match (
+        opts.transactions.as_deref(),
+        opts.daily_income_expense.as_deref(),
+        opts.daily_transfers.as_deref(),
+    ) {
+        (Some(corrected), ..) => corrected::load_entries(corrected)?,
+        (None, Some(ie), Some(xf)) => daily::load_entries(ie, xf)?,
         _ => Vec::new(),
     };
-    let app_events = daily::view(&entries, &chart.institution.app_account);
 
-    // Load each statement with the path it came from, then order by the
-    // statement's earliest line rather than by argument order. A per-account
-    // `.find()` (the derived-opening backfill below) must reach the
-    // chronologically first statement for an account; argument order made a
-    // second 活存 export passed first silently drive the opening balance.
-    let mut loaded: Vec<(statements::cathay::BankStatement, std::path::PathBuf)> = opts
-        .cathay_statements
-        .iter()
-        .map(|path| statements::cathay::load(path).map(|s| (s, path.clone())))
-        .collect::<Result<_>>()?;
-    loaded.sort_by(|a, b| {
+    // One statement per account and currency, however many exports it spans.
+    let mut merged = statements::cathay::load_merged(&opts.cathay_statements)?;
+
+    // Lines booked before the records begin have nothing to be matched
+    // against, so the balance they leave becomes the statement's opening.
+    let records_start = entries.first().map(daily::Entry::date);
+    let mut n_folded = 0usize;
+    if let Some(start) = records_start {
+        for m in &mut merged {
+            n_folded += m.statement.trim_before(start);
+            anyhow::ensure!(
+                !m.statement.lines.is_empty(),
+                "{} {}: every statement line predates the records ({start})",
+                m.statement.account_no,
+                m.statement.currency
+            );
+        }
+    }
+
+    // Ordered by the statement's earliest line rather than by argument order.
+    // A per-account `.find()` (the derived-opening backfill below) must reach
+    // the chronologically first statement for an account.
+    merged.sort_by(|a, b| {
         let key = |s: &statements::cathay::BankStatement| {
-            (s.lines.first().map(|l| l.book_date), s.account_no.clone())
+            (s.lines.first().map(|l| l.book_date), s.account_no.clone(), s.currency)
         };
-        key(&a.0).cmp(&key(&b.0))
+        key(&a.statement).cmp(&key(&b.statement))
     });
     let (statements, statement_paths): (Vec<statements::cathay::BankStatement>, Vec<_>) =
-        loaded.into_iter().unzip();
+        merged.into_iter().map(|m| (m.statement, m.paths)).unzip();
 
-    // Flatten to (statement index, line index) so lines from both accounts can be
-    // matched against one pool of app records.
+    // The app account each statement's lines are matched against. 天天記帳
+    // lumps the TWD Cathay accounts into one institution account, so those
+    // share a pool; an account the app keeps separately (the foreign-currency
+    // one) is matched against its own records only.
+    let pool_of: Vec<String> = statements
+        .iter()
+        .map(|s| -> Result<String> {
+            let account = statement_account(&chart, &s.account_no)?;
+            Ok(chart.app_account_for(account)?.unwrap_or(institution_app).to_string())
+        })
+        .collect::<Result<_>>()?;
+    let pools: BTreeMap<&str, Vec<daily::AppEvent>> =
+        pool_of.iter().map(|p| (p.as_str(), daily::view(&entries, p))).collect();
+    let no_events: Vec<daily::AppEvent> = Vec::new();
+    let app_events: &[daily::AppEvent] = pools.get(institution_app).unwrap_or(&no_events);
+
+    // Flatten to (statement index, line index) so lines from every account can
+    // be matched against their pool of app records.
     let mut flat: Vec<(usize, usize)> = Vec::new();
     for (si, s) in statements.iter().enumerate() {
         for li in 0..s.lines.len() {
@@ -141,6 +173,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         let counterpart = internal.iter().copied().find(|&(sj, lj)| {
             let other = &statements[sj].lines[lj];
             sj != si
+                && statements[sj].currency == statements[si].currency
                 && !paired.contains(&(sj, lj))
                 && other.book_date == line.book_date
                 && other.delta() == -line.delta()
@@ -149,6 +182,80 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             paired.insert((si, li));
             paired.insert(p);
             partner.insert((si, li), p);
+        }
+    }
+
+    // A currency conversion between two accounts: same day, opposite
+    // directions, each naming the other. The TWD side names the foreign account
+    // only in 備註, so both fields count here. The app records the conversion
+    // as one transfer between the two pools; it is reserved so neither pool
+    // spends it on another line.
+    let names = |line: &statements::cathay::StatementLine,
+                 s: &statements::cathay::BankStatement| {
+        statements::cathay::info_names_account(&line.info, &s.account_no)
+            || statements::cathay::info_names_account(&line.memo, &s.account_no)
+    };
+    let mut reserved: HashMap<&str, HashSet<usize>> = HashMap::new();
+    let mut n_converted = 0usize;
+    for &(si, li) in &flat {
+        let line = &statements[si].lines[li];
+        if !line.delta().is_sign_negative() || paired.contains(&(si, li)) {
+            continue;
+        }
+        let counterpart = flat.iter().copied().find(|&(sj, lj)| {
+            let other = &statements[sj].lines[lj];
+            statements[sj].currency != statements[si].currency
+                && statements[sj].account_no != statements[si].account_no
+                && !paired.contains(&(sj, lj))
+                && other.book_date == line.book_date
+                && other.delta().is_sign_positive()
+                && names(line, &statements[sj])
+                && names(other, &statements[si])
+        });
+        let Some((sj, lj)) = counterpart else { continue };
+        paired.insert((si, li));
+        paired.insert((sj, lj));
+        partner.insert((si, li), (sj, lj));
+        n_converted += 1;
+
+        let other = &statements[sj].lines[lj];
+        let sides = [
+            (
+                &pool_of[si],
+                line,
+                statements[si].currency,
+                &pool_of[sj],
+                other,
+                statements[sj].currency,
+            ),
+            (
+                &pool_of[sj],
+                other,
+                statements[sj].currency,
+                &pool_of[si],
+                line,
+                statements[si].currency,
+            ),
+        ];
+        for (pool, near, near_currency, far_pool, far, far_currency) in sides {
+            let events = pools.get(pool.as_str()).unwrap_or(&no_events);
+            let taken = reserved.entry(pool.as_str()).or_default();
+            let record = events
+                .iter()
+                .enumerate()
+                .filter(|(ei, e)| {
+                    !taken.contains(ei)
+                        && e.delta == near.delta()
+                        && e.currency == near_currency
+                        && matches!(&e.contra, daily::Contra::Account(n) if n == far_pool)
+                        && e.far == Some((far.delta().abs(), far_currency))
+                        && (e.date - near.book_date).num_days().abs() <= matching::MAX_TOLERANCE
+                })
+                .min_by_key(|(_, e)| (e.date - near.book_date).num_days().abs())
+                .map(|(ei, _)| ei);
+            if let Some(ei) = record {
+                taken.insert(ei);
+            }
         }
     }
 
@@ -164,29 +271,57 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let in_reversal: HashSet<(usize, usize)> =
         reversed_by.iter().flat_map(|(debit, reversal)| [*debit, *reversal]).collect();
 
-    let to_match: Vec<(usize, usize)> = flat
-        .iter()
-        .copied()
-        .filter(|(si, li)| !is_internal(*si, *li) && !in_reversal.contains(&(*si, *li)))
-        .collect();
-    let keys: Vec<(NaiveDate, Decimal)> = to_match
-        .iter()
-        .map(|(si, li)| {
-            let l = &statements[*si].lines[*li];
-            (l.book_date, l.delta())
-        })
-        .collect();
-    let matched = matching::match_lines(&keys, &app_events);
-
+    // Each pool is matched per currency, against its records in that currency
+    // not already reserved by a conversion.
     let mut assignment: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-    for (i, m) in matched.iter().enumerate() {
-        if let Some(subset) = m {
-            assignment.insert(to_match[i], subset.clone());
+    for (&pool, events) in &pools {
+        let currencies: BTreeSet<Currency> = (0..statements.len())
+            .filter(|&si| pool_of[si] == pool)
+            .map(|si| statements[si].currency)
+            .collect();
+        for currency in currencies {
+            let to_match: Vec<(usize, usize)> = flat
+                .iter()
+                .copied()
+                .filter(|&(si, li)| {
+                    pool_of[si] == pool
+                        && statements[si].currency == currency
+                        && !is_internal(si, li)
+                        && !paired.contains(&(si, li))
+                        && !in_reversal.contains(&(si, li))
+                })
+                .collect();
+            let candidates: Vec<usize> = (0..events.len())
+                .filter(|ei| {
+                    events[*ei].currency == currency
+                        && !reserved.get(pool).is_some_and(|r| r.contains(ei))
+                })
+                .collect();
+            let keys: Vec<(NaiveDate, Decimal)> = to_match
+                .iter()
+                .map(|(si, li)| {
+                    let l = &statements[*si].lines[*li];
+                    (l.book_date, l.delta())
+                })
+                .collect();
+            let projected: Vec<(NaiveDate, Decimal)> =
+                candidates.iter().map(|&ei| (events[ei].date, events[ei].delta)).collect();
+            for (i, m) in matching::match_subsets(&keys, &projected).into_iter().enumerate() {
+                if let Some(subset) = m {
+                    assignment.insert(to_match[i], subset.iter().map(|&k| candidates[k]).collect());
+                }
+            }
         }
     }
-    // Records the matcher has already spent on a statement line. Both the
-    // backfill and the unmatched-record pass below need to exclude these.
-    let claimed: HashSet<usize> = assignment.values().flat_map(|v| v.iter().copied()).collect();
+    // Records already accounted for, per pool: spent by the matcher on a
+    // statement line, or reserved by a conversion. Both the backfill and the
+    // unmatched-record pass below need to exclude these.
+    let mut claimed: HashMap<&str, HashSet<usize>> = reserved;
+    for (&(si, _), subset) in &assignment {
+        claimed.entry(pool_of[si].as_str()).or_default().extend(subset.iter().copied());
+    }
+    let institution_claimed: HashSet<usize> =
+        claimed.get(institution_app).cloned().unwrap_or_default();
 
     let mut cathay: Vec<Directive> = Vec::new();
     let mut used_accounts: BTreeSet<String> = BTreeSet::new();
@@ -199,6 +334,9 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let mut n_in_transit = 0usize;
     let mut n_reversed = 0usize;
     let mut n_backfill = 0usize;
+    // Accounts whose opening the backfill derives; every other statement
+    // opens at its own first balance.
+    let mut derived_openings: BTreeSet<&str> = BTreeSet::new();
 
     // --- history from before the statements begin ---
     //
@@ -222,7 +360,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         let pre: Vec<&daily::AppEvent> = app_events
             .iter()
             .enumerate()
-            .filter(|(i, e)| e.date < anchor && !claimed.contains(i))
+            .filter(|(i, e)| e.date < anchor && !institution_claimed.contains(i))
             .map(|(_, e)| e)
             .collect();
         if let Some(start) = pre.first().map(|e| e.date) {
@@ -267,6 +405,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             cathay.push(Directive::Blank);
             used_accounts.insert(savings.to_string());
             used_accounts.insert(investment.to_string());
+            derived_openings.extend([savings, investment]);
 
             for event in &pre {
                 let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
@@ -333,14 +472,16 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         used_accounts.insert(account.to_string());
         let first = statement.lines.first().expect("load_bank_statement rejects empty statements");
 
+        let paths: Vec<String> =
+            statement_paths[si].iter().map(|p| p.display().to_string()).collect();
         cathay.push(Directive::Comment(format!(
             ";; --- {} {} — {} rows from {} ---",
             statement.account_no,
             statement.account_kind,
             statement.lines.len(),
-            statement_paths[si].display()
+            paths.join(", ")
         )));
-        if !backfilling {
+        if !derived_openings.contains(account) {
             // Dated the day before, so the assertion below still checks something:
             // Beancount asserts at the start of the day.
             cathay.push(Directive::Transaction(model::Transaction {
@@ -396,18 +537,25 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 n_internal += 1;
                 let far_account: &str = statement_account(&chart, &statements[psi].account_no)?;
                 used_accounts.insert(far_account.to_string());
-                postings.push(writer::Posting::new(
+                let far_currency = statements[psi].currency;
+                let far = writer::Posting::new(
                     far_account,
                     statements[psi].lines[pli].delta(),
-                    currency,
-                ));
+                    far_currency,
+                );
+                postings.push(if far_currency == currency {
+                    far
+                } else {
+                    far.worth(line.delta().abs(), currency)
+                });
             } else if is_internal(si, li) {
                 n_in_transit += 1;
                 postings.push(writer::Posting::new(clearing, -line.delta(), currency));
             } else if let Some(subset) = assignment.get(&(si, li)) {
                 n_matched += 1;
+                let events = pools.get(pool_of[si].as_str()).unwrap_or(&no_events);
                 for ei in subset {
-                    let event = &app_events[*ei];
+                    let event = &events[*ei];
                     let (target, event_tags) = resolve(
                         &chart,
                         event,
@@ -465,40 +613,51 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // two cancel: the far account gets its posting and Cathay's asserted
     // balance is untouched.
     let mut n_unmatched_records = 0;
-    for (index, event) in app_events.iter().enumerate() {
-        if claimed.contains(&index) || event.date < anchor || event.delta.is_zero() {
-            continue;
+    for (&pool, events) in &pools {
+        let pool_claimed = claimed.get(pool);
+        for (index, event) in events.iter().enumerate() {
+            // Only the institution's records before the anchor are the
+            // backfill's; a separate pool has no backfill.
+            let backfill_era = pool == institution_app && event.date < anchor;
+            if pool_claimed.is_some_and(|c| c.contains(&index))
+                || backfill_era
+                || event.delta.is_zero()
+            {
+                continue;
+            }
+            let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
+            used_accounts.insert(target.clone());
+            let near: &str = if event.delta.is_sign_negative() {
+                &chart.fallback.expense
+            } else {
+                &chart.fallback.income
+            };
+            used_accounts.insert(near.to_string());
+            cathay.push(Directive::Transaction(model::Transaction {
+                date: event.date,
+                payee: "未對應紀錄".to_string(),
+                narration: narration_for(&chart, &event.id, &event.memo).to_string(),
+                tags,
+                postings: vec![
+                    contra_posting(target, event),
+                    writer::Posting::new(near, event.delta, event.currency),
+                ],
+                source: model::Source::Tiantian,
+                external_ref: (!event.id.is_empty()).then(|| event.id.clone()),
+            }));
+            cathay.push(Directive::Blank);
+            n_unmatched_records += 1;
         }
-        let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
-        used_accounts.insert(target.clone());
-        let near: &str = if event.delta.is_sign_negative() {
-            &chart.fallback.expense
-        } else {
-            &chart.fallback.income
-        };
-        used_accounts.insert(near.to_string());
-        cathay.push(Directive::Transaction(model::Transaction {
-            date: event.date,
-            payee: "未對應紀錄".to_string(),
-            narration: narration_for(&chart, &event.id, &event.memo).to_string(),
-            tags,
-            postings: vec![
-                contra_posting(target, event),
-                writer::Posting::new(near, event.delta, event.currency),
-            ],
-            source: model::Source::Tiantian,
-            external_ref: (!event.id.is_empty()).then(|| event.id.clone()),
-        }));
-        cathay.push(Directive::Blank);
-        n_unmatched_records += 1;
     }
 
     used_accounts.insert(clearing.to_string());
 
     // Accounts with no bank statement, taken from 天天記帳 as recorded.
+    let statement_pools: BTreeSet<&str> = pools.keys().copied().collect();
     let (daily, n_other) = emit_daily_accounts(
         &entries,
         &chart,
+        &statement_pools,
         &mut used_accounts,
         &mut unmapped,
         &mut used_overrides,
@@ -514,9 +673,12 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         .max()
         .unwrap_or(anchor);
     let assert_date = last_date.succ_opt().unwrap_or(last_date);
-    let bank_asserted: BTreeSet<&str> =
-        chart.institution.accounts.values().map(|a| a.as_ref()).collect();
-    let leaf_bal = app_balances(&entries, &chart);
+    let bank_accounts: Vec<&str> = statements
+        .iter()
+        .map(|s| statement_account(&chart, &s.account_no).map(|a| a.as_ref()))
+        .collect::<Result<_>>()?;
+    let bank_asserted: BTreeSet<&str> = bank_accounts.iter().copied().collect();
+    let leaf_bal = app_balances(&entries, &chart, &statement_pools);
     let accounts: BTreeSet<&str> = leaf_bal.keys().map(|(a, _)| a.as_str()).collect();
     let mut asserts: Vec<Directive> = Vec::new();
     let mut n_asserted = 0usize;
@@ -568,7 +730,18 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let mut declared: Vec<(&String, &accounts::OpeningBalance)> =
         chart.opening_balances.iter().collect();
     declared.sort_by(|a, b| a.0.cmp(b.0));
+    let mut superseded_openings: BTreeSet<String> = BTreeSet::new();
     for (account, ob) in declared {
+        // A statement for the account and currency already opens it at the
+        // bank's own figure; declaring it again would count it twice.
+        if statements
+            .iter()
+            .zip(&bank_accounts)
+            .any(|(s, a)| *a == account && s.currency == ob.currency)
+        {
+            superseded_openings.insert(format!("{account} {}", ob.currency));
+            continue;
+        }
         used_accounts.insert(account.clone());
         openings.push(Directive::Transaction(model::Transaction {
             date: ob.date,
@@ -585,9 +758,13 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     }
 
     let summary = Summary {
+        records_start,
+        folded: n_folded,
+        converted: n_converted,
+        superseded_openings,
         other_accounts: n_other,
         unmatched_records: n_unmatched_records,
-        output: ledger.join("generated").join("cathay.beancount"),
+        output: None,
         anchor,
         backfilled: n_backfill,
         categorised: n_matched,
@@ -607,10 +784,11 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
 /// run summary. This is the `ledger` command; the freeze tool calls
 /// [`assemble`] instead and never touches the text.
 pub fn build(opts: &Args) -> Result<Summary> {
-    let (model, summary) = assemble(opts)?;
+    let (model, mut summary) = assemble(opts)?;
     let out_dir = opts.ledger_dir.join("generated");
     std::fs::create_dir_all(&out_dir)?;
     write_files(&out_dir, &model)?;
+    summary.output = Some(out_dir.join("cathay.beancount"));
     Ok(summary)
 }
 
