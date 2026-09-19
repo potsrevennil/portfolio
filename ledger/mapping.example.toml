@@ -83,6 +83,12 @@ expense = "Expenses:Uncategorized"
 [split_accounts]
 roots = ["Assets:Split"]
 
+# Each card's credit limit, as its statement prints it (信用額度). The 資產 page
+# shows credit used and left per card, to check against the card's own app,
+# which counts an instalment purchase in full from the day it is made.
+[credit_limits]
+"Liabilities:Card" = 50000
+
 # Single records whose app category is too coarse, keyed by the record's UUID
 # (the export's last column). The app allows one category per record, so a
 # once-off event the category list has no word for lands under whatever is

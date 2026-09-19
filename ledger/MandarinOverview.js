@@ -12,6 +12,8 @@
 let byAccount = {};
 /** Report slugs to remove from the sidebar. */
 let hidden = [];
+/** Card liability account → its credit limit, from mapping.toml [credit_limits]. */
+let creditLimits = {};
 /** Last segment → Chinese, for the few places that show only a leaf and give no
  *  other clue. Segments two accounts share are dropped rather than guessed at;
  *  links do not need this, since their href carries the full account. */
@@ -360,7 +362,11 @@ async function showInstalments() {
     const payers = await query(
       `SELECT date, narration, account WHERE narration ~ '第[0-9]+/[0-9]+期' AND NOT account ~ '^${INSTALMENTS}'`,
     );
-    const signature = JSON.stringify(postings) + JSON.stringify(byAccount);
+    const cards = Object.keys(creditLimits);
+    const balances = cards.length
+      ? await query(`SELECT account, sum(number) WHERE account ~ '^(${cards.join("|")})$' GROUP BY account`)
+      : [];
+    const signature = JSON.stringify(postings) + JSON.stringify(balances) + JSON.stringify(byAccount);
     let view = document.getElementById("mo-instalments");
     if (view?.dataset.signature === signature) return;
 
@@ -451,13 +457,15 @@ async function showInstalments() {
           background: rgba(127,127,127,0.25); vertical-align: middle; overflow: hidden; }
         #mo-instalments .mo-track > span { display: block; height: 100%; background: var(--link-color, #6af); }
         #mo-instalments .mo-done { margin-top: 0.8em; cursor: pointer; color: var(--link-color, #6af); }
-        #mo-instalments .mo-scroll { overflow-x: auto; }`;
+        #mo-instalments .mo-scroll { overflow-x: auto; }
+        #mo-instalments .mo-note { margin: 0.4em 0 1.2em; opacity: 0.75; font-size: 0.9em; }
+        #mo-instalments .mo-credit { margin-bottom: 1.5em; }`;
       document.head.append(style);
       anchor.after(view);
     }
     const title = document.createElement("h3");
     title.append(cell("span", "分期"), cell("span", `尚欠 ${money(active.reduce((s, p) => s + p.left, 0))} ${active[0]?.currency ?? ""}`, "mo-num"));
-    const parts = [title, table(active)];
+    const parts = [...creditView(all, balances, cell, money), title, table(active)];
     if (done.length) {
       const toggle = cell("div", `▸ 已繳清（${done.length}）`, "mo-done");
       const doneTable = table(done);
@@ -475,6 +483,59 @@ async function showInstalments() {
   } finally {
     instalmentsBusy = false;
   }
+}
+
+/** Credit used and left on each card, to check against the card's own app.
+ *
+ * The card account holds only what has been billed or charged outright; an
+ * instalment purchase sits in its plan until each part is billed. The bank's
+ * used credit counts the whole purchase from day one, so used = what the card
+ * owes + every unbilled plan it pays. A plan belongs to the card that pays its
+ * instalments; one with nothing billed yet has no card, and is listed apart.
+ */
+function creditView(plans, balances, cell, money) {
+  const cards = Object.entries(creditLimits);
+  if (!cards.length) return [];
+  const owed = Object.fromEntries(balances.map(([account, sum]) => [account, -Number(sum)]));
+  const active = plans.filter((p) => p.left > 0.005);
+  const rows = cards.map(([card, limit]) => {
+    const unbilled = active.filter((p) => p.payer === card).reduce((s, p) => s + p.left, 0);
+    const used = (owed[card] ?? 0) + unbilled;
+    return { card, limit: Number(limit), bill: owed[card] ?? 0, unbilled, used, left: Number(limit) - used };
+  });
+  const t = document.createElement("table");
+  const head = document.createElement("tr");
+  for (const h of ["卡", "額度", "卡費未繳", "分期未入帳", "已用", "", "可用"]) head.append(cell("th", h));
+  const thead = document.createElement("thead");
+  thead.append(head);
+  const tbody = document.createElement("tbody");
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const bar = document.createElement("td");
+    bar.className = "mo-progress";
+    const track = document.createElement("span");
+    track.className = "mo-track";
+    const fill = document.createElement("span");
+    fill.style.width = `${Math.max(0, Math.min(100, (r.used / r.limit) * 100))}%`;
+    track.append(fill);
+    bar.append(track, ` ${Math.round((r.used / r.limit) * 100)}%`);
+    tr.append(cell("td", displayName(r.card)), cell("td", money(r.limit), "mo-num"), cell("td", money(r.bill), "mo-num"),
+      cell("td", money(r.unbilled), "mo-num"), cell("td", money(r.used), "mo-num"), bar, cell("td", money(r.left), "mo-num"));
+    tbody.append(tr);
+  }
+  t.append(thead, tbody);
+  const wrap = document.createElement("div");
+  wrap.className = "mo-scroll mo-credit";
+  wrap.append(t);
+  const title = document.createElement("h3");
+  const total = rows.reduce((s, r) => s + r.limit, 0);
+  title.append(cell("span", "信用額度"), cell("span", `可用 ${money(rows.reduce((s, r) => s + r.left, 0))} / ${money(total)}`, "mo-num"));
+  const parts = [title, wrap];
+  const unassigned = active.filter((p) => !p.payer);
+  if (unassigned.length) {
+    parts.push(cell("p", `未算入：${unassigned.map((p) => displayName(p.account)).join("、")}（尚未入帳，不知扣哪張卡）`, "mo-note"));
+  }
+  return parts;
 }
 
 /** Fava titles an account page with its ASCII name. */
@@ -566,6 +627,7 @@ export default {
       const config = await context.api.get("config");
       index(config.labels ?? {});
       hidden = config.hide ?? [];
+      creditLimits = config.credit_limits ?? {};
       defaultConversion = config.conversion ?? "";
       applyDefaultConversion();
     } catch (error) {
