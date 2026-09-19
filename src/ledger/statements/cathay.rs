@@ -1,4 +1,4 @@
-//! 國泰世華 (Cathay United Bank) account statements — 活存 and 投資.
+//! 國泰世華 (Cathay United Bank) account statements — 活存, 投資 and 外幣.
 //!
 //! Only this bank's format; other institutions get their own sibling module.
 //! Distinct from `crate::cathay`, which reads Cathay's *brokerage trade* export
@@ -7,7 +7,10 @@
 //! One row per cash movement, with a running 餘額 column. That running balance
 //! is what lets the ledger assert a figure the transactions must agree with.
 
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
@@ -107,6 +110,13 @@ impl BankStatement {
         pairs
     }
 
+    /// Drops lines before `date` (their balance becomes the opening); returns
+    /// how many.
+    pub fn trim_before(&mut self, date: NaiveDate) -> usize {
+        let keep = self.lines.partition_point(|l| l.book_date < date);
+        self.lines.drain(..keep).count()
+    }
+
     /// Date to assert the closing balance on. Beancount asserts at the start of
     /// the day, so this must fall after the final transaction.
     pub fn assert_date(&self) -> NaiveDate {
@@ -124,8 +134,21 @@ impl BankStatement {
 
 /// `−` (U+2212) is the export's placeholder for an absent value. A real
 /// negative uses an ASCII hyphen, so only the bare placeholder maps to zero.
-fn parse_amount(s: &str) -> Result<Decimal> {
+/// 外幣 amounts carry a currency prefix (`USD 12.50`).
+fn parse_amount(s: &str, currency: Currency) -> Result<Decimal> {
     let t = s.trim();
+    let t = match t.split_once(' ') {
+        Some((code, rest)) if code.len() == 3 && code.chars().all(|c| c.is_ascii_uppercase()) => {
+            let prefixed: Currency =
+                code.parse().with_context(|| format!("unknown amount currency {code:?}"))?;
+            anyhow::ensure!(
+                prefixed == currency,
+                "amount {t:?} is not in the statement currency {currency}"
+            );
+            rest.trim()
+        }
+        _ => t,
+    };
     if t.is_empty() || t == "−" || t == "-" {
         Ok(Decimal::ZERO)
     } else {
@@ -180,6 +203,33 @@ pub fn info_names_account(info: &str, account_no: &str) -> bool {
     false
 }
 
+/// Columns by header name: the 外幣 export has a different layout.
+struct Columns {
+    book_date: usize,
+    description: Option<usize>,
+    withdrawal: usize,
+    deposit: usize,
+    balance: usize,
+    info: Option<usize>,
+    memo: Option<usize>,
+}
+
+impl Columns {
+    fn from_header(rec: &csv::StringRecord) -> Result<Self> {
+        let find = |name: &str| rec.iter().position(|f| f.trim() == name);
+        let need = |name: &str| find(name).with_context(|| format!("no {name} column"));
+        Ok(Columns {
+            book_date: need("帳務日期")?,
+            description: find("說明"),
+            withdrawal: need("提出")?,
+            deposit: need("存入")?,
+            balance: need("餘額")?,
+            info: find("交易資訊"),
+            memo: find("備註"),
+        })
+    }
+}
+
 pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
     let file_path = file_path.as_ref();
     let mut rdr = csv::ReaderBuilder::new()
@@ -193,13 +243,13 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
     let mut currency = Currency::TWD;
     let mut lines: Vec<StatementLine> = Vec::new();
     let mut period_end: Option<NaiveDate> = None;
-    let mut past_header = false;
+    let mut columns: Option<Columns> = None;
 
     for result in rdr.records() {
         let rec = result?;
         let f0 = rec.get(0).unwrap_or("").trim();
 
-        if !past_header {
+        let Some(cols) = &columns else {
             if let Some(range) = rec.iter().find(|f| f.contains('至')) {
                 if let Some((_, tail)) = range.split_once('至') {
                     let end = tail.trim_matches(|c: char| !c.is_ascii_digit() && c != '/');
@@ -207,7 +257,10 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
                 }
             }
             if f0 == "交易日期" {
-                past_header = true;
+                columns = Some(
+                    Columns::from_header(&rec)
+                        .with_context(|| format!("header of {}", file_path.display()))?,
+                );
             } else if account_no.is_empty() && f0.contains(' ') {
                 // e.g. "123456789012 活存"
                 let mut parts = f0.split_whitespace();
@@ -220,21 +273,23 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
                     .with_context(|| format!("unknown statement currency {:?}", rest.trim()))?;
             }
             continue;
-        }
+        };
 
         // Data rows start with a date; the trailer rows (提出/存入 totals) do not.
-        if rec.len() < 6 || parse_slash_date(f0).is_err() {
+        if rec.len() <= cols.balance || parse_slash_date(f0).is_err() {
             continue;
         }
+        let text = |col: Option<usize>| clean(col.and_then(|c| rec.get(c)).unwrap_or(""));
+        let amount = |col: usize| parse_amount(rec.get(col).unwrap_or(""), currency);
 
         lines.push(StatementLine {
-            book_date: parse_slash_date(rec.get(1).unwrap_or(f0))?,
-            description: clean(rec.get(2).unwrap_or("")),
-            withdrawal: parse_amount(rec.get(3).unwrap_or(""))?,
-            deposit: parse_amount(rec.get(4).unwrap_or(""))?,
-            balance: parse_amount(rec.get(5).unwrap_or(""))?,
-            info: clean(rec.get(6).unwrap_or("")),
-            memo: clean(rec.get(7).unwrap_or("")),
+            book_date: parse_slash_date(rec.get(cols.book_date).unwrap_or(f0))?,
+            description: text(cols.description),
+            withdrawal: amount(cols.withdrawal)?,
+            deposit: amount(cols.deposit)?,
+            balance: amount(cols.balance)?,
+            info: text(cols.info),
+            memo: text(cols.memo),
         });
     }
 
@@ -246,6 +301,68 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
     lines.reverse();
 
     Ok(BankStatement { account_no, account_kind, currency, period_end, lines })
+}
+
+pub struct Merged {
+    pub statement: BankStatement,
+    pub paths: Vec<PathBuf>,
+}
+
+/// Joins the exports of each account and currency into one statement. They
+/// must follow on (no overlap, no balance gap), or a missing download would
+/// hide as an unexplained jump.
+pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
+    let mut groups: BTreeMap<(String, Currency), Vec<(BankStatement, PathBuf)>> = BTreeMap::new();
+    for path in paths {
+        let s = load(path)?;
+        groups.entry((s.account_no.clone(), s.currency)).or_default().push((s, path.clone()));
+    }
+
+    let mut merged = Vec::new();
+    for ((account_no, currency), mut parts) in groups {
+        // Adjacent exports can share a boundary book date, so break ties on
+        // where each ends.
+        parts.sort_by_key(|(s, _)| {
+            (
+                s.lines.first().map(|l| l.book_date),
+                s.lines.last().map(|l| l.book_date),
+                s.period_end,
+            )
+        });
+        let mut parts = parts.into_iter();
+        let (mut statement, first_path) = parts.next().expect("a group has a member");
+        let mut paths = vec![first_path];
+        for (next, path) in parts {
+            let last = statement.lines.last().expect("load rejects empty statements");
+            let first = next.lines.first().expect("load rejects empty statements");
+            // Exports are cut by trade date, so a late 12/31 trade booked on the
+            // next business day can share the next file's first book date.
+            anyhow::ensure!(
+                first.book_date >= last.book_date,
+                "{account_no} {currency}: {} overlaps the export before it (it starts {}, the \
+                 other ends {})",
+                path.display(),
+                first.book_date,
+                last.book_date
+            );
+            anyhow::ensure!(
+                next.opening_balance() == statement.closing_balance(),
+                "{account_no} {currency}: gap between {} and {} — balance {} on {} but {} before \
+                 {}; an export is missing",
+                paths.last().expect("non-empty").display(),
+                path.display(),
+                statement.closing_balance(),
+                last.book_date,
+                next.opening_balance(),
+                first.book_date
+            );
+            statement.lines.extend(next.lines);
+            statement.period_end = next.period_end;
+            paths.push(path);
+        }
+        merged.push(Merged { statement, paths });
+    }
+    Ok(merged)
 }
 
 #[cfg(test)]
@@ -347,5 +464,147 @@ mod tests {
         lines.extend(day());
         let with_earlier_day = statement(lines).dedup_refs();
         assert_eq!(with_earlier_day[1..], alone[..]);
+    }
+
+    fn write(dir: &tempfile::TempDir, name: &str, body: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).expect("write statement");
+        path
+    }
+
+    const FOREIGN: &str = "\
+\"123456789012 活存外幣\"
+\"幣別：USD\"
+\"交易日期\",\"帳務日期\",\"提出\",\"存入\",\"餘額\",\"成交匯率\",\"交易資訊\"
+\"2024/06/11\",\"2024/06/11\",\"USD 1,000.50\",\"−\",\"USD 0.00\",\"−\",\"網銀轉\"
+\"2024/06/07\",\"2024/06/07\",\"−\",\"USD 1,000.00\",\"USD 1,000.50\",\"32.1\",\"台幣存 \
+                           999999999999TWD\"
+\"提出\",\"USD 1,000.50 ( 共 1 筆 )\"
+";
+
+    #[test]
+    fn a_foreign_currency_statement_loads_in_its_own_currency() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let s = load(write(&dir, "fx.csv", FOREIGN)).expect("loads");
+        assert_eq!(s.currency, Currency::USD);
+        assert_eq!(s.lines.len(), 2);
+        assert_eq!(s.opening_balance(), dec!(0.50));
+        assert_eq!(s.lines[1].delta(), dec!(-1000.50));
+        assert_eq!(s.lines[0].info, "台幣存 999999999999TWD");
+        assert!(s.lines[0].description.is_empty() && s.lines[0].memo.is_empty());
+    }
+
+    #[test]
+    fn an_amount_in_another_currency_is_rejected() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let err = load(write(
+            &dir,
+            "fx.csv",
+            &FOREIGN.replace("USD 1,000.00\",\"USD 1,000.50", "JPY 1,000.00\",\"USD 1,000.50"),
+        ))
+        .expect_err("a JPY amount on a USD statement");
+        assert!(format!("{err:#}").contains("not in the statement currency"), "{err:#}");
+    }
+
+    fn year(y: u32, opening: u32, deposit: u32) -> String {
+        format!(
+            "123456789012 \
+             活存\n幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n{y}/03/01,{y}/\
+             03/01,存入,,{deposit},{},,\n",
+            opening + deposit
+        )
+    }
+
+    #[test]
+    fn yearly_exports_merge_per_account_and_currency() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let paths = [
+            write(&dir, "2024.csv", &year(2024, 100, 50)),
+            write(&dir, "2023.csv", &year(2023, 0, 100)),
+            write(&dir, "fx.csv", FOREIGN),
+        ];
+        let merged = load_merged(&paths).expect("merges");
+        assert_eq!(merged.len(), 2);
+        let twd = merged.iter().find(|m| m.statement.currency == Currency::TWD).expect("TWD");
+        assert_eq!(twd.paths, [paths[1].clone(), paths[0].clone()]);
+        assert_eq!(twd.statement.lines.len(), 2);
+        assert_eq!(twd.statement.opening_balance(), dec!(0));
+        assert_eq!(twd.statement.closing_balance(), dec!(150));
+    }
+
+    #[test]
+    fn a_missing_export_is_a_gap_not_a_silent_jump() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let paths = [
+            write(&dir, "2023.csv", &year(2023, 0, 100)),
+            write(&dir, "2025.csv", &year(2025, 400, 50)),
+        ];
+        let err = load_merged(&paths).err().expect("a gap must fail");
+        assert!(err.to_string().contains("an export is missing"), "{err}");
+    }
+
+    #[test]
+    fn overlapping_exports_are_rejected() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let paths = [
+            write(
+                &dir,
+                "a.csv",
+                &export(None, &[("2023/03/01", 100, 100), ("2023/06/01", 50, 150)]),
+            ),
+            write(&dir, "b.csv", &export(None, &[("2023/04/01", 0, 150)])),
+        ];
+        assert!(load_merged(&paths).is_err());
+    }
+
+    /// A late 12/31 trade booked on the next business day ends one export on
+    /// the date the next one starts; that is not an overlap.
+    #[test]
+    fn exports_may_share_a_boundary_book_date() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        // Given newest first, so argument order can't be what joins them.
+        let paths = [
+            write(
+                &dir,
+                "2024.csv",
+                &export(None, &[("2024/01/02", 50, 150), ("2024/03/01", 5, 155)]),
+            ),
+            write(&dir, "2023.csv", &export(None, &[("2024/01/02", 100, 100)])),
+        ];
+        let merged = load_merged(&paths).expect("merges");
+        assert_eq!(merged[0].statement.closing_balance(), dec!(155));
+
+        // Both only on the boundary date: the export period decides.
+        let paths = [
+            write(&dir, "b.csv", &export(Some("2024/12/31"), &[("2024/01/02", 50, 150)])),
+            write(&dir, "a.csv", &export(Some("2023/12/31"), &[("2024/01/02", 100, 100)])),
+        ];
+        let merged = load_merged(&paths).expect("merges");
+        assert_eq!(merged[0].statement.closing_balance(), dec!(150));
+    }
+
+    /// An export of deposits, given oldest first as (book date, deposit,
+    /// balance).
+    fn export(period_end: Option<&str>, lines: &[(&str, u32, u32)]) -> String {
+        let period = period_end.map(|end| format!("筆數,(自 2023/01/01 至 {end})\n"));
+        let mut out = format!(
+            "123456789012 活存\n{}幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n",
+            period.unwrap_or_default()
+        );
+        for (date, deposit, balance) in lines.iter().rev() {
+            out.push_str(&format!("{date},{date},存入,,{deposit},{balance},,\n"));
+        }
+        out
+    }
+
+    #[test]
+    fn trimming_folds_earlier_lines_into_the_opening() {
+        let mut s = statement(vec![
+            with_balance(line(1, "存入", dec!(-100), ""), dec!(100)),
+            with_balance(line(3, "存入", dec!(-20), ""), dec!(120)),
+        ]);
+        let dropped = s.trim_before(NaiveDate::from_ymd_opt(2026, 6, 2).expect("date"));
+        assert_eq!(dropped, 1);
+        assert_eq!(s.opening_balance(), dec!(100));
     }
 }

@@ -115,25 +115,22 @@ fn a_securities_posting_is_tagged_as_placeholder() {
 
 #[test]
 fn subtree_balance_covers_descendants_and_respects_the_cutoff() {
+    let leg = |account: &str, amount: Decimal, year: i32| journal::Posting {
+        group: 0,
+        source: "manual".into(),
+        date: NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
+        payee: None,
+        narration: String::new(),
+        external_ref: None,
+        account: account.into(),
+        amount,
+        currency: Currency::TWD,
+        tags: None,
+    };
     let movements = vec![
-        Movement {
-            account: "Assets:Cash".into(),
-            currency: Currency::TWD,
-            amount: dec!(1000),
-            date: NaiveDate::from_ymd_opt(2022, 1, 1).unwrap(),
-        },
-        Movement {
-            account: "Assets:Cash".into(),
-            currency: Currency::TWD,
-            amount: dec!(500),
-            date: NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
-        },
-        Movement {
-            account: "Assets:Cash:Petty".into(),
-            currency: Currency::TWD,
-            amount: dec!(25),
-            date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
-        },
+        leg("Assets:Cash", dec!(1000), 2022),
+        leg("Assets:Cash", dec!(500), 2023),
+        leg("Assets:Cash:Petty", dec!(25), 2025),
     ];
     // Subtree, no cutoff: parent plus descendant.
     let all = subtree_balance(&movements, "Assets:Cash", None, true);

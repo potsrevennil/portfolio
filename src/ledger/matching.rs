@@ -13,7 +13,9 @@ use super::daily::AppEvent;
 
 /// Widening passes. Early passes claim the unambiguous same-day matches before
 /// looser ones get a chance to steal them.
-const TOLERANCES: [i64; 5] = [0, 2, 5, 12, 45];
+const TOLERANCES: [i64; 5] = [0, 2, 5, 12, MAX_TOLERANCE];
+/// Furthest apart, in days, a record and the bank line it explains may be.
+pub const MAX_TOLERANCE: i64 = 45;
 /// Cap on candidates considered per line, nearest date first.
 const POOL_CAP: usize = 14;
 /// Largest number of app records allowed to make up one bank line.

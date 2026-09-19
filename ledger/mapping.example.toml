@@ -23,10 +23,11 @@ settlement             = "Assets:Bank:Investment"        # where securities sett
 settlement_app_account = "證券"                            # app account that means settlement
 clearing               = "Assets:Bank:Transfer-Clearing" # internal transfers still in flight
 
-# Statement account number → ledger account. One entry per statement file.
+# Statement account number → ledger account.
 [institution.accounts]
 "123456789012" = "Assets:Bank:Savings"
 "210987654321" = "Assets:Bank:Investment"
+"345678901234" = "Assets:Bank:FX"         # foreign-currency account, one per currency
 
 # Where a statement line goes when no app record explains it. The statement
 # alone tells us only the direction, so that is all the default can use.
@@ -41,15 +42,8 @@ expense = "Expenses:Uncategorized"
 "跨行費用" = "Expenses:Fees:Bank"
 "手續費"  = "Expenses:Fees:Bank"
 
-# Positions already carried when record-keeping began, which the app has no way
-# to express. Keyed by ledger account; each is posted against
-# Equity:Opening-Balances and folded into that account's balance assertion, so an
-# account whose life predates the exports (a loan drawn earlier, a wallet already
-# holding cash) shows its true total rather than only the movements since.
-# amount is a quoted string; date is the day it is asserted from, before the
-# first record.
-[opening_balances]
-"Liabilities:Card" = { amount = "-5000", date = "2020-01-01", currency = "TWD" }
+# Opening balances are transfers in corrected/transactions.csv between the
+# account and 起鼓 (Equity:Opening-Balances, below).
 
 # Spending categories, as the app names them. Several may share one account;
 # the 中文總覽 page shows the first and lists the rest as a tooltip.
@@ -69,11 +63,14 @@ expense = "Expenses:Uncategorized"
 
 # Accounts the app names, including the ones no statement covers.
 [accounts]
-"現金"  = "Assets:Cash"
-"銀行"  = "Assets:Bank"
+"現金" = "Assets:Cash"
+"銀行" = "Assets:Bank"
+# Mapped to exactly a statement's account: matched against that statement only.
+"外幣"  = "Assets:Bank:FX"
 "信用卡" = { account = "Liabilities:Card", tags = ["card"] }
 "應收款" = "Assets:Split:Others"
 "證券"  = "Assets:Securities"
+"起鼓"  = "Equity:Opening-Balances"                         # opening balances
 
 # Split accounts: running two-way balances with a person or group (current
 # accounts), one account per person or group, and the sign says who owes whom —

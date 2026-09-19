@@ -25,10 +25,6 @@ use crate::{
     },
 };
 
-/// The equity plug the importer books opening balances against. It never
-/// reaches the journal as a posting: its legs become opening rows instead.
-const OPENING_EQUITY: &str = "Equity:Opening-Balances";
-
 /// Where a genuine cross-currency transfer's per-currency leftovers are booked
 /// so every currency still sums to zero without a cost or price column.
 const CONVERSIONS: &str = "Equity:Conversions";
@@ -150,63 +146,32 @@ fn merge_tags(txn_tags: &Option<String>, extra: Option<String>) -> Option<String
 
 /// Folds the importer's model plus the `manual.csv` transactions straight into
 /// a [`journal::Journal`], returning it with the balance assertions to check it
-/// against. Never re-decides where a posting goes; each non-opening transaction
-/// becomes one `group`.
+/// against. Never re-decides where a posting goes; each transaction becomes one
+/// `group`.
 fn reconcile(
     model: &model::Model,
     manual: &[model::Transaction],
 ) -> Result<(journal::Journal, Vec<model::Balance>)> {
-    let mut openings: BTreeMap<(String, Currency), (Decimal, NaiveDate)> = BTreeMap::new();
     let mut postings: Vec<journal::Posting> = Vec::new();
-    let mut group: u64 = 0;
-
-    for txn in model.transactions().chain(manual.iter()) {
-        if txn.postings.iter().any(|p| p.account == OPENING_EQUITY) {
-            // Unwind an opening-balance transaction: each non-equity leg is a
-            // starting position.
-            for p in &txn.postings {
-                if p.account == OPENING_EQUITY {
-                    continue;
-                }
-                let amount = p.amount.with_context(|| {
-                    format!("opening-balance leg for {} on {} has no amount", p.account, txn.date)
-                })?;
-                let slot = openings
-                    .entry((p.account.clone(), p.currency))
-                    .or_insert((Decimal::ZERO, txn.date));
-                slot.0 += amount;
-                slot.1 = slot.1.min(txn.date);
-            }
-        } else {
-            let tags = (!txn.tags.is_empty()).then(|| txn.tags.join(","));
-            let payee = (!txn.payee.is_empty()).then(|| txn.payee.clone());
-            for leg in balance_postings(&txn.postings, txn.date, &tags)? {
-                postings.push(journal::Posting {
-                    group,
-                    source: txn.source.as_str().to_string(),
-                    date: txn.date,
-                    payee: payee.clone(),
-                    narration: txn.narration.clone(),
-                    external_ref: txn.external_ref.clone(),
-                    account: leg.account,
-                    amount: leg.amount,
-                    currency: leg.currency,
-                    tags: leg.tags,
-                });
-            }
-            group += 1;
+    for (group, txn) in (0u64..).zip(model.transactions().chain(manual)) {
+        let tags = (!txn.tags.is_empty()).then(|| txn.tags.join(","));
+        let payee = (!txn.payee.is_empty()).then(|| txn.payee.clone());
+        for leg in balance_postings(&txn.postings, txn.date, &tags)? {
+            postings.push(journal::Posting {
+                group,
+                source: txn.source.as_str().to_string(),
+                date: txn.date,
+                payee: payee.clone(),
+                narration: txn.narration.clone(),
+                external_ref: txn.external_ref.clone(),
+                account: leg.account,
+                amount: leg.amount,
+                currency: leg.currency,
+                tags: leg.tags,
+            });
         }
     }
 
-    let openings = openings
-        .into_iter()
-        .map(|((account, currency), (amount, date))| journal::Opening {
-            account,
-            currency,
-            amount,
-            date,
-        })
-        .collect();
     let assertions = model
         .balances()
         .map(|b| model::Balance {
@@ -217,28 +182,20 @@ fn reconcile(
         })
         .collect();
 
-    Ok((journal::Journal { postings, openings }, assertions))
-}
-
-/// A (path, currency, amount, date) figure for verification.
-struct Movement {
-    account: String,
-    currency: Currency,
-    amount: Decimal,
-    date: NaiveDate,
+    Ok((journal::Journal { postings }, assertions))
 }
 
 /// The subtree balance per currency at `cutoff` (start-of-day: strictly before,
 /// matching Beancount's assertion semantics). `cutoff = None` folds in
 /// everything; `subtree = false` restricts to the exact account.
 fn subtree_balance(
-    movements: &[Movement],
+    postings: &[journal::Posting],
     root: &str,
     cutoff: Option<NaiveDate>,
     subtree: bool,
 ) -> BTreeMap<Currency, Decimal> {
     let mut totals: BTreeMap<Currency, Decimal> = BTreeMap::new();
-    for m in movements {
+    for m in postings {
         let matches = if subtree { in_subtree(&m.account, root) } else { m.account == root };
         let before = cutoff.map(|c| m.date < c).unwrap_or(true);
         if matches && before {
@@ -347,26 +304,9 @@ fn verify(
     assertions: &[model::Balance],
     chart: &Chart,
 ) -> (Vec<Mismatch>, Vec<Negative>) {
-    let movements: Vec<Movement> = journal
-        .openings
-        .iter()
-        .map(|o| Movement {
-            account: o.account.clone(),
-            currency: o.currency,
-            amount: o.amount,
-            date: o.date,
-        })
-        .chain(journal.postings.iter().map(|p| Movement {
-            account: p.account.clone(),
-            currency: p.currency,
-            amount: p.amount,
-            date: p.date,
-        }))
-        .collect();
-
     let mut mismatches = Vec::new();
     for a in assertions {
-        let totals = subtree_balance(&movements, &a.account, Some(a.date), true);
+        let totals = subtree_balance(&journal.postings, &a.account, Some(a.date), true);
         let actual = totals.get(&a.currency).copied().unwrap_or_default();
         if actual != a.amount {
             mismatches.push(Mismatch {
@@ -381,7 +321,8 @@ fn verify(
 
     // Every asset account's final balance must be non-negative, bar the
     // split accounts, which are payables when negative.
-    let asset_accounts: BTreeSet<&str> = movements
+    let asset_accounts: BTreeSet<&str> = journal
+        .postings
         .iter()
         .map(|m| m.account.as_str())
         .filter(|a| matches!(account_type(a), Ok(AccountType::Assets)))
@@ -389,7 +330,7 @@ fn verify(
         .collect();
     let mut negatives = Vec::new();
     for account in asset_accounts {
-        for (currency, amount) in subtree_balance(&movements, account, None, false) {
+        for (currency, amount) in subtree_balance(&journal.postings, account, None, false) {
             if amount.is_sign_negative() {
                 negatives.push(Negative { account: account.to_string(), currency, amount });
             }
@@ -415,19 +356,14 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
     let chart = Chart::load(args.build.ledger_dir.join("mapping.toml"))?;
     let (mismatches, negatives) = verify(&written, &assertions, &chart);
 
-    let accounts: BTreeSet<&str> = written
-        .postings
-        .iter()
-        .map(|p| p.account.as_str())
-        .chain(written.openings.iter().map(|o| o.account.as_str()))
-        .collect();
+    let accounts: BTreeSet<&str> = written.postings.iter().map(|p| p.account.as_str()).collect();
     let transactions: BTreeSet<u64> = written.postings.iter().map(|p| p.group).collect();
     let report = Report {
         journal: args.journal.clone(),
         accounts: accounts.len(),
         transactions: transactions.len(),
         postings: written.postings.len(),
-        openings: written.openings.len(),
+        openings: written.postings.iter().filter(|p| p.account == model::OPENING_EQUITY).count(),
         placeholders: written
             .postings
             .iter()

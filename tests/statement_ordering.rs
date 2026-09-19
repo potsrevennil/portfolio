@@ -52,6 +52,7 @@ fn statement_argument_order_does_not_change_the_ledger() -> anyhow::Result<()> {
             cathay_statements: order,
             daily_income_expense: None,
             daily_transfers: None,
+            transactions: None,
             backfill: false,
             ledger_dir: root.to_path_buf(),
         };

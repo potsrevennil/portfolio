@@ -132,14 +132,15 @@ fn resolve_account(
 
 /// Emits the records for accounts with no statement.
 ///
-/// Records touching the statement-driven account are skipped: those are already
-/// emitted from the statement side, and replaying them here would double every
-/// one. Because the transfer export names both accounts in a single row, the
-/// double entry is already present — no pairing is needed, unlike the statement
-/// path.
+/// Records touching a statement-driven app account are skipped: those are
+/// already emitted from the statement side, and replaying them here would
+/// double every one. Because the transfer export names both accounts in a
+/// single row, the double entry is already present — no pairing is needed,
+/// unlike the statement path.
 pub(super) fn emit_daily_accounts(
     entries: &[daily::Entry],
     chart: &accounts::Chart,
+    statement_pools: &BTreeSet<&str>,
     used_accounts: &mut BTreeSet<String>,
     unmapped: &mut BTreeSet<String>,
     used_overrides: &mut BTreeSet<String>,
@@ -155,7 +156,7 @@ pub(super) fn emit_daily_accounts(
     };
 
     for entry in entries {
-        if entry.accounts().contains(&chart.institution.app_account.as_str()) {
+        if entry.accounts().iter().any(|a| statement_pools.contains(a)) {
             continue;
         }
         match entry {
@@ -295,6 +296,7 @@ mod tests {
         let (directives, count) = emit_daily_accounts(
             &[flow("LOSS")],
             &chart(),
+            &BTreeSet::new(),
             &mut used,
             &mut unmapped,
             &mut overrides,
@@ -318,6 +320,7 @@ mod tests {
         let (directives, _) = emit_daily_accounts(
             &[flow("OTHER")],
             &chart(),
+            &BTreeSet::new(),
             &mut used,
             &mut unmapped,
             &mut overrides,
@@ -336,7 +339,14 @@ mod tests {
     fn an_override_matching_no_record_is_reported() {
         let chart = chart();
         let (mut used, mut unmapped, mut overrides) = Default::default();
-        emit_daily_accounts(&[flow("OTHER")], &chart, &mut used, &mut unmapped, &mut overrides);
+        emit_daily_accounts(
+            &[flow("OTHER")],
+            &chart,
+            &BTreeSet::new(),
+            &mut used,
+            &mut unmapped,
+            &mut overrides,
+        );
 
         assert_eq!(
             chart.stale_overrides(&overrides).iter().collect::<Vec<_>>(),

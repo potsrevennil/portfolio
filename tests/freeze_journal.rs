@@ -8,7 +8,7 @@
 
 use portfolio::{
     db,
-    ledger::{args::Args as BuildArgs, freeze, load},
+    ledger::{args::Args as BuildArgs, freeze, load, model},
 };
 use sqlx::Row;
 use tempfile::TempDir;
@@ -39,22 +39,19 @@ expense = "Expenses:Uncategorized"
 "美金" = "Assets:USD-Wallet"
 "國泰" = "Assets:Cathay"
 "券商" = "Assets:Securities:ETF"
-
-[opening_balances]
-"Assets:Cash" = { amount = "1000", date = "2022-01-01", currency = "TWD" }
+"起鼓" = "Equity:Opening-Balances"
 "#;
 
-const INCOME_EXPENSE: &str = "\
-日期,類別,大類別,金額,幣別,成員,帳戶,標籤,備註,收支區分,上次更新,UUID
-20220201,飲食,,200,TWD,自己,國泰,,,支,2022-02-01 00:00:00,uuid-food-2022
-20220401,投資,,500,TWD,自己,現金,,,收,2022-04-01 00:00:00,uuid-cash-income
-20240601,飲食,,100,TWD,自己,國泰,,,支,2024-06-01 00:00:00,uuid-food-2024
-";
-
-const TRANSFERS: &str = "\
-日期,從帳戶,轉出金額,幣別,到帳戶,轉入金額,幣別,標籤,備註,上次更新,UUID
-20220501,國泰,3000,TWD,券商,3000,TWD,,,2022-05-01 00:00:00,uuid-etf
-20230101,現金,300,TWD,美金,10,USD,,,2023-01-01 00:00:00,uuid-fx
+const TRANSACTIONS: &str = "\
+id,status,date,posted_date,kind,amount,currency,account,counter_account,counter_amount,\
+                            counter_currency,category,major_category,member,tags,note,\
+                            source_party,source_file,source_id,origin,correction_note,updated_at
+o:1,active,2022-01-01,,transfer,1000,TWD,起鼓,現金,1000,TWD,,,,,,config,m,,added,,
+a:1,active,2022-02-01,,expense,200,TWD,國泰,,,,飲食,,自己,,,app,f,uuid-food-2022,raw,,
+a:2,active,2022-04-01,,income,500,TWD,現金,,,,投資,,自己,,,app,f,uuid-cash-income,raw,,
+a:3,active,2022-05-01,,transfer,3000,TWD,國泰,券商,3000,TWD,,,,,,app,f,uuid-etf,raw,,
+a:4,active,2023-01-01,,transfer,300,TWD,現金,美金,10,USD,,,,,,app,f,uuid-fx,raw,,
+a:5,active,2024-06-01,,expense,100,TWD,國泰,,,,飲食,,自己,,,app,f,uuid-food-2024,raw,,
 ";
 
 const SAVINGS_STATEMENT: &str = "\
@@ -82,15 +79,15 @@ fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
         std::fs::write(root.join(name), contents).unwrap_or_else(|e| panic!("write {name}: {e}"));
     };
     write("mapping.toml", MAPPING);
-    write("income_expense.csv", INCOME_EXPENSE);
-    write("transfers.csv", TRANSFERS);
+    write("transactions.csv", TRANSACTIONS);
     write("savings.csv", SAVINGS_STATEMENT);
     write("manual.csv", MANUAL);
 
     let build = BuildArgs {
         cathay_statements: vec![root.join("savings.csv")],
-        daily_income_expense: Some(root.join("income_expense.csv")),
-        daily_transfers: Some(root.join("transfers.csv")),
+        daily_income_expense: None,
+        daily_transfers: None,
+        transactions: Some(root.join("transactions.csv")),
         backfill: true,
         ledger_dir: root.to_path_buf(),
     };
@@ -157,7 +154,7 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     .collect();
     assert_eq!(cash_opening, [
         ("Assets:Cash".to_string(), "1000".to_string()),
-        (load::OPENING_EQUITY.to_string(), "-1000".to_string()),
+        (model::OPENING_EQUITY.to_string(), "-1000".to_string()),
     ]);
 
     // The placeholder account carries a retirement note (derived from the journal's
@@ -253,6 +250,7 @@ expense = "Expenses:Uncategorized"
             cathay_statements: vec![root.join("savings.csv")],
             daily_income_expense: None,
             daily_transfers: None,
+            transactions: None,
             backfill: false,
             ledger_dir: root.to_path_buf(),
         },
@@ -291,6 +289,35 @@ expense = "Expenses:Uncategorized"
     .await?
     .get(0);
     assert_eq!(uncategorised, 0, "the reversal leaked into an uncategorised bucket");
+    Ok(())
+}
+
+/// With the backfill, the opening it derives is what an opening for the bank
+/// account must agree with, not the statement's own later figure.
+#[test]
+fn an_opening_row_is_checked_against_the_backfill_opening() -> anyhow::Result<()> {
+    // 國泰 maps to the savings account itself, so an opening can name it.
+    let mapping =
+        MAPPING.replace(r#""國泰" = "Assets:Cathay""#, r#""國泰" = "Assets:Cathay:Savings""#);
+    // Statement opens at 0 on 2024-03-01; backfill before it spends 200 on
+    // 2022-02-01 and moves 3000 on 2022-05-01, so it derives an opening of 3200.
+    for (amount, ok) in [("3200", true), ("0", false)] {
+        let (_dir, args, _load) = fixture();
+        std::fs::write(args.build.ledger_dir.join("mapping.toml"), &mapping)?;
+        let records = format!(
+            "{TRANSACTIONS}o:2,active,2022-01-01,,transfer,{amount},TWD,起鼓,國泰,{amount},TWD,,,,\
+             ,,config,m,,added,,\n"
+        );
+        std::fs::write(args.build.ledger_dir.join("transactions.csv"), records)?;
+        let result = freeze::run(&args);
+        match ok {
+            true => assert!(result?.ok(), "a correct opening was rejected"),
+            false => {
+                let err = result.expect_err("a contradicting opening must fail");
+                assert!(err.to_string().contains("contradicts the backfill"), "{err:#}");
+            }
+        }
+    }
     Ok(())
 }
 

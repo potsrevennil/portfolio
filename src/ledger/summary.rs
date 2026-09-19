@@ -6,7 +6,15 @@ use chrono::NaiveDate;
 
 /// What a run produced, for the caller to report.
 pub struct Summary {
-    pub output: PathBuf,
+    /// The file `build` wrote; `None` when the model was only assembled.
+    pub output: Option<PathBuf>,
+    pub records_start: Option<NaiveDate>,
+    /// Statement lines before `records_start`, folded into openings.
+    pub folded: usize,
+    /// Conversions among the internal transfers.
+    pub converted: usize,
+    /// Openings a statement already covers, as "account currency".
+    pub superseded_openings: BTreeSet<String>,
     /// First date covered by a statement; everything earlier is backfill.
     pub anchor: NaiveDate,
     pub backfilled: usize,
@@ -35,7 +43,17 @@ pub struct Summary {
 
 impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "wrote {}", self.output.display())?;
+        if let Some(output) = &self.output {
+            writeln!(f, "wrote {}", output.display())?;
+        }
+        if let (Some(start), true) = (self.records_start, self.folded > 0) {
+            writeln!(
+                f,
+                "  {} statement lines before the records begin ({start}) folded into opening \
+                 balances",
+                self.folded
+            )?;
+        }
         if self.backfilled > 0 {
             writeln!(
                 f,
@@ -49,6 +67,9 @@ impl fmt::Display for Summary {
              clearing, {} uncategorised",
             self.categorised, self.internal, self.in_transit, self.uncategorised
         )?;
+        if self.converted > 0 {
+            writeln!(f, "  {} of the internal transfers are currency conversions", self.converted)?;
+        }
         if self.reversed > 0 {
             writeln!(f, "  {} bank reversals netted against the debit they undid", self.reversed)?;
         }
@@ -73,6 +94,9 @@ impl fmt::Display for Summary {
                  uncategorised)",
                 self.unmatched_records
             )?;
+        }
+        if !self.superseded_openings.is_empty() {
+            writeln!(f, "  openings superseded by a statement: {:?}", self.superseded_openings)?;
         }
         if !self.unmapped.is_empty() {
             writeln!(f, "  unmapped names in mapping.toml: {:?}", self.unmapped)?;
