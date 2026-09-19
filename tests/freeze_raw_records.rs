@@ -117,6 +117,92 @@ fn args(root: &std::path::Path, transactions: &str) -> anyhow::Result<freeze::Fr
     })
 }
 
+/// Two conversions on one day: the app's records, not statement order, decide
+/// which foreign line belongs to which TWD line.
+#[test]
+fn same_day_conversions_pair_by_their_records() -> anyhow::Result<()> {
+    const SAVINGS: &str = "\
+111111111111 活存
+幣別：TWD
+交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註
+2024/06/07,2024/06/07,網銀外存,9000,,3800,,222222222222
+2024/06/07,2024/06/07,網銀外存,3200,,12800,,222222222222
+2024/06/01,2024/06/01,存入,,16000,16000,,
+";
+    const FX_USD: &str = "\
+222222222222 活存外幣
+幣別：USD
+交易日期,帳務日期,提出,存入,餘額,成交匯率,交易資訊
+2024/06/07,2024/06/07,−,USD 100.00,USD 100.00,32,台幣存 111111111111TWD
+";
+    const FX_JPY: &str = "\
+222222222222 活存外幣
+幣別：JPY
+交易日期,帳務日期,提出,存入,餘額,成交匯率,交易資訊
+2024/06/07,2024/06/07,−,\"JPY 45,000\",\"JPY 45,000\",0.2,台幣存 111111111111TWD
+";
+    const RECORDS: &str = "\
+id,status,date,posted_date,kind,amount,currency,account,counter_account,counter_amount,\
+                           counter_currency,category,major_category,member,tags,note,source_party,\
+                           source_file,source_id,origin,correction_note,updated_at
+a:1,active,2024-06-01,,income,16000,TWD,國泰,,,,薪資,,,,,app,x,U1,raw,,
+a:2,active,2024-06-07,,transfer,3200,TWD,國泰,外幣帳戶,100,USD,,,,,,app,x,U2,raw,,
+a:3,active,2024-06-07,,transfer,9000,TWD,國泰,外幣帳戶,45000,JPY,,,,,,app,x,U3,raw,,
+";
+    let dir = TempDir::new()?;
+    let root = dir.path();
+    let write = |name: &str, contents: &str| -> anyhow::Result<std::path::PathBuf> {
+        let path = root.join(name);
+        std::fs::write(&path, contents)?;
+        Ok(path)
+    };
+    write(
+        "mapping.toml",
+        &MAPPING.replace("[expenses]", "[income]\n\"薪資\" = \"Income:Salary\"\n\n[expenses]"),
+    )?;
+    let args = freeze::FreezeArgs {
+        journal: root.join("journal.csv"),
+        build: BuildArgs {
+            cathay_statements: vec![
+                write("savings.csv", SAVINGS)?,
+                write("usd.csv", FX_USD)?,
+                write("jpy.csv", FX_JPY)?,
+            ],
+            daily_income_expense: None,
+            daily_transfers: None,
+            transactions: Some(write("transactions.csv", RECORDS)?),
+            backfill: false,
+            ledger_dir: root.to_path_buf(),
+        },
+    };
+    let frozen = freeze::run(&args)?;
+    assert!(frozen.ok(), "did not reconcile:\n{frozen}");
+
+    // Each conversion is one transaction: the TWD leg and its own foreign leg.
+    let written = journal::read(&args.journal)?;
+    let mut groups: BTreeMap<u64, Vec<(Currency, Decimal)>> = BTreeMap::new();
+    for p in written.postings.iter().filter(|p| p.account.starts_with("Assets:Cathay")) {
+        groups.entry(p.group).or_default().push((p.currency, p.amount));
+    }
+    let conversions: Vec<&Vec<(Currency, Decimal)>> =
+        groups.values().filter(|legs| legs.len() == 2).collect();
+    assert_eq!(conversions.len(), 2, "{groups:?}");
+    for legs in conversions {
+        let pair = (
+            legs.contains(&(Currency::TWD, dec!(-3200))),
+            legs.contains(&(Currency::USD, dec!(100.00))),
+        );
+        let other = (
+            legs.contains(&(Currency::TWD, dec!(-9000))),
+            legs.contains(&(Currency::JPY, dec!(45000))),
+        );
+        assert!(pair == (true, true) || other == (true, true), "mispaired: {legs:?}");
+    }
+    let bal = balances(&written);
+    assert!(!bal.keys().any(|(a, _)| a.contains("Uncategorized")), "a record went unmatched");
+    Ok(())
+}
+
 /// An opening that contradicts its statement (amount, or a later date) fails.
 #[test]
 fn a_declared_opening_contradicting_its_statement_fails() -> anyhow::Result<()> {

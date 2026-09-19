@@ -205,6 +205,29 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         statements::cathay::info_names_account(&line.info, &s.account_no)
             || statements::cathay::info_names_account(&line.memo, &s.account_no)
     };
+    // The app's transfer record for one side of a conversion: same amounts
+    // both ways, the other pool as contra, not yet reserved.
+    let conversion_record = |near_si: usize,
+                             near: &statements::cathay::StatementLine,
+                             far_si: usize,
+                             far: &statements::cathay::StatementLine,
+                             taken: Option<&HashSet<usize>>|
+     -> Option<usize> {
+        let events = pools.get(pool_of[near_si].as_str()).unwrap_or(&no_events);
+        events
+            .iter()
+            .enumerate()
+            .filter(|(ei, e)| {
+                !taken.is_some_and(|t| t.contains(ei))
+                    && e.delta == near.delta()
+                    && e.currency == statements[near_si].currency
+                    && matches!(&e.contra, daily::Contra::Account(n) if *n == pool_of[far_si])
+                    && e.far == Some((far.delta().abs(), statements[far_si].currency))
+                    && (e.date - near.book_date).num_days().abs() <= matching::MAX_TOLERANCE
+            })
+            .min_by_key(|(_, e)| (e.date - near.book_date).num_days().abs())
+            .map(|(ei, _)| ei)
+    };
     let mut reserved: HashMap<&str, HashSet<usize>> = HashMap::new();
     let mut n_converted = 0usize;
     for &(si, li) in &flat {
@@ -212,16 +235,32 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         if !line.delta().is_sign_negative() || paired.contains(&(si, li)) {
             continue;
         }
-        let counterpart = flat.iter().copied().find(|&(sj, lj)| {
-            let other = &statements[sj].lines[lj];
-            statements[sj].currency != statements[si].currency
-                && statements[sj].account_no != statements[si].account_no
-                && !paired.contains(&(sj, lj))
-                && other.book_date == line.book_date
-                && other.delta().is_sign_positive()
-                && names(line, &statements[sj])
-                && names(other, &statements[si])
+        let candidates: Vec<(usize, usize)> = flat
+            .iter()
+            .copied()
+            .filter(|&(sj, lj)| {
+                let other = &statements[sj].lines[lj];
+                statements[sj].currency != statements[si].currency
+                    && statements[sj].account_no != statements[si].account_no
+                    && !paired.contains(&(sj, lj))
+                    && other.book_date == line.book_date
+                    && other.delta().is_sign_positive()
+                    && names(line, &statements[sj])
+                    && names(other, &statements[si])
+            })
+            .collect();
+        // Amounts in two currencies can't be compared directly, so the app's
+        // record decides which half belongs to which; without one, only an
+        // unambiguous single candidate pairs.
+        let recorded = candidates.iter().copied().find(|&(sj, lj)| {
+            let taken = reserved.get(pool_of[si].as_str());
+            conversion_record(si, line, sj, &statements[sj].lines[lj], taken).is_some()
         });
+        let counterpart = match (recorded, candidates.as_slice()) {
+            (Some(c), _) => Some(c),
+            (None, [only]) => Some(*only),
+            (None, _) => None,
+        };
         let Some((sj, lj)) = counterpart else { continue };
         paired.insert((si, li));
         paired.insert((sj, lj));
@@ -229,41 +268,9 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         n_converted += 1;
 
         let other = &statements[sj].lines[lj];
-        let sides = [
-            (
-                &pool_of[si],
-                line,
-                statements[si].currency,
-                &pool_of[sj],
-                other,
-                statements[sj].currency,
-            ),
-            (
-                &pool_of[sj],
-                other,
-                statements[sj].currency,
-                &pool_of[si],
-                line,
-                statements[si].currency,
-            ),
-        ];
-        for (pool, near, near_currency, far_pool, far, far_currency) in sides {
-            let events = pools.get(pool.as_str()).unwrap_or(&no_events);
-            let taken = reserved.entry(pool.as_str()).or_default();
-            let record = events
-                .iter()
-                .enumerate()
-                .filter(|(ei, e)| {
-                    !taken.contains(ei)
-                        && e.delta == near.delta()
-                        && e.currency == near_currency
-                        && matches!(&e.contra, daily::Contra::Account(n) if n == far_pool)
-                        && e.far == Some((far.delta().abs(), far_currency))
-                        && (e.date - near.book_date).num_days().abs() <= matching::MAX_TOLERANCE
-                })
-                .min_by_key(|(_, e)| (e.date - near.book_date).num_days().abs())
-                .map(|(ei, _)| ei);
-            if let Some(ei) = record {
+        for (near_si, near, far_si, far) in [(si, line, sj, other), (sj, other, si, line)] {
+            let taken = reserved.entry(pool_of[near_si].as_str()).or_default();
+            if let Some(ei) = conversion_record(near_si, near, far_si, far, Some(taken)) {
                 taken.insert(ei);
             }
         }
@@ -342,7 +349,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let mut n_backfill = 0usize;
     // Accounts whose opening the backfill derives; other statements open
     // themselves.
-    let mut derived_openings: BTreeSet<&str> = BTreeSet::new();
+    let mut derived_openings: BTreeMap<&str, (Decimal, NaiveDate)> = BTreeMap::new();
 
     // --- history from before the statements begin ---
     //
@@ -411,7 +418,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             cathay.push(Directive::Blank);
             used_accounts.insert(savings.to_string());
             used_accounts.insert(investment.to_string());
-            derived_openings.extend([savings, investment]);
+            derived_openings.insert(savings, (savings_open, start));
+            derived_openings.insert(investment, (opening_of(investment), start));
 
             for event in &pre {
                 let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
@@ -487,7 +495,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             statement.lines.len(),
             paths.join(", ")
         )));
-        if !derived_openings.contains(account) {
+        if !derived_openings.contains_key(account) {
             // Dated the day before, so the assertion below still checks something:
             // Beancount asserts at the start of the day.
             cathay.push(Directive::Transaction(model::Transaction {
@@ -734,23 +742,30 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let mut openings: Vec<Directive> = Vec::new();
     let mut superseded_openings: BTreeSet<String> = BTreeSet::new();
     for (account, ob) in &declared {
-        // A statement already opens this account; the two must agree, else
-        // neither may silently win.
-        let covering = statements
-            .iter()
-            .zip(&bank_accounts)
-            .find(|(s, a)| **a == account && s.currency == ob.currency)
-            .map(|(s, _)| s);
-        if let Some(statement) = covering {
-            let first = statement.lines.first().expect("load rejects empty statements").book_date;
+        // The backfill or a statement already opens this account; the two must
+        // agree, else neither may silently win.
+        let derived = derived_openings
+            .get(account.as_str())
+            .filter(|_| ob.currency == Currency::TWD)
+            .map(|&(amount, date)| (amount, date, "the backfill"));
+        let covering = derived.or_else(|| {
+            statements
+                .iter()
+                .zip(&bank_accounts)
+                .find(|(s, a)| **a == account && s.currency == ob.currency)
+                .map(|(s, _)| {
+                    let first = s.lines.first().expect("load rejects empty statements");
+                    (s.opening_balance(), first.book_date, "its statement")
+                })
+        });
+        if let Some((amount, from, by)) = covering {
             anyhow::ensure!(
-                ob.amount == statement.opening_balance() && ob.date <= first,
-                "opening {account} {} = {} on {} contradicts its statement, which opens at {} \
-                 before {first}",
+                ob.amount == amount && ob.date <= from,
+                "opening {account} {} = {} on {} contradicts {by}, which opens at {amount} before \
+                 {from}",
                 ob.currency,
                 ob.amount,
                 ob.date,
-                statement.opening_balance()
             );
             superseded_openings.insert(format!("{account} {}", ob.currency));
             continue;

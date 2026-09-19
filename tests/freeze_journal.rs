@@ -291,6 +291,38 @@ expense = "Expenses:Uncategorized"
     Ok(())
 }
 
+/// With the backfill, the opening it derives is what an opening row for the
+/// bank account must agree with, not the statement's own later figure.
+#[test]
+fn an_opening_row_is_checked_against_the_backfill_opening() -> anyhow::Result<()> {
+    // 國泰 maps to the savings account itself, so it can name it in a row.
+    let mapping =
+        MAPPING.replace(r#""國泰" = "Assets:Cathay""#, r#""國泰" = "Assets:Cathay:Savings""#);
+    // Statement opens at 0 on 2024-03-01; backfill before it spends 200 on
+    // 2022-02-01 and moves 3000 on 2022-05-01, so it derives an opening of 3200.
+    for (amount, ok) in [("3200", true), ("0", false)] {
+        let (_dir, args, _load) = fixture();
+        std::fs::write(args.build.ledger_dir.join("mapping.toml"), &mapping)?;
+        let records = TRANSACTIONS.replace(
+            "o:1,active,2022-01-01,,opening,1000,TWD,現金",
+            &format!(
+                "o:1,active,2022-01-01,,opening,1000,TWD,現金,,,,,,,,,config,m,,added,,\no:2,\
+                 active,2022-01-01,,opening,{amount},TWD,國泰"
+            ),
+        );
+        std::fs::write(args.build.ledger_dir.join("transactions.csv"), records)?;
+        let result = freeze::run(&args);
+        match ok {
+            true => assert!(result?.ok(), "a correct opening row was rejected"),
+            false => {
+                let err = result.expect_err("a contradicting opening row must fail");
+                assert!(err.to_string().contains("contradicts the backfill"), "{err:#}");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn the_journal_load_refuses_a_non_empty_database() -> anyhow::Result<()> {
     let (_dir, freeze_args, load_args) = fixture();
