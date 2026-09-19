@@ -98,17 +98,14 @@ fn balances(journal: &journal::Journal) -> BTreeMap<(String, Currency), Decimal>
     out
 }
 
-#[test]
-fn freeze_reads_yearly_exports_a_foreign_account_and_corrected_records() -> anyhow::Result<()> {
-    let dir = TempDir::new()?;
-    let root = dir.path();
+fn args(root: &std::path::Path, mapping: &str) -> anyhow::Result<freeze::FreezeArgs> {
     let write = |name: &str, contents: &str| -> anyhow::Result<std::path::PathBuf> {
         let path = root.join(name);
         std::fs::write(&path, contents)?;
         Ok(path)
     };
-    write("mapping.toml", MAPPING)?;
-    let args = freeze::FreezeArgs {
+    write("mapping.toml", mapping)?;
+    Ok(freeze::FreezeArgs {
         journal: root.join("journal.csv"),
         build: BuildArgs {
             cathay_statements: vec![
@@ -124,7 +121,32 @@ fn freeze_reads_yearly_exports_a_foreign_account_and_corrected_records() -> anyh
             backfill: true,
             ledger_dir: root.to_path_buf(),
         },
-    };
+    })
+}
+
+/// A declared opening the statement contradicts — another amount, or a date
+/// after the statement already starts — fails the freeze instead of one of
+/// the two silently winning.
+#[test]
+fn a_declared_opening_contradicting_its_statement_fails() -> anyhow::Result<()> {
+    let declared =
+        r#""Assets:Cathay:FX" = { amount = "0.50", date = "2023-01-01", currency = "USD" }"#;
+    for contradiction in [
+        r#""Assets:Cathay:FX" = { amount = "0.75", date = "2023-01-01", currency = "USD" }"#,
+        r#""Assets:Cathay:FX" = { amount = "0.50", date = "2024-06-08", currency = "USD" }"#,
+    ] {
+        let dir = TempDir::new()?;
+        let args = args(dir.path(), &MAPPING.replace(declared, contradiction))?;
+        let err = freeze::run(&args).expect_err("a contradicting opening must fail");
+        assert!(err.to_string().contains("contradicts its statement"), "{err:#}");
+    }
+    Ok(())
+}
+
+#[test]
+fn freeze_reads_yearly_exports_a_foreign_account_and_corrected_records() -> anyhow::Result<()> {
+    let dir = TempDir::new()?;
+    let args = args(dir.path(), MAPPING)?;
 
     let frozen = freeze::run(&args)?;
     assert!(frozen.ok(), "did not reconcile:\n{frozen}");

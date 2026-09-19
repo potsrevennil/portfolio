@@ -733,12 +733,24 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     let mut superseded_openings: BTreeSet<String> = BTreeSet::new();
     for (account, ob) in declared {
         // A statement for the account and currency already opens it at the
-        // bank's own figure; declaring it again would count it twice.
-        if statements
+        // bank's own figure; declaring it again would count it twice. The two
+        // must agree, or one of them is wrong and neither may silently win.
+        let covering = statements
             .iter()
             .zip(&bank_accounts)
-            .any(|(s, a)| *a == account && s.currency == ob.currency)
-        {
+            .find(|(s, a)| **a == account && s.currency == ob.currency)
+            .map(|(s, _)| s);
+        if let Some(statement) = covering {
+            let first = statement.lines.first().expect("load rejects empty statements").book_date;
+            anyhow::ensure!(
+                ob.amount == statement.opening_balance() && ob.date <= first,
+                "[opening_balances] {account} {} = {} on {} contradicts its statement, which \
+                 opens at {} before {first}",
+                ob.currency,
+                ob.amount,
+                ob.date,
+                statement.opening_balance()
+            );
             superseded_openings.insert(format!("{account} {}", ob.currency));
             continue;
         }
