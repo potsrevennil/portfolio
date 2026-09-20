@@ -29,7 +29,7 @@ pub fn opening_ref(account: &str, currency: Currency) -> String {
 
 /// Which pipeline produced a transaction. Its lowercase name is the
 /// `transactions.source` value, in the journal and the database alike.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Display, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Display, Serialize, Deserialize)]
 #[strum(serialize_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum Source {

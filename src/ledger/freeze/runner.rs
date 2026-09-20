@@ -164,6 +164,17 @@ fn reconcile(
         }
     }
 
+    // The loader keys dedup on (source, external_ref), so a journal with two
+    // transactions under one key cannot be loaded at all. Refuse to write one.
+    let mut keys: BTreeSet<(model::Source, &str)> = BTreeSet::new();
+    for txn in model.transactions().chain(manual) {
+        if let Some(external_ref) = &txn.external_ref {
+            if !keys.insert((txn.source, external_ref)) {
+                bail!("two transactions share the dedup key ({}, {external_ref})", txn.source);
+            }
+        }
+    }
+
     let assertions = model
         .balances()
         .map(|b| model::Balance {

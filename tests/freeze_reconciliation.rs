@@ -540,3 +540,25 @@ a:1,active,2024-06-01,,income,5000,TWD,國泰,,,,薪資,,自己,,,app,f,U-PAY,ra
     assert_eq!(carrying.len(), 1, "the record was emitted {} times", carrying.len());
     Ok(())
 }
+
+/// Two records that happen to carry one id are still two movements: the
+/// one-emission rule keys on which record it is, so neither far side is lost
+/// and the dedup key they share is reported rather than silently merged.
+#[test]
+fn two_records_sharing_an_id_are_both_kept() -> anyhow::Result<()> {
+    let dir = TempDir::new()?;
+    let args = inputs(
+        &dir,
+        &[("savings.csv", &statement("111111111111", "2024/06/01,2024/06/01,存入,,5000,5000,,\n"))],
+        Records::Corrected(
+            "a:0,active,2024-06-01,,income,5000,TWD,國泰,,,,薪資,,自己,,,app,f,U-PAY,raw,,
+a:1,active,2024-06-05,,transfer,300,TWD,國泰,現金,300,TWD,,,,,,app,f,U-SAME,raw,,
+a:2,active,2024-06-06,,transfer,400,TWD,國泰,現金,400,TWD,,,,,,app,f,U-SAME,raw,,
+",
+        ),
+    )?;
+
+    let err = freeze::run(&args).expect_err("one dedup key on two records");
+    assert!(format!("{err:#}").contains("(tiantian, U-SAME)"), "got: {err:#}");
+    Ok(())
+}

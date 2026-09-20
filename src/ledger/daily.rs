@@ -39,6 +39,10 @@ pub struct AppEvent {
     /// the same id on both sides of a 轉帳 row. See [`AppEvent::correction_id`]
     /// for why a correction may not name every one of them.
     pub id: String,
+    /// Which record this is a view of. Identity, where `id` is only a label:
+    /// the two sides of one 轉帳 row share it, two records that happen to carry
+    /// the same id do not.
+    pub record: usize,
 }
 
 impl AppEvent {
@@ -86,7 +90,7 @@ fn parse_currency(cell: Option<&str>) -> Result<Currency> {
 /// foreign currency was booked as if it were TWD.
 pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
     let mut out = Vec::new();
-    for entry in entries {
+    for (record, entry) in entries.iter().enumerate() {
         match entry {
             Entry::Flow { date, account, amount, currency, category, memo, id } => {
                 if account != subject {
@@ -100,6 +104,7 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                     memo: memo.clone(),
                     far: None,
                     id: id.clone(),
+                    record,
                 });
             }
             // A transfer between two of the subject's own accounts is recorded
@@ -124,6 +129,7 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                         memo: memo.clone(),
                         far: Some((*inn, *in_currency)),
                         id: id.clone(),
+                        record,
                     });
                 }
                 if to == subject {
@@ -135,6 +141,7 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
                         memo: memo.clone(),
                         far: Some((*sent, *out_currency)),
                         id: id.clone(),
+                        record,
                     });
                 }
             }

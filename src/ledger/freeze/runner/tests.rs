@@ -203,3 +203,31 @@ fn an_inferred_leg_in_a_multi_currency_transaction_is_rejected() {
     .expect_err("the inferred leg has no single currency to take");
     assert!(format!("{err:#}").contains("multi-currency"), "got: {err:#}");
 }
+
+/// Two transactions under one (source, external_ref) cannot be loaded, so the
+/// freeze refuses to write them rather than leaving the loader to fail.
+#[test]
+fn a_repeated_dedup_key_is_refused() {
+    let txn = |account: &str| model::Transaction {
+        date: day(),
+        payee: String::new(),
+        narration: String::new(),
+        tags: Vec::new(),
+        postings: vec![
+            explicit(account, dec!(100), Currency::TWD),
+            explicit("Assets:Cash", dec!(-100), Currency::TWD),
+        ],
+        source: model::Source::Tiantian,
+        external_ref: Some("U-1".to_string()),
+    };
+    let model = model::Model {
+        cathay: vec![
+            model::Directive::Transaction(txn("Expenses:Food")),
+            model::Directive::Transaction(txn("Expenses:Travel")),
+        ],
+        ..model::Model::default()
+    };
+
+    let err = reconcile(&model, &[]).expect_err("one key, two transactions");
+    assert!(format!("{err:#}").contains("(tiantian, U-1)"), "got: {err:#}");
+}
