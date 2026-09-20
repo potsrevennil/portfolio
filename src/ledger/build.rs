@@ -21,7 +21,10 @@ use super::{
     summary::Summary,
     writer,
 };
-use crate::currency::Currency;
+use crate::{
+    currency::Currency,
+    store::assertions::{AssertionSource, BalanceAssertion},
+};
 
 /// Each account's balance as the app's own records imply it, per currency.
 ///
@@ -358,6 +361,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         claimed.get(institution_app).cloned().unwrap_or_default();
 
     let mut cathay: Vec<Directive> = Vec::new();
+    let mut statement_periods: Vec<BalanceAssertion> = Vec::new();
     let mut used_accounts: BTreeSet<String> = BTreeSet::new();
     let mut unmapped: BTreeSet<String> = BTreeSet::new();
     // Which [overrides] entries actually matched a record. An id that matches
@@ -644,6 +648,16 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             amount: statement.closing_balance(),
             currency,
         }));
+        statement_periods.push(BalanceAssertion {
+            source: AssertionSource::Statement,
+            account: account.to_string(),
+            currency,
+            period_start: Some(first.book_date),
+            opening: Some(statement.opening_balance()),
+            // Beancount asserts at the start of assert_date.
+            period_end: statement.assert_date().pred_opt().expect("assert_date follows a line"),
+            closing: statement.closing_balance(),
+        });
         cathay.push(Directive::Blank);
     }
 
@@ -843,7 +857,14 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         stale_overrides: chart.stale_overrides(&used_overrides),
         unmapped,
     };
-    let ledger_model = model::Model { cathay, daily, asserts, openings, opens: used_accounts };
+    let ledger_model = model::Model {
+        cathay,
+        statements: statement_periods,
+        daily,
+        asserts,
+        openings,
+        opens: used_accounts,
+    };
     Ok((ledger_model, summary))
 }
 

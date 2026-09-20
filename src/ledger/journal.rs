@@ -7,8 +7,12 @@
 //!
 //! One row per posting. Transaction-level fields (`date`, `payee`, `narration`,
 //! `external_ref`) repeat across a group's rows; `tags` is per-posting.
+//!
+//! Beside it, [`assertions_path`] holds the balance assertions freeze verified
+//! the journal against, one row per [`BalanceAssertion`], so the loader can
+//! hand them to `check`. A separate file keeps the journal one row per posting.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
@@ -16,7 +20,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use super::model::Source;
-use crate::currency::Currency;
+use crate::{currency::Currency, store::assertions::BalanceAssertion};
 
 /// The reserved posting tag marking a securities-placeholder leg (the ETF
 /// backfill). The freeze tool stamps it, the loader reads it back to note the
@@ -118,6 +122,31 @@ pub fn read(path: impl AsRef<Path>) -> Result<Journal> {
     Ok(journal)
 }
 
+/// `ledger/journal.csv` → `ledger/journal.assertions.csv`.
+pub fn assertions_path(journal: &Path) -> PathBuf { journal.with_extension("assertions.csv") }
+
+pub fn write_assertions(path: &Path, assertions: &[BalanceAssertion]) -> Result<()> {
+    let mut writer = csv::WriterBuilder::new()
+        .from_path(path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    for a in assertions {
+        writer.serialize(a)?;
+    }
+    writer.flush().with_context(|| format!("flushing {}", path.display()))?;
+    Ok(())
+}
+
+pub fn read_assertions(path: &Path) -> Result<Vec<BalanceAssertion>> {
+    csv::ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .from_path(path)
+        .with_context(|| format!("opening {}", path.display()))?
+        .deserialize()
+        .enumerate()
+        .map(|(row, a)| a.with_context(|| format!("reading {} row {}", path.display(), row + 1)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use rust_decimal_macros::dec;
@@ -180,6 +209,40 @@ mod tests {
         )?;
         let err = read(file.path()).expect_err("a misspelt source must not load");
         assert!(format!("{err:#}").contains("imprt"), "got: {err:#}");
+        Ok(())
+    }
+
+    #[test]
+    fn assertions_round_trip_with_and_without_an_opening() -> Result<()> {
+        use crate::store::assertions::AssertionSource;
+        let day = |d| NaiveDate::from_ymd_opt(2024, 7, d).unwrap();
+        let assertions = vec![
+            BalanceAssertion {
+                source: AssertionSource::Statement,
+                account: "Assets:Bank".into(),
+                currency: Currency::TWD,
+                period_start: Some(day(1)),
+                opening: Some(dec!(10.50)),
+                period_end: day(31),
+                closing: dec!(-3),
+            },
+            BalanceAssertion {
+                source: AssertionSource::Tiantian,
+                account: "Assets:Cash".into(),
+                currency: Currency::USD,
+                period_start: None,
+                opening: None,
+                period_end: day(2),
+                closing: dec!(0),
+            },
+        ];
+        let file = tempfile::Builder::new().suffix(".csv").tempfile()?;
+        write_assertions(file.path(), &assertions)?;
+        assert_eq!(read_assertions(file.path())?, assertions);
+        assert_eq!(
+            assertions_path(Path::new("ledger/journal.csv")),
+            Path::new("ledger/journal.assertions.csv")
+        );
         Ok(())
     }
 }

@@ -44,6 +44,7 @@
                 sqlite
 
                 beancount
+                hledger
                 fava
                 ;
             };

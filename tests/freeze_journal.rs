@@ -11,6 +11,10 @@ use portfolio::{
     currency::Currency,
     db,
     ledger::{args::Args as BuildArgs, freeze, journal, load, model},
+    store::{
+        self,
+        assertions::{self, AssertionSource, BalanceAssertion},
+    },
 };
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -111,7 +115,7 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     let frozen = freeze::run(&freeze_args)?;
     assert!(frozen.ok(), "reconciliation failed:\n{frozen}");
     assert!(frozen.negatives.is_empty(), "an asset closed negative:\n{frozen}");
-    assert!(frozen.assertions_checked > 0, "no assertions were checked");
+    assert!(frozen.figures_checked > 0, "no balance figures were checked");
     assert!(frozen.placeholders >= 1, "ETF placeholder not tagged:\n{frozen}");
     assert_eq!(frozen.conversions, 2, "cross-currency transfer not plugged:\n{frozen}");
     assert_eq!(frozen.manual, 1, "manual.csv entry not counted:\n{frozen}");
@@ -183,6 +187,67 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
         .await?
         .get(0);
     assert_eq!(accounts, created, "not every account has a created event");
+
+    // Frozen history is reviewed by definition; none of it lands in the queue.
+    let unreviewed: i64 = sqlx::query("SELECT COUNT(*) FROM transactions WHERE reviewed = 0")
+        .fetch_one(&pool)
+        .await?
+        .get(0);
+    assert_eq!(unreviewed, 0, "load-journal left history unreviewed");
+
+    // Every assertion freeze verified is in SQLite, and the load's check passed.
+    let written = journal::read_assertions(&journal::assertions_path(&freeze_args.journal))?;
+    let stored = assertions::load(&mut *pool.acquire().await?).await?;
+    assert_eq!(stored.len(), written.len());
+    let statement = stored
+        .iter()
+        .find(|a| a.source == AssertionSource::Statement)
+        .expect("the savings statement period was not loaded");
+    assert_eq!(
+        (statement.account.as_str(), statement.opening, statement.closing),
+        ("Assets:Cathay:Savings", Some(dec!(0)), dec!(4900))
+    );
+    assert_eq!(statement.period_start, NaiveDate::from_ymd_opt(2024, 3, 1));
+    assert!(stored.iter().any(|a| a.source == AssertionSource::Tiantian));
+    let figures: usize = stored.iter().map(|a| a.points().count()).sum();
+    assert!(loaded.check.ok() && loaded.check.figures() == figures, "{}", loaded.check);
+    Ok(())
+}
+
+/// A journal that disagrees with its statement must not load: the gate runs
+/// inside the load's transaction, so nothing commits.
+#[tokio::test]
+async fn load_journal_refuses_history_that_fails_the_check() -> anyhow::Result<()> {
+    let (_dir, freeze_args, load_args) = fixture();
+    freeze::run(&freeze_args)?;
+    let path = journal::assertions_path(&freeze_args.journal);
+    let mut tampered = journal::read_assertions(&path)?;
+    let statement = tampered
+        .iter_mut()
+        .find(|a| a.source == AssertionSource::Statement)
+        .expect("a statement assertion");
+    statement.closing += dec!(1);
+    journal::write_assertions(&path, &tampered)?;
+
+    let err = load::run(&load_args).await.expect_err("a drifting journal must not load");
+    let message = format!("{err:#}");
+    assert!(message.contains("MISMATCH Assets:Cathay:Savings TWD"), "{message}");
+    assert!(message.contains("off by -1"), "{message}");
+
+    let pool = db::init_db(&load_args.database_url).await?;
+    let transactions: i64 =
+        sqlx::query("SELECT COUNT(*) FROM transactions").fetch_one(&pool).await?.get(0);
+    assert_eq!(transactions, 0, "a failed check must roll the whole load back");
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_journal_requires_the_assertions_file() -> anyhow::Result<()> {
+    let (_dir, freeze_args, load_args) = fixture();
+    freeze::run(&freeze_args)?;
+    std::fs::remove_file(journal::assertions_path(&freeze_args.journal))?;
+    let err = load::run(&load_args).await.expect_err("an unchecked journal must not load");
+    assert!(format!("{err:#}").contains("assertions.csv"), "{err:#}");
     Ok(())
 }
 
@@ -215,6 +280,38 @@ async fn a_negative_asset_fails_the_freeze_and_removes_the_journal() -> anyhow::
     );
     assert!(frozen.to_string().contains("Assets:Empty-Wallet TWD = -600"), "{frozen}");
     assert!(!freeze_args.journal.exists(), "an untrusted journal must be removed");
+    assert!(
+        !journal::assertions_path(&freeze_args.journal).exists(),
+        "its assertions must go with it"
+    );
+    Ok(())
+}
+
+/// A failed freeze overwrites nothing: the pair from the last good run is still
+/// on disk, still verified, and no staged file is left behind.
+#[test]
+fn a_failed_freeze_leaves_the_last_verified_journal_in_place() -> anyhow::Result<()> {
+    let (_dir, freeze_args, _load) = fixture();
+    let assertions = journal::assertions_path(&freeze_args.journal);
+    assert!(freeze::run(&freeze_args)?.ok());
+    let good = std::fs::read_to_string(&freeze_args.journal)?;
+    let good_assertions = std::fs::read_to_string(&assertions)?;
+
+    // The same overdraw that fails the freeze in the test above.
+    std::fs::write(
+        freeze_args.build.ledger_dir.join("manual.csv"),
+        "date,account,contra,amount,payee,narration\n2024-08-01,Assets:Empty-Wallet,Expenses:Food,\
+         -600,overdraw,no funds\n",
+    )?;
+    assert!(!freeze::run(&freeze_args)?.ok(), "the overdraw should fail the freeze");
+
+    assert_eq!(std::fs::read_to_string(&freeze_args.journal)?, good, "the good journal was lost");
+    assert_eq!(std::fs::read_to_string(&assertions)?, good_assertions);
+    let leftovers: Vec<_> = std::fs::read_dir(freeze_args.build.ledger_dir)?
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter(|name| name.ends_with(".staged"))
+        .collect();
+    assert!(leftovers.is_empty(), "staged files left behind: {leftovers:?}");
     Ok(())
 }
 
@@ -357,6 +454,28 @@ fn leg(group: u64, account: &str, amount: Decimal) -> journal::Posting {
     }
 }
 
+/// What a hand-built journal adds up to. These tests exercise the loader's
+/// tripwires rather than the invariant, but the gate still needs something to
+/// check, and nothing outside the journal vouches for an invented one.
+fn self_assertions(postings: &[journal::Posting]) -> Vec<BalanceAssertion> {
+    let mut totals: std::collections::BTreeMap<(String, Currency), Decimal> = Default::default();
+    for p in postings {
+        *totals.entry((p.account.clone(), p.currency)).or_default() += p.amount;
+    }
+    totals
+        .into_iter()
+        .map(|((account, currency), closing)| BalanceAssertion {
+            source: AssertionSource::Counted,
+            account,
+            currency,
+            period_start: None,
+            opening: None,
+            period_end: NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
+            closing,
+        })
+        .collect()
+}
+
 /// Writes `postings` as a journal and loads it into a fresh database.
 async fn load_journal(postings: Vec<journal::Posting>) -> anyhow::Result<(TempDir, load::Report)> {
     let dir = TempDir::new()?;
@@ -364,7 +483,9 @@ async fn load_journal(postings: Vec<journal::Posting>) -> anyhow::Result<(TempDi
         journal: dir.path().join("journal.csv"),
         database_url: format!("sqlite:{}", dir.path().join("ledger-app.db").display()),
     };
+    let assertions = self_assertions(&postings);
     journal::write(&args.journal, &journal::Journal { postings })?;
+    journal::write_assertions(&journal::assertions_path(&args.journal), &assertions)?;
     let report = load::run(&args).await?;
     Ok((dir, report))
 }
@@ -405,4 +526,99 @@ async fn the_journal_load_types_accounts_by_their_root() -> anyhow::Result<()> {
             .expect_err("a rootless account must not load");
     assert!(format!("{err:#}").contains("\"Spending:Food\" is not a Beancount account"), "{err:#}");
     Ok(())
+}
+
+/// Runs `hledger check --strict` on a journal; hledger comes from `nix
+/// develop`.
+fn hledger_check(journal: &std::path::Path) -> std::process::Output {
+    std::process::Command::new("hledger")
+        .args(["check", "--strict", "-f"])
+        .arg(journal)
+        .output()
+        .expect("hledger not on PATH; run the tests inside `nix develop`")
+}
+
+/// The export is an independent audit: hledger must parse it, find every
+/// transaction balanced and every assertion true, and must catch a wrong one.
+#[tokio::test]
+async fn the_hledger_export_passes_hledger_check_and_catches_drift() -> anyhow::Result<()> {
+    let (dir, freeze_args, load_args) = fixture();
+    freeze::run(&freeze_args)?;
+    load::run(&load_args).await?;
+    let pool = db::init_db(&load_args.database_url).await?;
+    let path = dir.path().join("ledger.journal");
+
+    // A counted assertion in a currency no posting mentions must still declare
+    // its commodity, or --strict rejects the export.
+    assertions::insert(&mut *pool.acquire().await?, &BalanceAssertion {
+        source: AssertionSource::Counted,
+        account: "Assets:Cash".into(),
+        currency: portfolio::currency::Currency::USD,
+        period_start: None,
+        opening: None,
+        period_end: NaiveDate::from_ymd_opt(2024, 12, 31).unwrap(),
+        closing: dec!(0),
+    })
+    .await?;
+
+    let exported = store::hledger::export(&mut *pool.acquire().await?).await?;
+    assert!(exported.contains("=* 4900 TWD"), "statement closing not exported:\n{exported}");
+    assert!(exported.contains("commodity USD"), "undeclared commodity:\n{exported}");
+    std::fs::write(&path, &exported)?;
+    let out = hledger_check(&path);
+    assert!(
+        out.status.success(),
+        "hledger check failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    sqlx::query("UPDATE balance_assertion SET closing = '4901' WHERE source = 'statement'")
+        .execute(&pool)
+        .await?;
+    std::fs::write(&path, store::hledger::export(&mut *pool.acquire().await?).await?)?;
+    let out = hledger_check(&path);
+    assert!(!out.status.success(), "hledger accepted a wrong balance assertion");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Balance assertion failed"));
+    Ok(())
+}
+
+/// An empty assertions file must not wave the history through: the gate has
+/// nothing to check, so the load fails and commits nothing.
+#[tokio::test]
+async fn load_journal_refuses_an_empty_assertions_file() -> anyhow::Result<()> {
+    let (_dir, freeze_args, load_args) = fixture();
+    freeze::run(&freeze_args)?;
+    std::fs::write(journal::assertions_path(&freeze_args.journal), "")?;
+
+    let err = load::run(&load_args).await.expect_err("nothing vouches for this journal");
+    assert!(format!("{err:#}").contains("nothing vouches"), "{err:#}");
+    let pool = db::init_db(&load_args.database_url).await?;
+    let transactions: i64 =
+        sqlx::query("SELECT COUNT(*) FROM transactions").fetch_one(&pool).await?.get(0);
+    assert_eq!(transactions, 0, "unvouched history must not commit");
+    Ok(())
+}
+
+/// If the journal cannot be moved into place, the assertions already moved must
+/// not be left describing the previous journal.
+#[test]
+fn a_half_finished_move_leaves_no_mismatched_pair() -> anyhow::Result<()> {
+    let (_dir, freeze_args, _load) = fixture();
+    let assertions = journal::assertions_path(&freeze_args.journal);
+    // A non-empty directory in the journal's place: the rename cannot succeed.
+    std::fs::create_dir(&freeze_args.journal)?;
+    std::fs::write(freeze_args.journal.join("occupied"), "")?;
+
+    let err = freeze::run(&freeze_args).expect_err("the journal could not be moved into place");
+    assert!(format!("{err:#}").contains("re-run freeze"), "{err:#}");
+    assert!(!assertions.exists(), "assertions left beside a journal they do not describe");
+    assert!(!staged(&freeze_args.journal).exists(), "the staged journal was left behind");
+    Ok(())
+}
+
+/// The staged name freeze writes under, mirrored from the runner.
+fn staged(journal: &std::path::Path) -> std::path::PathBuf {
+    let mut name = journal.file_name().unwrap_or_default().to_os_string();
+    name.push(".staged");
+    journal.with_file_name(name)
 }
