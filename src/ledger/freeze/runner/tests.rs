@@ -194,6 +194,7 @@ fn two_inferred_legs_are_rejected() {
         ],
         day(),
         &None,
+        None,
     )
     .expect_err("which leg takes the remainder is ambiguous");
     assert!(format!("{err:#}").contains("more than one inferred"), "got: {err:#}");
@@ -209,6 +210,7 @@ fn an_inferred_leg_in_a_multi_currency_transaction_is_rejected() {
         ],
         day(),
         &None,
+        None,
     )
     .expect_err("the inferred leg has no single currency to take");
     assert!(format!("{err:#}").contains("multi-currency"), "got: {err:#}");
@@ -238,6 +240,6 @@ fn a_repeated_dedup_key_is_refused() {
         ..model::Model::default()
     };
 
-    let err = reconcile(&model, &[]).expect_err("one key, two transactions");
+    let err = reconcile(&model, &[], None).expect_err("one key, two transactions");
     assert!(format!("{err:#}").contains("(tiantian, U-1)"), "got: {err:#}");
 }

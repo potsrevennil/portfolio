@@ -502,9 +502,14 @@ fn self_assertions(postings: &[journal::Posting]) -> Vec<BalanceAssertion> {
 /// Writes `postings` as a journal and loads it into a fresh database.
 async fn load_journal(postings: Vec<journal::Posting>) -> anyhow::Result<(TempDir, load::Report)> {
     let dir = TempDir::new()?;
+    // The loader insists on a chart; these paths are not in it, so every label
+    // falls back to the leaf.
+    let mapping = dir.path().join("mapping.toml");
+    std::fs::write(&mapping, "[display]\n")?;
     let args = load::Args {
         journal: dir.path().join("journal.csv"),
         database_url: format!("sqlite:{}", dir.path().join("ledger-app.db").display()),
+        mapping,
     };
     let assertions = self_assertions(&postings);
     journal::write(&args.journal, &journal::Journal { postings })?;
@@ -534,7 +539,9 @@ async fn the_journal_load_types_accounts_by_their_root() -> anyhow::Result<()> {
         leg(0, "Expenses:Food", dec!(120)),
     ])
     .await?;
-    assert_eq!(report.accounts, 2);
+    // The two the journal names, plus the roots they hang from: every tree
+    // level is an account, so the UI has a labelled row for it.
+    assert_eq!(report.accounts, 4);
     let pool =
         db::init_db(&format!("sqlite:{}", dir.path().join("ledger-app.db").display())).await?;
     let kind: String = sqlx::query("SELECT type FROM accounts WHERE path = 'Liabilities:Card'")
@@ -547,7 +554,9 @@ async fn the_journal_load_types_accounts_by_their_root() -> anyhow::Result<()> {
         load_journal(vec![leg(0, "Spending:Food", dec!(120)), leg(0, "Assets:Cash", dec!(-120))])
             .await
             .expect_err("a rootless account must not load");
-    assert!(format!("{err:#}").contains("\"Spending:Food\" is not a Beancount account"), "{err:#}");
+    // The root is what has no type, and the root is the account reported: the
+    // loader reaches "Spending" before the leaf hanging off it.
+    assert!(format!("{err:#}").contains("\"Spending\" is not a Beancount account"), "{err:#}");
     Ok(())
 }
 

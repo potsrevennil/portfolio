@@ -12,6 +12,7 @@ use portfolio::{
     ledger::{
         journal::{self, Journal, Posting},
         load,
+        model::Source,
         valuation::AtCost,
     },
     YFinanceSource,
@@ -94,7 +95,7 @@ fn journal() -> Journal {
         .flat_map(|(group, (date, legs))| {
             legs.iter().map(move |(account, amount, currency)| Posting {
                 group: group as u64,
-                source: "manual".into(),
+                source: Source::Manual,
                 date: date.parse().unwrap(),
                 payee: None,
                 narration: "test".into(),
