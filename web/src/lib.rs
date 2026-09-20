@@ -8,4 +8,6 @@ pub mod model;
 #[cfg(feature = "ssr")]
 pub mod server;
 #[cfg(feature = "ssr")]
+#[cfg(feature = "ssr")]
 pub mod sheet;
+pub mod summary;

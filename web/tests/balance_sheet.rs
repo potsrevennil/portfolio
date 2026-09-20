@@ -12,6 +12,7 @@ use portfolio::{
     ledger::{
         journal::{self, Journal, Posting},
         load,
+        valuation::AtCost,
     },
     YFinanceSource,
 };
@@ -39,6 +40,8 @@ const MAPPING: &str = r#"
 "Assets:Split:Alpha:Tab"  = "分帳"
 "Assets:Split:Beta"       = "乙公司"
 "Assets:Split:Beta:Tab"   = "分帳"
+"Assets:Unlisted"         = "未上市持股"
+"Assets:Unlisted:Gamma"   = "丙公司股"
 "Liabilities"             = "負債"
 "Liabilities:Card"        = "信用卡"
 "Equity"                  = "權益"
@@ -74,6 +77,11 @@ fn journal() -> Journal {
             ("Assets:Cash", "-100", TWD),
         ]),
         ("2024-04-01", &[("Expenses:Food", "2500", TWD), ("Liabilities:Card", "-2500", TWD)]),
+        // Held at cost: shown, but in no total.
+        ("2024-04-02", &[
+            ("Assets:Unlisted:Gamma", "40000", TWD),
+            ("Assets:Bank:Savings", "-40000", TWD),
+        ]),
         // Closed out to zero: must not show.
         ("2024-05-01", &[("Assets:Old-Wallet", "70", TWD), ("Assets:Cash", "-70", TWD)]),
         ("2024-05-02", &[("Assets:Old-Wallet", "-70", TWD), ("Assets:Cash", "70", TWD)]),
@@ -128,7 +136,8 @@ async fn ledger() -> (TempDir, SqlitePool) {
 
 async fn render(pool: &SqlitePool) -> String {
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
-    let sheet = web::sheet::load(pool, as_of, Currency::TWD).await.unwrap();
+    let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\"]\n").unwrap();
+    let sheet = web::sheet::load(pool, as_of, Currency::TWD, &at_cost).await.unwrap();
     Owner::new().with(|| view! { <SheetView sheet /> }.to_html())
 }
 
@@ -204,8 +213,10 @@ async fn groups_fold_in_chart_order() {
     ] {
         rest = &rest[position(rest, label) + label.len()..];
     }
-    // 銀行, 分帳, 甲公司 and 乙公司 fold; leaves do not.
-    assert_eq!(html.matches("<details").count(), 4, "{html}");
+    // 銀行, 分帳, 甲公司, 乙公司 and 未上市持股 fold, and so do the two sections;
+    // leaves do not. Sections are rendered open, groups folded.
+    assert_eq!(html.matches("<details").count(), 7, "{html}");
+    assert_eq!(html.matches("<details open").count(), 2, "{html}");
 }
 
 #[tokio::test]
@@ -217,37 +228,63 @@ async fn totals_are_per_currency_and_converted() {
     let fx = &text[position(&text, "外幣")..position(&text, "活存")];
     assert_eq!(fx.trim(), "外幣 5,000 JPY 100 USD ≈ 3,000 TWD （未換算：JPY）");
     let savings = &text[position(&text, "活存")..position(&text, "現金")];
-    assert_eq!(savings.trim(), "活存 47,000 TWD");
+    assert_eq!(savings.trim(), "活存 7,000 TWD");
     // 資產: 1,000 − 100 cash + 47,000 + 3,000 (USD) + 300 − 200 splits; the
     // 2025 deposit is after the date.
     let assets = &text[position(&text, "資產")..position(&text, "銀行")];
-    assert!(assets.contains("5,000 JPY 48,000 TWD 100 USD ≈ 51,000 TWD"), "{assets}");
+    assert!(assets.contains("5,000 JPY 8,000 TWD 100 USD ≈ 11,000 TWD"), "{assets}");
+    // The at-cost holding is named apart from the total, not added to it.
+    assert!(assets.contains("另有成本 40,000 TWD"), "{assets}");
+    let unlisted = &text[position(&text, "未上市持股")..position(&text, "負債")];
+    assert!(unlisted.contains("40,000 TWD 成本，未計入總額"), "{unlisted}");
     let split = &text[position(&text, "分帳")..position(&text, "甲公司")];
     assert_eq!(split.trim(), "分帳 100 TWD");
     let alpha = &text[position(&text, "甲公司")..position(&text, "乙公司")];
     assert_eq!(alpha.trim(), "甲公司 300 TWD 分帳 300 TWD");
+    // A section holding only the base currency needs no converted line.
     let liabilities = &text[position(&text, "負債")..position(&text, "信用卡")];
-    assert!(liabilities.contains("-2,500 TWD"), "{liabilities}");
+    assert_eq!(liabilities.trim(), "負債 -2,500 TWD");
     let net = &text[position(&text, "淨資產")..];
-    assert!(net.starts_with("淨資產 48,500 TWD （未換算：JPY）"), "{net}");
+    assert!(net.starts_with("淨資產 8,500 TWD （未換算：JPY） 另有成本 40,000 TWD"), "{net}");
 }
 
 #[tokio::test]
-async fn the_server_renders_the_landing_page() {
+async fn the_server_renders_the_balance_sheet_route() {
     let (_dir, pool) = ledger().await;
     let options = LeptosOptions::builder().output_name("web").build();
-    let response = server::router(options, pool)
-        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+    let response = server::router(options, pool, AtCost::default())
+        .oneshot(Request::get("/balance-sheet").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert!(response.status().is_success(), "{}", response.status());
     let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec())
         .unwrap();
     assert!(html.contains(r#"<html lang="zh-Hant-TW">"#), "{html}");
-    assert!(html.contains("資產負債 · 帳簿"), "{html}");
+    assert!(html.contains("資產負債表 · 帳簿"), "{html}");
     let text = visible(&html);
     position(&text, "甲公司");
     position(&text, "淨資產");
+}
+
+#[tokio::test]
+async fn the_landing_page_summarises() {
+    let (_dir, pool) = ledger().await;
+    let options = LeptosOptions::builder().output_name("web").build();
+    let response = server::router(options, pool, AtCost::default())
+        .oneshot(Request::get("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec())
+        .unwrap();
+    assert!(html.contains("總覽 · 帳簿"), "{html}");
+    let text = visible(&html);
+    position(&text, "淨資產");
+    position(&text, "資產");
+    position(&text, "負債");
+    // The tree itself lives on its own page, one link away.
+    assert!(html.contains(r#"href="/balance-sheet""#), "{html}");
+    assert!(!text.contains("全部展開"), "{text}");
 }
 
 #[tokio::test]

@@ -7,7 +7,7 @@ use leptos_router::{
     path,
 };
 
-use crate::balance_sheet::BalanceSheetPage;
+use crate::{balance_sheet::BalanceSheetPage, summary::SummaryPage};
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
@@ -37,12 +37,14 @@ pub fn App() -> impl IntoView {
         <Router>
             <header class="top">
                 <nav>
-                    <A href="/" exact=true>"資產負債"</A>
+                    <A href="/" exact=true>"總覽"</A>
+                    <A href="/balance-sheet">"資產負債表"</A>
                 </nav>
             </header>
             <main>
                 <Routes fallback=|| view! { <p class="note">"查無此頁"</p> }>
-                    <Route path=path!("/") view=BalanceSheetPage />
+                    <Route path=path!("/") view=SummaryPage />
+                    <Route path=path!("/balance-sheet") view=BalanceSheetPage />
                 </Routes>
             </main>
         </Router>

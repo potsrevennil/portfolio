@@ -72,6 +72,12 @@ expense = "Expenses:Uncategorized"
 "證券"  = "Assets:Securities"
 "起鼓"  = "Equity:Opening-Balances"                         # opening balances
 
+# Accounts whose balance is what was paid, not what it is worth: an unlisted
+# holding has no market price, so adding it to a total would read as a
+# valuation nobody made. Reports show these at cost, outside the totals.
+[at_cost]
+accounts = ["Assets:Unlisted"]
+
 # Split accounts: running two-way balances with a person or group (current
 # accounts), one account per person or group, and the sign says who owes whom —
 # positive, they owe you; negative, you owe them. The freeze therefore lets

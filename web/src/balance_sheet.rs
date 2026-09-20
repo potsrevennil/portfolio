@@ -16,8 +16,9 @@ pub async fn load_balance_sheet() -> Result<BalanceSheet, ServerFnError> {
     use portfolio::currency::Currency;
 
     let pool = expect_context::<sqlx::SqlitePool>();
+    let at_cost = expect_context::<portfolio::ledger::valuation::AtCost>();
     let today = chrono::Local::now().date_naive();
-    crate::sheet::load(&pool, today, Currency::TWD)
+    crate::sheet::load(&pool, today, Currency::TWD, &at_cost)
         .await
         .map_err(|e| ServerFnError::new(format!("{e:#}")))
 }
@@ -26,7 +27,7 @@ pub async fn load_balance_sheet() -> Result<BalanceSheet, ServerFnError> {
 pub fn BalanceSheetPage() -> impl IntoView {
     let sheet = Resource::new(|| (), |_| load_balance_sheet());
     view! {
-        <Title text="資產負債" />
+        <Title text="資產負債表" />
         <Suspense fallback=|| view! { <p class="note">"載入中…"</p> }>
             {move || Suspend::new(async move {
                 match sheet.await {
@@ -40,25 +41,29 @@ pub fn BalanceSheetPage() -> impl IntoView {
 
 #[component]
 pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
-    let open = RwSignal::new(BTreeSet::<String>::new());
-    // Client only: restore the open groups once, then save every change.
+    // Sections start open; the groups under them start folded.
+    let sections: BTreeSet<String> = sheet.sections.iter().map(|s| s.path.clone()).collect();
+    let open = RwSignal::new(sections.clone());
+    // Client only: restore the open groups once, then save every change. The
+    // `open` attribute is rendered on the server, and hydration adopts the
+    // markup as it stands, so a restore has to land after it — the next frame.
     Effect::new(move |restored: Option<()>| {
         match restored {
-            None => {
+            None => request_animation_frame(move || {
                 if let Some(saved) = load_open() {
                     open.set(saved);
                 }
-            }
+            }),
             Some(()) => save_open(&open.read()),
         }
         open.track();
     });
 
-    let mut groups = BTreeSet::new();
+    let mut groups = sections.clone();
     for s in &sheet.sections {
         collect_groups(&s.nodes, &mut groups);
     }
-    let has_groups = !groups.is_empty();
+    let has_groups = groups.len() > sections.len();
 
     view! {
         <div class="sheet">
@@ -72,26 +77,41 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
                     <button type="button" on:click=move |_| open.set(BTreeSet::new())>"全部收合"</button>
                 </Show>
             </div>
-            {sheet
-                .sections
-                .into_iter()
+            <div class="columns">
+                {sheet
+                    .sections
+                    .into_iter()
                 .map(|s| {
+                    let path = s.path.clone();
+                    let is_open = {
+                        let path = path.clone();
+                        move || open.with(|o| o.contains(&path))
+                    };
                     view! {
-                        <section>
-                            <div class="row section">
+                        <details class="group" open=is_open on:toggle=on_toggle(path, open)>
+                            <summary class="row section">
+                                <span class="marker" aria-hidden="true"></span>
                                 <span class="name">{s.label}</span>
-                                <Figures amounts=s.amounts converted=Some(s.converted) />
-                            </div>
+                                <Figures
+                                    amounts=s.amounts
+                                    converted=s.converted
+                                    excluded=s.excluded
+                                />
+                            </summary>
                             {s.nodes.into_iter().map(|n| node(n, 0, open)).collect_view()}
-                        </section>
+                        </details>
                     }
                 })
-                .collect_view()}
+                    .collect_view()}
+            </div>
             <div class="row net">
                 <span class="name">"淨資產"</span>
                 <span class="figures">
-                    <MoneyText money=sheet.net_worth.money />
+                    <span class="amounts">
+                        <MoneyText money=sheet.net_worth.money />
+                    </span>
                     <Unpriced currencies=sheet.net_worth.unpriced />
+                    <Excluded excluded=sheet.excluded />
                 </span>
             </div>
         </div>
@@ -113,7 +133,11 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         view! {
             <span class="marker" aria-hidden="true"></span>
             <span class="name">{n.label.clone()}</span>
-            <Figures amounts=n.amounts.clone() converted=n.converted.clone() />
+            <Figures
+                amounts=n.amounts.clone()
+                converted=n.converted.clone()
+                at_cost=n.at_cost
+            />
         }
     };
     if n.children.is_empty() {
@@ -127,18 +151,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     let head = row();
     let children = n.children.into_iter().map(|c| node(c, depth + 1, open)).collect_view();
     view! {
-        <details
-            class="group"
-            prop:open=is_open
-            on:toggle=move |ev| {
-                let now = event_target::<HtmlDetailsElement>(&ev).open();
-                if open.with_untracked(|o| o.contains(&path)) != now {
-                    open.update(|o| {
-                        if now { o.insert(path.clone()) } else { o.remove(&path) };
-                    });
-                }
-            }
-        >
+        <details class="group" open=is_open on:toggle=on_toggle(path, open)>
             <summary class="row" style=indent>{head}</summary>
             {children}
         </details>
@@ -146,8 +159,33 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     .into_any()
 }
 
+/// Keeps the fold state in step with a `<details>` the reader just toggled.
+fn on_toggle(path: String, open: RwSignal<BTreeSet<String>>) -> impl Fn(leptos::web_sys::Event) {
+    move |ev: leptos::web_sys::Event| {
+        let now = event_target::<HtmlDetailsElement>(&ev).open();
+        if open.with_untracked(|o| o.contains(&path)) != now {
+            open.update(|o| {
+                if now {
+                    o.insert(path.clone())
+                } else {
+                    o.remove(&path)
+                };
+            });
+        }
+    }
+}
+
 #[component]
-fn Figures(amounts: Vec<Money>, converted: Option<Converted>) -> impl IntoView {
+fn Figures(
+    amounts: Vec<Money>,
+    converted: Option<Converted>,
+    /// A cost rather than a valuation, so it is labelled as one.
+    #[prop(default = false)]
+    at_cost: bool,
+    /// The at-cost holdings this total leaves out.
+    #[prop(default = None)]
+    excluded: Option<Converted>,
+) -> impl IntoView {
     let amounts = match amounts.is_empty() {
         true => vec![Money { text: "0".into(), negative: false }],
         false => amounts,
@@ -165,17 +203,31 @@ fn Figures(amounts: Vec<Money>, converted: Option<Converted>) -> impl IntoView {
                         </span>
                     }
                 })}
+            {at_cost.then(|| view! { <span class="at-cost">"成本，未計入總額"</span> })}
+            <Excluded excluded=excluded />
         </span>
     }
 }
 
+/// What a total leaves out because it is held at cost.
 #[component]
-fn MoneyText(money: Money) -> impl IntoView {
+pub fn Excluded(excluded: Option<Converted>) -> impl IntoView {
+    excluded.map(|c| {
+        view! {
+            <span class="at-cost">
+                {format!("另有成本 {}", c.money.text)} <Unpriced currencies=c.unpriced />
+            </span>
+        }
+    })
+}
+
+#[component]
+pub fn MoneyText(money: Money) -> impl IntoView {
     view! { <span class="money" class:negative=money.negative>{money.text}</span> }
 }
 
 #[component]
-fn Unpriced(currencies: Vec<String>) -> impl IntoView {
+pub fn Unpriced(currencies: Vec<String>) -> impl IntoView {
     (!currencies.is_empty())
         .then(|| view! { <span class="unpriced">{format!("（未換算：{}）", currencies.join("、"))}</span> })
 }

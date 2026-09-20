@@ -65,6 +65,26 @@ main {
   padding: 0.5rem 0 2rem;
 }
 
+/* One column on a phone. Side by side once both fit without squeezing the
+   figures, which are the widest thing on a row. */
+@media (min-width: 64rem) {
+  header.top nav,
+  main {
+    max-width: 76rem;
+  }
+
+  .columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 2.5rem;
+    align-items: start;
+  }
+
+  .columns > details > summary.row.section {
+    margin-top: 0;
+  }
+}
+
 .note {
   color: var(--muted);
   padding: 0 1rem;
@@ -139,12 +159,11 @@ details.group[open] > summary .marker::before {
 
 .row.section,
 .row.net {
-  padding-left: 1rem;
   font-weight: 700;
   font-size: 1.05rem;
 }
 
-section {
+details.group > summary.row.section {
   margin-top: 0.6rem;
   border-top: 1px solid var(--line);
 }
@@ -180,8 +199,66 @@ section {
 }
 
 .converted,
+.at-cost,
 .unpriced {
   color: var(--muted);
   font-size: 0.85rem;
   font-weight: 400;
+}
+
+.summary {
+  padding: 0 1rem;
+}
+
+.summary .as-of {
+  color: var(--muted);
+  margin: 0.6rem 0;
+}
+
+.summary .headline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.summary .headline .name {
+  color: var(--muted);
+}
+
+.summary .headline .money {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.tile {
+  flex: 1 1 10rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+}
+
+.tile .name {
+  color: var(--muted);
+}
+
+.tile .money {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.summary a {
+  color: var(--accent);
 }

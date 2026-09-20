@@ -28,15 +28,25 @@ pub struct Node {
     pub amounts: Vec<Money>,
     /// Only when a currency other than the base is held.
     pub converted: Option<Converted>,
+    /// A cost, not a valuation: shown, but left out of every total above it.
+    pub at_cost: bool,
     pub children: Vec<Node>,
 }
 
 /// 資產 or 負債.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
+    /// The root path, identifying the section's fold state; never shown.
+    pub path: String,
     pub label: String,
     pub amounts: Vec<Money>,
-    pub converted: Converted,
+    /// Only when a currency other than the base is held, as on a row.
+    pub converted: Option<Converted>,
+    /// The section's own total in the base currency, always present — the
+    /// summary shows one figure per section.
+    pub total: Converted,
+    /// The at-cost holdings this section's total leaves out.
+    pub excluded: Option<Converted>,
     pub nodes: Vec<Node>,
 }
 
@@ -46,4 +56,6 @@ pub struct BalanceSheet {
     pub base: String,
     pub sections: Vec<Section>,
     pub net_worth: Converted,
+    /// The at-cost holdings net worth leaves out.
+    pub excluded: Option<Converted>,
 }

@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use axum::Router;
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
+use portfolio::ledger::valuation::AtCost;
 use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 
 use crate::app::{shell, App};
@@ -14,15 +15,22 @@ use crate::app::{shell, App};
 /// The same default `load-journal` writes to.
 const DEFAULT_DATABASE_URL: &str = "sqlite:ledger-app.db";
 
+/// The chart config, for the reporting rules that are not in the database.
+/// `LEDGER_MAPPING` overrides it.
+const DEFAULT_MAPPING: &str = "ledger/mapping.toml";
+
 pub async fn open(url: &str) -> Result<SqlitePool> {
     // Never create: a mistyped path should fail, not serve an empty ledger.
     let options = SqliteConnectOptions::from_str(url)?.create_if_missing(false);
     SqlitePool::connect_with(options).await.with_context(|| format!("opening {url}"))
 }
 
-pub fn router(options: LeptosOptions, pool: SqlitePool) -> Router {
+pub fn router(options: LeptosOptions, pool: SqlitePool, at_cost: AtCost) -> Router {
     let routes = generate_route_list(App);
-    let context = move || provide_context(pool.clone());
+    let context = move || {
+        provide_context(pool.clone());
+        provide_context(at_cost.clone());
+    };
     Router::new()
         .leptos_routes_with_context(&options, routes, context, {
             let options = options.clone();
@@ -36,10 +44,20 @@ pub async fn run() -> Result<()> {
     let options = get_configuration(None)?.leptos_options;
     let url = std::env::var("LEDGER_DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.into());
     let pool = open(&url).await?;
+    let mapping = std::env::var("LEDGER_MAPPING").unwrap_or_else(|_| DEFAULT_MAPPING.into());
+    // Without it every balance is read as a valuation, which is the behaviour
+    // of a ledger that lists no at-cost holdings; say so rather than refusing.
+    let at_cost = match AtCost::load(&mapping) {
+        Ok(at_cost) => at_cost,
+        Err(e) => {
+            println!("no at-cost accounts ({e:#})");
+            AtCost::default()
+        }
+    };
     let addr = options.site_addr;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log_listening(addr);
-    axum::serve(listener, router(options, pool).into_make_service()).await?;
+    axum::serve(listener, router(options, pool, at_cost).into_make_service()).await?;
     Ok(())
 }
 

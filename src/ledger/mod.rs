@@ -20,6 +20,7 @@ pub mod names;
 pub mod rates;
 pub mod statements;
 pub mod summary;
+pub mod valuation;
 pub mod writer;
 
 pub use args::Args;
