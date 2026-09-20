@@ -3,6 +3,17 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
+/// Opens a database that must already exist: a read-only command pointed at a
+/// typo would otherwise create an empty one and report it as healthy.
+pub async fn open_db(db_url: &str) -> Result<SqlitePool> {
+    let path = db_url.trim_start_matches("sqlite:");
+    if Path::new(path).exists() {
+        init_db(db_url).await
+    } else {
+        anyhow::bail!("no database at {path}")
+    }
+}
+
 pub async fn init_db(db_url: &str) -> Result<SqlitePool> {
     let db_file_path = db_url.trim_start_matches("sqlite:");
 

@@ -440,7 +440,7 @@ async fn holdings_report_projects_the_portfolio_modules_positions() {
     let mut prices: HashMap<String, Vec<StockPrice>> = HashMap::new();
     prices.insert("AAPL".to_string(), vec![StockPrice { date: d(2026, 1, 6), close_price: 120.0 }]);
 
-    let report = holdings_report(&mut portfolio, d(2026, 1, 31), &prices);
+    let report = holdings_report(&mut portfolio, d(2026, 1, 31), &prices).unwrap();
 
     assert_eq!(report.reporting_currency, Currency::USD);
     assert_eq!(report.positions.len(), 1);
@@ -471,7 +471,7 @@ fn holdings_totals_convert_at_the_as_of_rate_not_the_newest() {
         StockPrice { date: d(2026, 6, 1), close_price: 35.0 }, // newer — must NOT be used
     ]);
 
-    let report = holdings_report(&mut portfolio, d(2026, 1, 31), &prices);
+    let report = holdings_report(&mut portfolio, d(2026, 1, 31), &prices).unwrap();
 
     assert_eq!(report.reporting_currency, Currency::TWD);
     // 10 * 120 = 1200 USD, converted at the Jan rate 30 (not the newer 35).
@@ -490,7 +490,7 @@ fn holdings_report_preserves_the_callers_daily_statements() {
     let kept: Vec<_> = portfolio.daily_statements.keys().copied().collect();
     assert!(!kept.is_empty());
 
-    let _ = holdings_report(&mut portfolio, d(2026, 1, 31), &prices);
+    let _ = holdings_report(&mut portfolio, d(2026, 1, 31), &prices).unwrap();
 
     assert_eq!(
         portfolio.daily_statements.keys().copied().collect::<Vec<_>>(),
@@ -614,16 +614,23 @@ async fn reports_over_frozen_history_exclude_the_conversions_plug() {
         balances.iter().any(|b| b.account_type == AccountType::Equity && !b.amount.is_zero());
     assert!(equity_nonzero, "expected a non-zero Equity:Conversions balance to exclude");
 
-    // ...and excluded from net worth. With no FX quotes in stock_prices the
-    // rate falls back to 1, so net worth is a plain signed sum of the asset and
-    // liability rows — recompute it here and require the report to match, which
-    // it only can if equity/income/expense were all left out.
-    let expected_assets: Decimal =
-        balances.iter().filter(|b| b.account_type == AccountType::Asset).map(|b| b.amount).sum();
+    // ...and excluded from net worth. Recompute it from the asset and liability
+    // rows (USD at 30) and require the report to match, which it only can if
+    // equity/income/expense were all left out.
+    add_price(&pool, "TWD=X", "2020-01-01", 30.0).await;
+    let rate = |b: &query::AccountBalance| match b.currency {
+        Currency::USD => dec!(30),
+        _ => Decimal::ONE,
+    };
+    let expected_assets: Decimal = balances
+        .iter()
+        .filter(|b| b.account_type == AccountType::Asset)
+        .map(|b| b.amount * rate(b))
+        .sum();
     let expected_liabilities: Decimal = balances
         .iter()
         .filter(|b| b.account_type == AccountType::Liability)
-        .map(|b| b.amount)
+        .map(|b| b.amount * rate(b))
         .sum();
 
     let series = net_worth_over_time(&pool, Currency::TWD, as_of, as_of, Grain::Day).await.unwrap();
@@ -643,8 +650,8 @@ async fn periodic_totals_over_frozen_history_reconcile_with_balances() {
 
     // Income and expense accounts have no opening balances and all their
     // postings fall inside the period, so the whole-period totals must
-    // equal the account balances (income negated to positive revenue). Rate is
-    // 1 (no FX quotes), so this holds currency-by-currency in the sum.
+    // equal the account balances (income negated to positive revenue). They are
+    // all in TWD, so no FX quote is needed.
     let expected_income: Decimal = -balances
         .iter()
         .filter(|b| b.account_type == AccountType::Income)
@@ -661,4 +668,40 @@ async fn periodic_totals_over_frozen_history_reconcile_with_balances() {
     assert_eq!(total_expense, expected_expense);
     assert!(total_income > Decimal::ZERO, "fixture should have income");
     assert!(total_expense > Decimal::ZERO, "fixture should have expense");
+}
+
+/// A foreign balance with no FX quote must fail the report, never count 1:1.
+#[tokio::test]
+async fn net_worth_without_an_fx_rate_is_an_error_not_one_to_one() {
+    let (_dir, pool) = freeze_and_load().await;
+    let as_of = d(2024, 12, 31);
+    let err = net_worth_over_time(&pool, Currency::TWD, as_of, as_of, Grain::Day)
+        .await
+        .expect_err("a USD balance with no USD→TWD quote must not convert at 1");
+    assert!(format!("{err:#}").contains("USD"), "error should name the currency: {err:#}");
+}
+
+/// Net worth excludes income and expense, so a currency seen only there needs
+/// no quote — it must not abort the report.
+#[tokio::test]
+async fn net_worth_ignores_a_currency_that_only_touches_flow_accounts() {
+    let (_dir, pool) = fresh_db().await;
+    let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
+    let salary = add_account(&pool, "Income:Salary", "Salary", "income").await;
+    let travel = add_account(&pool, "Expenses:Travel", "Travel", "expense").await;
+    add_txn(&pool, "2026-01-05", "pay", &[(cash, "1000", "TWD"), (salary, "-1000", "TWD")]).await;
+    // A JPY trip paid by a JPY allowance: no JPY ever reaches the balance sheet.
+    add_txn(&pool, "2026-01-06", "trip", &[(travel, "500", "JPY"), (salary, "-500", "JPY")]).await;
+
+    let as_of = d(2026, 1, 31);
+    let series = net_worth_over_time(&pool, Currency::TWD, as_of, as_of, Grain::Day).await.expect(
+        "a JPY flow leg with no quote must not fail a report that excludes income and expense",
+    );
+    assert_eq!(series.points[0].net, dec!(1000));
+
+    // The same JPY leg does need a rate once it is inside the reported figure.
+    let err = periodic_report(&pool, Currency::TWD, d(2026, 1, 1), as_of, Grain::Month)
+        .await
+        .expect_err("an expense report must not count 500 JPY as 500 TWD");
+    assert!(format!("{err:#}").contains("JPY"), "{err:#}");
 }

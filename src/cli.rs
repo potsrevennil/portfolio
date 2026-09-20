@@ -3,10 +3,12 @@
 //! Each command's work lives in the module that owns it, so this file says what
 //! the commands are and not how any of them is carried out.
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::Parser;
 
-use crate::{calculate, db, ledger, prices::PriceService, record};
+use crate::{calculate, db, ledger, prices::PriceService, record, store};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -29,8 +31,30 @@ enum Command {
     Freeze(ledger::freeze::FreezeArgs),
     /// Load a frozen journal CSV into the SQLite core tables
     LoadJournal(ledger::load::Args),
+    /// Check every balance assertion against the postings; fails on any
+    /// mismatch
+    Check(Database),
+    /// Export the SQLite ledger as an hledger journal (audit with `hledger
+    /// check`)
+    ExportHledger(ExportHledger),
     /// Fetch daily exchange rates so the ledger's currencies can be compared
     Rates(ledger::rates::Args),
+}
+
+#[derive(Parser, Debug)]
+struct Database {
+    #[arg(long, default_value = "sqlite:ledger-app.db")]
+    database_url: String,
+}
+
+#[derive(Parser, Debug)]
+struct ExportHledger {
+    #[command(flatten)]
+    database: Database,
+
+    /// Where to write the journal (financial data; keep it out of git)
+    #[arg(long)]
+    output: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -55,11 +79,32 @@ impl Cli {
                 if report.ok() {
                     Ok(())
                 } else {
-                    anyhow::bail!("reconciliation failed; journal not written")
+                    anyhow::bail!("reconciliation failed; the journal was left as it was")
                 }
             }
             Some(Command::LoadJournal(args)) => {
                 print!("{}", ledger::load::run(args).await?);
+                Ok(())
+            }
+            Some(Command::Check(args)) => {
+                let pool = db::open_db(&args.database_url).await?;
+                let report = store::check::check(&mut *pool.acquire().await?).await?;
+                print!("{report}");
+                match (report.ok(), report.figures()) {
+                    (true, _) => Ok(()),
+                    (false, 0) => {
+                        anyhow::bail!("no balance figures: nothing vouches for this ledger")
+                    }
+                    (false, _) => {
+                        anyhow::bail!("{} balance figures failed", report.mismatches.len())
+                    }
+                }
+            }
+            Some(Command::ExportHledger(args)) => {
+                let pool = db::open_db(&args.database.database_url).await?;
+                let journal = store::hledger::export(&mut *pool.acquire().await?).await?;
+                std::fs::write(&args.output, journal)?;
+                println!("wrote {}", args.output.display());
                 Ok(())
             }
             Some(Command::Rates(args)) => {

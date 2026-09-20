@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{bail, Context, Result};
@@ -22,6 +22,10 @@ use crate::{
         journal::PLACEHOLDER_TAG,
         model,
         writer::Posting,
+    },
+    store::{
+        assertions::{AssertionSource, BalanceAssertion},
+        query::in_subtree,
     },
 };
 
@@ -51,11 +55,6 @@ struct PostingRow {
     amount: Decimal,
     currency: Currency,
     tags: Option<String>,
-}
-
-/// True when an account is or lies under `root` (Beancount subtree semantics).
-fn in_subtree(account: &str, root: &str) -> bool {
-    account == root || account.starts_with(&format!("{root}:"))
 }
 
 fn is_placeholder(path: &str) -> bool { in_subtree(path, SECURITIES_PREFIX) }
@@ -143,7 +142,7 @@ fn merge_tags(txn_tags: &Option<String>, extra: Option<String>) -> Option<String
 fn reconcile(
     model: &model::Model,
     manual: &[model::Transaction],
-) -> Result<(journal::Journal, Vec<model::Balance>)> {
+) -> Result<(journal::Journal, Vec<BalanceAssertion>)> {
     let mut postings: Vec<journal::Posting> = Vec::new();
     for (group, txn) in (0u64..).zip(model.transactions().chain(manual)) {
         let tags = (!txn.tags.is_empty()).then(|| txn.tags.join(","));
@@ -175,17 +174,43 @@ fn reconcile(
         }
     }
 
-    let assertions = model
-        .balances()
-        .map(|b| model::Balance {
-            date: b.date,
+    let tiantian = model.asserts.iter().filter_map(|d| match d {
+        model::Directive::Balance(b) => Some(BalanceAssertion {
+            source: AssertionSource::Tiantian,
             account: b.account.clone(),
-            amount: b.amount,
             currency: b.currency,
-        })
-        .collect();
+            period_start: None,
+            opening: None,
+            // Beancount asserts at the start of the day.
+            period_end: b.date.pred_opt().expect("an assertion date has a day before"),
+            closing: b.amount,
+        }),
+        _ => None,
+    });
+    let assertions: Vec<BalanceAssertion> =
+        model.statements.iter().cloned().chain(tiantian).collect();
 
+    // Every Beancount balance must be carried over.
+    let carried = figures(&assertions);
+    if carried != model.balances().count() {
+        bail!(
+            "{} ledger balance assertions but {carried} carried into the journal",
+            model.balances().count()
+        );
+    }
     Ok((journal::Journal { postings }, assertions))
+}
+
+/// The name a file is written under until it is verified.
+fn staged(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".staged");
+    path.with_file_name(name)
+}
+
+/// Balance figures asserted: a statement period has two.
+fn figures(assertions: &[BalanceAssertion]) -> usize {
+    assertions.iter().map(|a| 1 + usize::from(a.opening.is_some())).sum()
 }
 
 /// The subtree balance per currency at `cutoff` (start-of-day: strictly before,
@@ -215,6 +240,7 @@ pub struct Mismatch {
     pub currency: Currency,
     pub expected: Decimal,
     pub actual: Decimal,
+    /// The balance compared is the one at the end of this day.
     pub date: NaiveDate,
 }
 
@@ -230,7 +256,7 @@ impl fmt::Display for Mismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "MISMATCH {} {} @ {}: expected {}, journal has {}",
+            "MISMATCH {} {} at end of {}: expected {}, journal has {}",
             self.account, self.currency, self.date, self.expected, self.actual
         )
     }
@@ -253,13 +279,18 @@ pub struct Report {
     pub placeholders: usize,
     pub conversions: usize,
     pub manual: usize,
-    pub assertions_checked: usize,
+    /// Balance figures checked: a statement period states two.
+    pub figures_checked: usize,
     pub mismatches: Vec<Mismatch>,
     pub negatives: Vec<Negative>,
 }
 
 impl Report {
-    pub fn ok(&self) -> bool { self.mismatches.is_empty() && self.negatives.is_empty() }
+    /// Mirrors `store::check`: a journal no balance assertion vouches for is
+    /// not a verified journal, whatever else reconciles.
+    pub fn ok(&self) -> bool {
+        self.mismatches.is_empty() && self.negatives.is_empty() && self.figures_checked > 0
+    }
 }
 
 impl fmt::Display for Report {
@@ -269,7 +300,8 @@ impl fmt::Display for Report {
         } else {
             writeln!(
                 f,
-                "reconciliation FAILED — journal not trusted, {} removed",
+                "reconciliation FAILED — nothing written; {} still holds whatever the last \
+                 verified freeze left, which may be stale",
                 self.journal.display()
             )?;
         }
@@ -282,12 +314,14 @@ impl fmt::Display for Report {
             "  {} securities-placeholder postings tagged #{PLACEHOLDER_TAG}",
             self.placeholders
         )?;
-        writeln!(
-            f,
-            "reconciliation: {} balance assertions checked, {} failed",
-            self.assertions_checked,
-            self.mismatches.len()
-        )?;
+        match self.figures_checked {
+            0 => writeln!(f, "reconciliation: nothing vouches for this journal")?,
+            n => writeln!(
+                f,
+                "reconciliation: {n} balance figures checked, {} failed",
+                self.mismatches.len()
+            )?,
+        }
         for m in &self.mismatches {
             writeln!(f, "  {m}")?;
         }
@@ -316,21 +350,24 @@ impl fmt::Display for Report {
 /// means you owe them.
 fn verify(
     journal: &journal::Journal,
-    assertions: &[model::Balance],
+    assertions: &[BalanceAssertion],
     chart: &Chart,
 ) -> (Vec<Mismatch>, Vec<Negative>) {
     let mut mismatches = Vec::new();
     for a in assertions {
-        let totals = subtree_balance(&journal.postings, &a.account, Some(a.date), true);
-        let actual = totals.get(&a.currency).copied().unwrap_or_default();
-        if actual != a.amount {
-            mismatches.push(Mismatch {
-                account: a.account.clone(),
-                currency: a.currency,
-                expected: a.amount,
-                actual,
-                date: a.date,
-            });
+        for (date, expected) in a.points() {
+            let cutoff = date.succ_opt().expect("a day after");
+            let totals = subtree_balance(&journal.postings, &a.account, Some(cutoff), true);
+            let actual = totals.get(&a.currency).copied().unwrap_or_default();
+            if actual != expected {
+                mismatches.push(Mismatch {
+                    account: a.account.clone(),
+                    currency: a.currency,
+                    expected,
+                    actual,
+                    date,
+                });
+            }
         }
     }
 
@@ -364,12 +401,19 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
     let manual = if manual_path.exists() { manual::load(&manual_path)? } else { Vec::new() };
 
     let (journal, assertions) = reconcile(&model, &manual)?;
-    journal::write(&args.journal, &journal)?;
+    // Staged beside their final names, so a failed run never leaves an
+    // unverified journal behind and the last verified pair survives it.
+    let assertions_path = journal::assertions_path(&args.journal);
+    let staged_journal = staged(&args.journal);
+    let staged_assertions = staged(&assertions_path);
+    journal::write(&staged_journal, &journal)?;
+    journal::write_assertions(&staged_assertions, &assertions)?;
 
     // Trust the journal only after re-reading what was written and checking it.
-    let written = journal::read(&args.journal)?;
+    let written = journal::read(&staged_journal)?;
+    let written_assertions = journal::read_assertions(&staged_assertions)?;
     let chart = Chart::load(args.build.ledger_dir.join("mapping.toml"))?;
-    let (mismatches, negatives) = verify(&written, &assertions, &chart);
+    let (mismatches, negatives) = verify(&written, &written_assertions, &chart);
 
     let accounts: BTreeSet<&str> = written.postings.iter().map(|p| p.account.as_str()).collect();
     let transactions: BTreeSet<u64> = written.postings.iter().map(|p| p.group).collect();
@@ -386,17 +430,42 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
             .count(),
         conversions: written.postings.iter().filter(|p| p.account == CONVERSIONS).count(),
         manual: manual.len(),
-        assertions_checked: assertions.len(),
+        figures_checked: figures(&written_assertions),
         mismatches,
         negatives,
     };
 
     if report.ok() {
+        std::fs::rename(&staged_assertions, &assertions_path)
+            .with_context(|| format!("moving {} into place", assertions_path.display()))?;
+        // Two renames cannot be one atomic step. If the second fails, drop the
+        // assertions the first moved, and the staged journal with them, rather
+        // than leave a pair that does not belong together: a missing file stops
+        // the loader, a stale pairing would pass unnoticed. A crash here is the
+        // same shape, and the load's check is what catches it.
+        if let Err(e) = std::fs::rename(&staged_journal, &args.journal) {
+            let orphaned = std::fs::remove_file(&assertions_path).is_err();
+            let _ = std::fs::remove_file(&staged_journal);
+            let journal = args.journal.display();
+            let assertions = assertions_path.display();
+            return Err(anyhow::Error::new(e).context(match orphaned {
+                false => format!(
+                    "moving {journal} into place; {assertions} was removed to keep the pair \
+                     consistent — re-run freeze"
+                ),
+                true => format!(
+                    "moving {journal} into place, and {assertions} could not be removed — delete \
+                     it by hand before loading; it describes a journal that was never written"
+                ),
+            }));
+        }
         log::info!("freeze: journal verified");
     } else {
-        // Never leave an untrusted journal on disk for the loader to pick up.
-        std::fs::remove_file(&args.journal)
-            .with_context(|| format!("removing untrusted journal {}", args.journal.display()))?;
+        // Discard the staged pair; the last verified journal stays as it is.
+        for path in [&staged_journal, &staged_assertions] {
+            std::fs::remove_file(path)
+                .with_context(|| format!("removing unverified {}", path.display()))?;
+        }
     }
     Ok(report)
 }

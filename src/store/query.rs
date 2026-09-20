@@ -27,7 +27,7 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Months, NaiveDate};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
 use strum_macros::{Display, EnumIter, EnumString};
 
 use crate::{
@@ -259,9 +259,15 @@ impl LedgerData {
     /// The only IO in the balance/net-worth/periodic path; everything
     /// downstream is a pure function of the returned snapshot.
     pub async fn load(pool: &SqlitePool) -> Result<Self> {
+        Self::load_from(&mut *pool.acquire().await?).await
+    }
+
+    /// [`load`](Self::load) on one connection, so a caller can read its own
+    /// uncommitted transaction (the import gate).
+    pub async fn load_from(conn: &mut SqliteConnection) -> Result<Self> {
         let account_rows: Vec<AccountRow> =
             sqlx::query_as("SELECT id, path, label, type AS acct_type, closed FROM accounts")
-                .fetch_all(pool)
+                .fetch_all(&mut *conn)
                 .await
                 .context("loading accounts")?;
         let accounts = account_rows
@@ -273,7 +279,7 @@ impl LedgerData {
             "SELECT p.account_id AS account_id, t.date AS date, p.currency AS currency, p.amount \
              AS amount FROM postings p JOIN transactions t ON t.id = p.transaction_id",
         )
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await
         .context("loading postings")?;
         let postings =
@@ -285,6 +291,16 @@ impl LedgerData {
         }
 
         Ok(Self { accounts, postings })
+    }
+
+    /// The newest posting on each account and currency.
+    pub fn last_posting_dates(&self) -> BTreeMap<(i64, Currency), NaiveDate> {
+        let mut latest: BTreeMap<(i64, Currency), NaiveDate> = BTreeMap::new();
+        for p in &self.postings {
+            let entry = latest.entry((p.account_id, p.currency)).or_insert(p.date);
+            *entry = (*entry).max(p.date);
+        }
+        latest
     }
 
     /// Every currency the ledger holds.
@@ -329,18 +345,20 @@ impl LedgerData {
         base: Currency,
         as_of: NaiveDate,
         prices: &PriceTable,
-    ) -> NetWorthPoint {
+    ) -> Result<NetWorthPoint> {
         let mut assets = Decimal::ZERO;
         let mut liabilities = Decimal::ZERO;
         for b in self.balances_as_of(as_of) {
-            let converted = b.amount * rate_as_of(b.currency, base, as_of, prices);
+            // Only the arms that count are converted, so a currency seen solely
+            // on an excluded account needs no rate.
+            let convert = || convert_as_of(b.amount, b.currency, base, as_of, prices);
             match b.account_type {
-                AccountType::Asset => assets += converted,
-                AccountType::Liability => liabilities += converted,
+                AccountType::Asset => assets += convert()?,
+                AccountType::Liability => liabilities += convert()?,
                 AccountType::Equity | AccountType::Income | AccountType::Expense => {}
             }
         }
-        NetWorthPoint { date: as_of, assets, liabilities, net: assets + liabilities }
+        Ok(NetWorthPoint { date: as_of, assets, liabilities, net: assets + liabilities })
     }
 
     /// Income and expense flow, grouped by period over `[start, end]`. Income
@@ -354,7 +372,7 @@ impl LedgerData {
         end: NaiveDate,
         grain: Grain,
         prices: &PriceTable,
-    ) -> PeriodicReport {
+    ) -> Result<PeriodicReport> {
         // Seed every period so quiet ones still report a zero row.
         let mut periods: BTreeMap<NaiveDate, (NaiveDate, Decimal, Decimal)> = BTreeMap::new();
         for (period_start, period_end) in generate_periods(start, end, grain) {
@@ -365,10 +383,12 @@ impl LedgerData {
             let (_, income, expense) = periods
                 .get_mut(&period_start_of(p.date, grain))
                 .expect("the periods cover every date in [start, end]");
-            let converted = p.amount * rate_as_of(p.currency, base, p.date, prices);
+            // Only flow legs are converted, so a balance-sheet leg in a
+            // currency with no rate does not fail the report.
+            let convert = || convert_as_of(p.amount, p.currency, base, p.date, prices);
             match self.accounts[&p.account_id].account_type {
-                AccountType::Income => *income += -converted,
-                AccountType::Expense => *expense += converted,
+                AccountType::Income => *income -= convert()?,
+                AccountType::Expense => *expense += convert()?,
                 AccountType::Asset | AccountType::Liability | AccountType::Equity => {}
             }
         }
@@ -386,7 +406,7 @@ impl LedgerData {
                 net: income - expense,
             })
             .collect();
-        PeriodicReport { base, grain, periods }
+        Ok(PeriodicReport { base, grain, periods })
     }
 }
 
@@ -415,7 +435,7 @@ pub async fn net_worth_over_time(
     let points = generate_periods(start, end, grain)
         .into_iter()
         .map(|(_, period_end)| data.net_worth_as_of(base, period_end.min(end), &prices))
-        .collect();
+        .collect::<Result<_>>()?;
     Ok(NetWorthSeries { base, grain, points })
 }
 
@@ -430,7 +450,7 @@ pub async fn periodic_report(
 ) -> Result<PeriodicReport> {
     let data = LedgerData::load(pool).await?;
     let prices = load_fx_prices(pool, &data.currencies(), base, end).await?;
-    Ok(data.periodic_report(base, start, end, grain, &prices))
+    data.periodic_report(base, start, end, grain, &prices)
 }
 
 /// Loads the FX pairs needed to quote every ledger currency in `base` from the
@@ -479,7 +499,7 @@ pub fn holdings_report(
     portfolio: &mut Portfolio,
     as_of: NaiveDate,
     prices: &PriceTable,
-) -> HoldingsReport {
+) -> Result<HoldingsReport> {
     // generate_daily_statements clears the map; save and restore it so this read
     // does not discard statements the caller built over some other range.
     let saved = std::mem::take(&mut portfolio.daily_statements);
@@ -488,7 +508,6 @@ pub fn holdings_report(
     portfolio.daily_statements = saved;
 
     let reporting_currency = portfolio.reporting_currency;
-    let rate = |currency| rate_as_of(currency, reporting_currency, as_of, prices);
 
     let mut positions: Vec<HoldingPosition> = statement
         .holdings
@@ -497,17 +516,22 @@ pub fn holdings_report(
         .collect();
     positions.sort_by(|a, b| a.symbol.cmp(&b.symbol));
 
-    let holdings = || statement.holdings.values();
-    let total_cost: Decimal = holdings().map(|h| h.total_cost * rate(h.currency)).sum();
-    let total_market_value: Decimal = holdings().map(|h| h.market_value * rate(h.currency)).sum();
-    let total_unrealized_pnl: Decimal =
-        holdings().map(|h| h.unrealized_pnl_value * rate(h.currency)).sum();
-    let total_realized_pnl: Decimal =
-        holdings().map(|h| h.realized_pnl_value * rate(h.currency)).sum();
-    let total_cash: Decimal =
-        statement.cash_balances.iter().map(|(c, amount)| *amount * rate(*c)).sum();
+    let convert = |amounts: Vec<(Currency, Decimal)>| -> Result<Decimal> {
+        amounts
+            .into_iter()
+            .map(|(c, amount)| convert_as_of(amount, c, reporting_currency, as_of, prices))
+            .sum()
+    };
+    let holdings = |f: fn(&Holding) -> Decimal| {
+        statement.holdings.values().map(|h| (h.currency, f(h))).collect::<Vec<_>>()
+    };
+    let total_cost = convert(holdings(|h| h.total_cost))?;
+    let total_market_value = convert(holdings(|h| h.market_value))?;
+    let total_unrealized_pnl = convert(holdings(|h| h.unrealized_pnl_value))?;
+    let total_realized_pnl = convert(holdings(|h| h.realized_pnl_value))?;
+    let total_cash = convert(statement.cash_balances.iter().map(|(c, a)| (*c, *a)).collect())?;
 
-    HoldingsReport {
+    Ok(HoldingsReport {
         as_of,
         reporting_currency,
         positions,
@@ -517,7 +541,7 @@ pub fn holdings_report(
         total_realized_pnl,
         total_cash,
         total_value: total_market_value + total_cash,
-    }
+    })
 }
 
 fn position_from_holding(
@@ -544,17 +568,39 @@ fn position_from_holding(
 
 // --- FX and calendar helpers ---------------------------------------------
 
+/// `amount` expressed in `to`. Zero converts to zero whatever the rate, so a
+/// position that closed out does not need a quote to be reported.
+fn convert_as_of(
+    amount: Decimal,
+    from: Currency,
+    to: Currency,
+    as_of: NaiveDate,
+    prices: &PriceTable,
+) -> Result<Decimal> {
+    match amount.is_zero() {
+        true => Ok(Decimal::ZERO),
+        false => Ok(amount * rate_as_of(from, to, as_of, prices)?),
+    }
+}
+
 /// The rate to multiply a `from` amount by to express it in `to`, as of a date.
-/// Tries the direct ticker, then the inverse; an absent pair converts at 1,
-/// matching the portfolio module's own fallback.
-fn rate_as_of(from: Currency, to: Currency, as_of: NaiveDate, prices: &PriceTable) -> Decimal {
-    match (from == to, ticker_rate(from, to, as_of, prices)) {
-        (true, _) => Decimal::ONE,
-        (false, Some(rate)) => rate,
-        (false, None) => ticker_rate(to, from, as_of, prices)
-            .filter(|r| !r.is_zero())
-            .map(|r| Decimal::ONE / r)
-            .unwrap_or(Decimal::ONE),
+/// Tries the direct ticker, then the inverse. A missing pair is an error, never
+/// 1:1: that would silently count a foreign amount as the base currency.
+fn rate_as_of(
+    from: Currency,
+    to: Currency,
+    as_of: NaiveDate,
+    prices: &PriceTable,
+) -> Result<Decimal> {
+    let inverse =
+        || ticker_rate(to, from, as_of, prices).filter(|r| !r.is_zero()).map(|r| Decimal::ONE / r);
+    match (from == to, ticker_rate(from, to, as_of, prices).or_else(inverse)) {
+        (true, _) => Ok(Decimal::ONE),
+        (false, Some(rate)) => Ok(rate),
+        (false, None) => anyhow::bail!(
+            "no {from}→{to} exchange rate in stock_prices (needed for {as_of}); fetch it with \
+             `portfolio rates`"
+        ),
     }
 }
 
@@ -577,6 +623,12 @@ fn ticker_rate(
             }
         })
         .and_then(|quote| Decimal::from_f64(quote.close_price))
+}
+
+/// True when `path` is `root` or lies under it — the subtree a Beancount
+/// `balance` assertion covers.
+pub fn in_subtree(path: &str, root: &str) -> bool {
+    path == root || path.strip_prefix(root).is_some_and(|rest| rest.starts_with(':'))
 }
 
 /// The first day of the period a date falls in.

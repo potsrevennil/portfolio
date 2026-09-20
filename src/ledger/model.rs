@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use strum_macros::Display;
 
 use super::writer::{self, Posting};
-use crate::currency::Currency;
+use crate::{currency::Currency, store::assertions::BalanceAssertion};
 
 /// The equity account every opening balance is booked against.
 pub const OPENING_EQUITY: &str = "Equity:Opening-Balances";
@@ -82,6 +82,8 @@ pub struct Model {
     /// `cathay.beancount` body: the backfill, the statement blocks, and the
     /// 國泰 records no statement matched.
     pub cathay: Vec<Directive>,
+    /// Each statement's period, the pair of `cathay`'s balances for it.
+    pub statements: Vec<BalanceAssertion>,
     /// `daily.beancount` transactions: accounts with no statement.
     pub daily: Vec<Directive>,
     /// `daily.beancount` balance assertions computed from 天天記帳.

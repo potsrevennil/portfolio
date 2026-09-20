@@ -6,10 +6,12 @@
 //! reconciliation and the balance checks — so the app's ongoing load path
 //! ([`super::load`]) carries none of it. It is meant to be re-run while the
 //! corrected records are still being audited; each run regenerates the
-//! journal. The journal is trusted only after it verifies: freeze re-reads what
-//! it wrote and proves the rows reproduce every balance assertion and that no
-//! asset account closes negative (a split account may: that means you
-//! owe them), else it removes the journal and stops.
+//! journal. The journal is trusted only after it verifies: freeze writes it
+//! under a staged name, re-reads that, and proves the rows reproduce every
+//! balance assertion and that no asset account closes negative (a split account
+//! may: that means you owe them). Only then does it move the journal and its
+//! assertions into place; a failed run discards the staged files and leaves the
+//! last verified pair untouched.
 //!
 //! ```text
 //! cargo run -- freeze --journal ledger/journal.csv \

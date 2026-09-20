@@ -6,7 +6,9 @@
 //! It derives the chart of accounts from the paths the journal mentions (type
 //! from the root, label from the leaf) and, as a cheap tripwire, refuses a
 //! transaction whose legs do not sum to zero per currency. It is one-time: it
-//! refuses a non-empty database.
+//! refuses a non-empty database. It also loads the journal's balance assertions
+//! and commits only if [`check`](crate::store::check) passes. Frozen history is
+//! loaded as reviewed.
 //!
 //! ```text
 //! cargo run -- journal-load --journal ledger/journal.csv --database-url sqlite:ledger-app.db
@@ -24,7 +26,11 @@ use rust_decimal::Decimal;
 use sqlx::{Row, SqlitePool};
 
 use super::{accounts::AccountType, journal, model::Source};
-use crate::{currency::Currency, db, store::query};
+use crate::{
+    currency::Currency,
+    db,
+    store::{assertions, check, query},
+};
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -51,6 +57,7 @@ pub struct Report {
     pub accounts: usize,
     pub transactions: usize,
     pub postings: usize,
+    pub check: check::CheckReport,
 }
 
 impl fmt::Display for Report {
@@ -58,12 +65,13 @@ impl fmt::Display for Report {
         writeln!(f, "loaded journal into SQLite:")?;
         writeln!(f, "  {} accounts", self.accounts)?;
         writeln!(f, "  {} transactions, {} postings", self.transactions, self.postings)?;
-        Ok(())
+        write!(f, "{}", self.check)
     }
 }
 
 pub async fn run(args: &Args) -> Result<Report> {
     let journal = journal::read(&args.journal)?;
+    let assertions = journal::read_assertions(&journal::assertions_path(&args.journal))?;
     let pool = db::init_db(&args.database_url).await?;
     guard_empty(&pool).await?;
 
@@ -154,9 +162,14 @@ pub async fn run(args: &Args) -> Result<Report> {
         }
     }
 
+    for a in &assertions {
+        assertions::insert(&mut tx, a).await?;
+    }
+    let check = check::gate(&mut tx).await?;
+
     tx.commit().await?;
     log::info!("journal-load: committed");
-    Ok(Report { accounts: ids.len(), transactions: groups.len(), postings: posting_count })
+    Ok(Report { accounts: ids.len(), transactions: groups.len(), postings: posting_count, check })
 }
 
 async fn insert_transaction(
@@ -169,7 +182,7 @@ async fn insert_transaction(
 ) -> Result<i64> {
     Ok(sqlx::query(
         "INSERT INTO transactions (date, payee, narration, source, external_ref, reviewed) VALUES \
-         (?, ?, ?, ?, ?, 0)",
+         (?, ?, ?, ?, ?, 1)",
     )
     .bind(date.to_string())
     .bind(payee)

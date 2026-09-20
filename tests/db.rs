@@ -22,3 +22,16 @@ async fn test_init_db_creates_schema() -> sqlx::Result<()> {
 
     Ok(())
 }
+
+/// A typo in --database-url must fail, not create an empty ledger that every
+/// check then passes.
+#[tokio::test]
+async fn open_db_refuses_a_database_that_does_not_exist() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let missing = dir.path().join("typo.db");
+    let url = format!("sqlite:{}", missing.display());
+    let err =
+        portfolio::db::open_db(&url).await.expect_err("a missing database must not be created");
+    assert!(format!("{err:#}").contains("no database at"), "{err:#}");
+    assert!(!missing.exists(), "the file was created anyway");
+}
