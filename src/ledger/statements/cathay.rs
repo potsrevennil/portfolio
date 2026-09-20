@@ -18,6 +18,15 @@ use rust_decimal::Decimal;
 
 use crate::currency::Currency;
 
+/// Namespaces this bank's `external_ref`s: every importer shares one dedup
+/// scope (`transactions.source = 'import'`).
+pub const REF_PREFIX: &str = "cathay-bank:";
+
+/// The `external_ref` of an account's opening, so a second one is a duplicate.
+pub fn opening_ref(account: &str, currency: Currency) -> String {
+    format!("{REF_PREFIX}opening:{account}:{currency}")
+}
+
 #[derive(Debug)]
 pub struct StatementLine {
     pub book_date: NaiveDate,
@@ -60,15 +69,22 @@ impl BankStatement {
     ///
     /// Not the line index: statements get re-split per year, which shifts
     /// indices. Same-day out-and-back sequences (−X, +X, −X) repeat the running
-    /// balance, so repeats of an identical key get `:2`, `:3`. That suffix is
-    /// stable because a whole day always lands in one file, in order.
+    /// balance, so repeats of an identical key get `:2`, `:3`. The suffix is
+    /// counted from the first line of the day this statement holds, so a
+    /// statement starting mid-day numbers them differently; the importer's
+    /// balance-chain check is what catches that.
     pub fn dedup_refs(&self) -> Vec<String> {
         let mut seen: HashMap<String, usize> = HashMap::new();
         self.lines
             .iter()
             .map(|l| {
-                let base =
-                    format!("{}:{}:{}:{}", self.account_no, l.book_date, l.delta(), l.balance);
+                let base = format!(
+                    "{REF_PREFIX}{}:{}:{}:{}",
+                    self.account_no,
+                    l.book_date,
+                    l.delta(),
+                    l.balance
+                );
                 let n = seen.entry(base.clone()).or_default();
                 *n += 1;
                 if *n == 1 {
@@ -306,6 +322,8 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
 pub struct Merged {
     pub statement: BankStatement,
     pub paths: Vec<PathBuf>,
+    /// How many of `statement.lines` each of `paths` contributed, in order.
+    pub spans: Vec<usize>,
 }
 
 /// Joins the exports of each account and currency into one statement. They
@@ -332,6 +350,7 @@ pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
         let mut parts = parts.into_iter();
         let (mut statement, first_path) = parts.next().expect("a group has a member");
         let mut paths = vec![first_path];
+        let mut spans = vec![statement.lines.len()];
         for (next, path) in parts {
             let last = statement.lines.last().expect("load rejects empty statements");
             let first = next.lines.first().expect("load rejects empty statements");
@@ -356,11 +375,12 @@ pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
                 next.opening_balance(),
                 first.book_date
             );
+            spans.push(next.lines.len());
             statement.lines.extend(next.lines);
             statement.period_end = next.period_end;
             paths.push(path);
         }
-        merged.push(Merged { statement, paths });
+        merged.push(Merged { statement, paths, spans });
     }
     Ok(merged)
 }
@@ -429,7 +449,7 @@ mod tests {
     #[test]
     fn dedup_refs_are_content_based() {
         let s = statement(vec![with_balance(line(29, "電子轉出", dec!(500), ""), dec!(1000))]);
-        assert_eq!(s.dedup_refs(), vec!["123456789012:2026-06-29:-500:1000"]);
+        assert_eq!(s.dedup_refs(), vec!["cathay-bank:123456789012:2026-06-29:-500:1000"]);
     }
 
     /// Out, back, out again on one day: the first and third lines match on
@@ -443,9 +463,9 @@ mod tests {
             with_balance(line(29, "自行提款", dec!(500), ""), dec!(500)),
         ]);
         assert_eq!(s.dedup_refs(), vec![
-            "123456789012:2026-06-29:-500:500",
-            "123456789012:2026-06-29:500:1000",
-            "123456789012:2026-06-29:-500:500:2",
+            "cathay-bank:123456789012:2026-06-29:-500:500",
+            "cathay-bank:123456789012:2026-06-29:500:1000",
+            "cathay-bank:123456789012:2026-06-29:-500:500:2",
         ]);
     }
 
@@ -527,6 +547,7 @@ mod tests {
         assert_eq!(merged.len(), 2);
         let twd = merged.iter().find(|m| m.statement.currency == Currency::TWD).expect("TWD");
         assert_eq!(twd.paths, [paths[1].clone(), paths[0].clone()]);
+        assert_eq!(twd.spans, [1, 1]);
         assert_eq!(twd.statement.lines.len(), 2);
         assert_eq!(twd.statement.opening_balance(), dec!(0));
         assert_eq!(twd.statement.closing_balance(), dec!(150));

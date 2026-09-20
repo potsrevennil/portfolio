@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
+use model::CONVERSIONS;
 use rust_decimal::Decimal;
 
 use super::manual;
@@ -28,10 +29,6 @@ use crate::{
         query::in_subtree,
     },
 };
-
-/// Where a genuine cross-currency transfer's per-currency leftovers are booked
-/// so every currency still sums to zero without a cost or price column.
-const CONVERSIONS: &str = "Equity:Conversions";
 
 /// The subtree the securities backfill lands in — the ~722k TWD ETF placeholder
 /// among it. Every posting here is tagged (with [`journal::PLACEHOLDER_TAG`])

@@ -34,6 +34,7 @@ fn txn(source: &str, external_ref: Option<&str>) -> NewTransaction {
         narration: None,
         source: source.into(),
         external_ref: external_ref.map(str::to_string),
+        import_batch_id: None,
     }
 }
 

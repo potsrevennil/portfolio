@@ -22,6 +22,10 @@ use crate::{currency::Currency, store::assertions::BalanceAssertion};
 /// The equity account every opening balance is booked against.
 pub const OPENING_EQUITY: &str = "Equity:Opening-Balances";
 
+/// Where a cross-currency transfer's per-currency leftovers are booked, so
+/// every currency still sums to zero without a cost or price column.
+pub const CONVERSIONS: &str = "Equity:Conversions";
+
 /// The `external_ref` of a declared opening; one per (account, currency).
 pub fn opening_ref(account: &str, currency: Currency) -> String {
     format!("opening:{account}:{currency}")

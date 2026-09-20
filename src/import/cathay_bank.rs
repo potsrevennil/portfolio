@@ -1,0 +1,190 @@
+//! Imports Cathay bank downloads (活存, 投資, koko, 外幣) straight into SQLite.
+//!
+//! ```text
+//! cargo run -- import-cathay-bank --database-url sqlite:scratch.db \
+//!   --statements raw/cathay-bank/*/*.csv
+//! ```
+
+use std::{collections::BTreeMap, fmt, path::PathBuf};
+
+use anyhow::{bail, Context, Result};
+use sqlx::SqliteConnection;
+
+use super::plan::{self, Candidate, Plan};
+use crate::{
+    db,
+    ledger::{
+        accounts::Chart,
+        names::statement_account,
+        statements::cathay::{self, Merged},
+    },
+    store::{
+        assertions::{self, AssertionSource, BalanceAssertion},
+        check,
+        import::{insert_deduped, InsertOutcome, NewPosting, NewTransaction},
+        import_batch,
+    },
+};
+
+pub const SOURCE: &str = "cathay-bank";
+
+#[derive(clap::Parser, Debug)]
+pub struct Args {
+    /// Statement exports; each account's must chain on from one another.
+    #[arg(long, num_args = 1.., required = true)]
+    pub statements: Vec<PathBuf>,
+
+    /// No default: until the Cutover this runs against scratch databases only.
+    #[arg(long)]
+    pub database_url: String,
+
+    /// Directory holding mapping.toml.
+    #[arg(long, default_value = "ledger")]
+    pub ledger_dir: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct Report {
+    pub counts: plan::Counts,
+    pub inserted: usize,
+    pub batches: usize,
+    pub check: check::CheckReport,
+}
+
+impl fmt::Display for Report {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let c = &self.counts;
+        writeln!(f, "imported Cathay bank statements:")?;
+        writeln!(f, "  {} transactions inserted from {} files", self.inserted, self.batches)?;
+        writeln!(f, "  {} openings created", c.openings)?;
+        writeln!(
+            f,
+            "  {} lines new ({} matched, {} uncategorised)",
+            c.new, c.matched, c.uncategorised
+        )?;
+        writeln!(f, "  {} lines already held, {} booked with their partner", c.known, c.covered)?;
+        writeln!(f, "  {} lines on or before the account's opening", c.predate_opening)?;
+        write!(f, "{}", self.check)
+    }
+}
+
+pub async fn run(args: &Args) -> Result<Report> {
+    let chart = Chart::load(args.ledger_dir.join("mapping.toml"))?;
+    let pool = db::init_db(&args.database_url).await?;
+    let mut tx = pool.begin().await?;
+    let report = import(&mut tx, &chart, &args.statements, &[]).await?;
+    tx.commit().await?;
+    Ok(report)
+}
+
+/// Imports into the caller's transaction and gates it; commit only on `Ok`.
+pub async fn import(
+    db: &mut SqliteConnection,
+    chart: &Chart,
+    paths: &[PathBuf],
+    candidates: &[Candidate],
+) -> Result<Report> {
+    let merged = cathay::load_merged(paths)?;
+    let files: Vec<&PathBuf> = merged.iter().flat_map(|m| &m.paths).collect();
+
+    let mut statements = Vec::with_capacity(merged.len());
+    let mut first_file = 0;
+    for Merged { statement, spans, .. } in &merged {
+        let account = statement_account(chart, &statement.account_no)?.to_string();
+        let existing =
+            import_batch::postings(db, &account, &statement.currency.to_string()).await?;
+        let files: Vec<usize> = spans
+            .iter()
+            .enumerate()
+            .flat_map(|(i, &n)| std::iter::repeat(first_file + i).take(n))
+            .collect();
+        first_file += spans.len();
+        statements.push(plan::Statement { account, statement, files, existing });
+    }
+    let known = import_batch::refs(db, cathay::REF_PREFIX).await?;
+    let Plan { transactions, counts, openings } =
+        plan::plan(chart, &statements, &known, candidates)?;
+
+    let mut batches: BTreeMap<usize, i64> = BTreeMap::new();
+    let mut accounts: BTreeMap<String, i64> = BTreeMap::new();
+    for t in &transactions {
+        let batch = match batches.get(&t.file) {
+            Some(id) => *id,
+            None => {
+                let file = files[t.file].display().to_string();
+                let id = import_batch::create(db, SOURCE, &file).await?;
+                batches.insert(t.file, id);
+                id
+            }
+        };
+        let mut postings = Vec::with_capacity(t.postings.len());
+        for p in &t.postings {
+            let account_id = match accounts.get(&p.account) {
+                Some(id) => *id,
+                None => {
+                    let id = import_batch::ensure_account(db, &p.account).await?;
+                    accounts.insert(p.account.clone(), id);
+                    id
+                }
+            };
+            postings.push(NewPosting {
+                account_id,
+                amount: p.amount,
+                currency: p.currency.to_string(),
+                tags: None,
+            });
+        }
+        let txn = NewTransaction {
+            date: t.date,
+            payee: Some(t.payee.clone()),
+            narration: (!t.narration.is_empty()).then(|| t.narration.clone()),
+            source: "import".to_string(),
+            external_ref: Some(t.external_ref.clone()),
+            import_batch_id: Some(batch),
+        };
+        match insert_deduped(db, &txn, &postings).await.context("inserting import")? {
+            InsertOutcome::Inserted(_) => {}
+            InsertOutcome::Duplicate(_) => {
+                bail!("{} was planned as new but is already held", t.external_ref)
+            }
+        }
+    }
+
+    // Asserted from the first line the ledger tracks; earlier ones are in its
+    // opening. An assertion already recorded for the same closing day stands:
+    // a later download states a wider period for that day, which is the same
+    // claim, and the balance chain above has already compared every day.
+    let recorded = assertions::load(db).await?;
+    for (s, opening) in statements.iter().zip(openings) {
+        let st = s.statement;
+        let Some(first) = st.lines.iter().find(|l| l.book_date > opening) else { continue };
+        let end = st.assert_date();
+        let assertion = BalanceAssertion {
+            account: s.account.clone(),
+            currency: st.currency,
+            source: AssertionSource::Statement,
+            period_start: Some(first.book_date),
+            opening: Some(first.balance - first.delta()),
+            period_end: end.pred_opt().unwrap_or(end),
+            closing: st.closing_balance(),
+        };
+        let same_day = recorded.iter().find(|r| {
+            (&r.account, r.currency, r.source, r.period_end)
+                == (&assertion.account, assertion.currency, assertion.source, assertion.period_end)
+        });
+        match same_day {
+            Some(other) if other.closing != assertion.closing => bail!(
+                "this download closes {} on {}, but {other} was recorded as closing {}; one of \
+                 the two is stale — re-freeze, or drop the assertion that is",
+                assertion.closing,
+                assertion.period_end,
+                other.closing
+            ),
+            Some(_) => continue,
+            None => assertions::insert(db, &assertion).await?,
+        }
+    }
+    let check = check::gate(db).await?;
+
+    Ok(Report { counts, inserted: transactions.len(), batches: batches.len(), check })
+}

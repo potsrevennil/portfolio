@@ -541,7 +541,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                     writer::Posting::inferred(model::OPENING_EQUITY),
                 ],
                 source: model::Source::Import,
-                external_ref: None,
+                external_ref: Some(statements::cathay::opening_ref(account, currency)),
             }));
             cathay.push(Directive::Blank);
         }

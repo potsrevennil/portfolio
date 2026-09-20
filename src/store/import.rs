@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
 
 #[derive(Clone, Debug)]
 pub struct NewTransaction {
@@ -20,6 +20,7 @@ pub struct NewTransaction {
     pub source: String,
     /// `None` is exempt from dedup (hand-entered rows).
     pub external_ref: Option<String>,
+    pub import_batch_id: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -73,56 +74,68 @@ impl ImportStore {
         txn: &NewTransaction,
         postings: &[NewPosting],
     ) -> Result<InsertOutcome> {
-        validate_balanced(postings)?;
-
         let mut db = self.pool.begin().await?;
-        let inserted = sqlx::query_scalar!(
-            r#"
-            INSERT INTO transactions (date, payee, narration, source, external_ref)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (source, external_ref) WHERE external_ref IS NOT NULL DO NOTHING
-            RETURNING id
-            "#,
-            txn.date,
-            txn.payee,
-            txn.narration,
-            txn.source,
-            txn.external_ref,
-        )
-        .fetch_optional(&mut *db)
-        .await?;
+        let outcome = insert_deduped(&mut db, txn, postings).await?;
+        db.commit().await?;
+        Ok(outcome)
+    }
+}
 
-        match inserted {
-            Some(txn_id) => {
-                for p in postings {
-                    let amount = p.amount.to_string();
-                    sqlx::query!(
-                        r#"
-                        INSERT INTO postings (transaction_id, account_id, amount, currency, tags)
-                        VALUES (?, ?, ?, ?, ?)
-                        "#,
-                        txn_id,
-                        p.account_id,
-                        amount,
-                        p.currency,
-                        p.tags,
-                    )
-                    .execute(&mut *db)
-                    .await?;
-                }
-                db.commit().await?;
-                Ok(InsertOutcome::Inserted(txn_id))
-            }
-            None => {
-                let existing = sqlx::query_scalar!(
-                    r#"SELECT id AS "id!" FROM transactions WHERE source = ? AND external_ref = ?"#,
-                    txn.source,
-                    txn.external_ref,
+/// [`ImportStore::insert_deduped`] inside the caller's transaction, so a whole
+/// import commits or rolls back as one.
+pub async fn insert_deduped(
+    db: &mut SqliteConnection,
+    txn: &NewTransaction,
+    postings: &[NewPosting],
+) -> Result<InsertOutcome> {
+    validate_balanced(postings)?;
+
+    let inserted = sqlx::query_scalar!(
+        r#"
+        INSERT INTO transactions (date, payee, narration, source, external_ref, import_batch_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (source, external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+        RETURNING id
+        "#,
+        txn.date,
+        txn.payee,
+        txn.narration,
+        txn.source,
+        txn.external_ref,
+        txn.import_batch_id,
+    )
+    .fetch_optional(&mut *db)
+    .await?;
+
+    match inserted {
+        Some(txn_id) => {
+            for p in postings {
+                let amount = p.amount.to_string();
+                sqlx::query!(
+                    r#"
+                    INSERT INTO postings (transaction_id, account_id, amount, currency, tags)
+                    VALUES (?, ?, ?, ?, ?)
+                    "#,
+                    txn_id,
+                    p.account_id,
+                    amount,
+                    p.currency,
+                    p.tags,
                 )
-                .fetch_one(&mut *db)
+                .execute(&mut *db)
                 .await?;
-                Ok(InsertOutcome::Duplicate(existing))
             }
+            Ok(InsertOutcome::Inserted(txn_id))
+        }
+        None => {
+            let existing = sqlx::query_scalar!(
+                r#"SELECT id AS "id!" FROM transactions WHERE source = ? AND external_ref = ?"#,
+                txn.source,
+                txn.external_ref,
+            )
+            .fetch_one(&mut *db)
+            .await?;
+            Ok(InsertOutcome::Duplicate(existing))
         }
     }
 }
