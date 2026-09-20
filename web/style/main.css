@@ -141,14 +141,14 @@ summary.row {
   font-weight: 600;
 }
 
-/* Each level down is a little smaller, so a group reads as the parent of the
-   rows under it. */
-summary.row.level-0 {
-  font-size: 1.02rem;
+/* Each level down is smaller than the one above, so a group reads as the
+   parent of the rows under it. */
+.row.level-0 {
+  font-size: 1.1rem;
 }
 
 .row.level-1 {
-  font-size: 0.96rem;
+  font-size: 1rem;
 }
 
 .row.level-2 {
@@ -174,7 +174,7 @@ details.group[open] > summary .marker::before {
 .row.section,
 .row.net {
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 1.3rem;
 }
 
 details.group > summary.row.section {
