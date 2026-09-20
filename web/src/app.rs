@@ -1,7 +1,7 @@
 //! The document shell, the layout and the routes.
 
 use leptos::prelude::*;
-use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
+use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
 use leptos_router::{
     components::{Route, Router, Routes, A},
     path,
@@ -18,6 +18,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <meta name="color-scheme" content="light dark" />
                 <AutoReload options=options.clone() />
+                <HashedStylesheet options=options.clone() id="leptos" />
                 <HydrationScripts options />
                 <MetaTags />
             </head>
@@ -32,7 +33,6 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     provide_meta_context();
     view! {
-        <Stylesheet id="leptos" href="/pkg/web.css" />
         <Title formatter=|page: String| format!("{page} · 帳簿") />
         <Router>
             <header class="top">

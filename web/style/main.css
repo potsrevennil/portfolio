@@ -44,7 +44,7 @@ header.top {
 header.top nav {
   display: flex;
   gap: 1rem;
-  max-width: 46rem;
+  max-width: 76rem;
   margin: 0 auto;
   padding: 0.6rem 1rem;
 }
@@ -60,29 +60,22 @@ header.top a[aria-current] {
 }
 
 main {
-  max-width: 46rem;
+  max-width: 76rem;
   margin: 0 auto;
   padding: 0.5rem 0 2rem;
 }
 
-/* One column on a phone. Side by side once both fit without squeezing the
-   figures, which are the widest thing on a row. */
-@media (min-width: 64rem) {
-  header.top nav,
-  main {
-    max-width: 76rem;
-  }
+/* 資產 beside 負債 wherever two readable columns fit, one under the other
+   otherwise — the window decides, not a guessed breakpoint. */
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
+  column-gap: 2.5rem;
+  align-items: start;
+}
 
-  .columns {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    column-gap: 2.5rem;
-    align-items: start;
-  }
-
-  .columns > details > summary.row.section {
-    margin-top: 0;
-  }
+.columns > details:first-child > summary.row.section {
+  margin-top: 0;
 }
 
 .note {

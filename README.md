@@ -105,5 +105,10 @@ cargo leptos watch      # or: cargo leptos build --release
 ```
 
 Then open <http://127.0.0.1:3000>. `LEDGER_DATABASE_URL` points it at another
-database (default `sqlite:ledger-app.db`). Amounts are converted to TWD with the
+database (default `sqlite:ledger-app.db`), and `LEDGER_MAPPING` at another chart
+config (default `ledger/mapping.toml`).
+
+A release build names its files after their content, so run the binary with
+`LEPTOS_HASH_FILES=true`; it reads `hash.txt` from its own directory, where
+`cargo leptos build --release` leaves it. Amounts are converted to TWD with the
 rates in the database's `stock_prices` table (`cargo run -- rates`).
