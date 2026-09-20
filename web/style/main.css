@@ -141,6 +141,20 @@ summary.row {
   font-weight: 600;
 }
 
+/* Each level down is a little smaller, so a group reads as the parent of the
+   rows under it. */
+summary.row.level-0 {
+  font-size: 1.02rem;
+}
+
+.row.level-1 {
+  font-size: 0.96rem;
+}
+
+.row.level-2 {
+  font-size: 0.92rem;
+}
+
 summary.row::-webkit-details-marker {
   display: none;
 }

@@ -129,6 +129,9 @@ fn collect_groups(nodes: &[Node], out: &mut BTreeSet<String>) {
 /// One tree row; a node with children folds.
 fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     let indent = format!("padding-left: calc({depth} * 1.1rem + 0.6rem)");
+    // A group's own row carries the size of its level, so the tree reads as a
+    // hierarchy rather than a list.
+    let level = format!("row level-{}", depth.min(2));
     let row = || {
         view! {
             <span class="marker" aria-hidden="true"></span>
@@ -141,7 +144,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         }
     };
     if n.children.is_empty() {
-        return view! { <div class="row" style=indent>{row()}</div> }.into_any();
+        return view! { <div class=level.clone() style=indent>{row()}</div> }.into_any();
     }
     let path = n.path.clone();
     let is_open = {
@@ -152,7 +155,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     let children = n.children.into_iter().map(|c| node(c, depth + 1, open)).collect_view();
     view! {
         <details class="group" open=is_open on:toggle=on_toggle(path, open)>
-            <summary class="row" style=indent>{head}</summary>
+            <summary class=level.clone() style=indent>{head}</summary>
             {children}
         </details>
     }

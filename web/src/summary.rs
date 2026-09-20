@@ -3,7 +3,6 @@
 
 use leptos::prelude::*;
 use leptos_meta::Title;
-use leptos_router::components::A;
 
 use crate::{
     balance_sheet::{load_balance_sheet, Excluded, MoneyText, Unpriced},
@@ -53,7 +52,6 @@ pub fn SummaryView(sheet: BalanceSheet) -> impl IntoView {
                     })
                     .collect_view()}
             </div>
-            <A href="/balance-sheet">"資產負債表"</A>
         </div>
     }
 }

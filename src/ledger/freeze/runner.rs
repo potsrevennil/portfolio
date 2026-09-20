@@ -30,10 +30,12 @@ use crate::{
     },
 };
 
-/// The subtree the securities backfill lands in — the ~722k TWD ETF placeholder
-/// among it. Every posting here is tagged (with [`journal::PLACEHOLDER_TAG`])
-/// so it can be replaced with real positions later without double-counting.
-const SECURITIES_PREFIX: &str = "Assets:Securities";
+/// Where the securities backfill lands. Every posting under it is tagged
+/// [`journal::PLACEHOLDER_TAG`] so T11 can replace it rather than add to it;
+/// read from the chart so renaming the account cannot silently drop the tag.
+fn placeholder_root(chart: &Chart) -> Option<&str> {
+    chart.account(&chart.institution.settlement_app_account).map(|m| &*m.account)
+}
 
 #[derive(clap::Parser, Debug)]
 pub struct FreezeArgs {
@@ -54,7 +56,9 @@ struct PostingRow {
     tags: Option<String>,
 }
 
-fn is_placeholder(path: &str) -> bool { in_subtree(path, SECURITIES_PREFIX) }
+fn is_placeholder(path: &str, root: Option<&str>) -> bool {
+    root.is_some_and(|root| in_subtree(path, root))
+}
 
 /// Fills an inferred leg and balances the transaction, plugging a genuine
 /// cross-currency transfer through `Equity:Conversions`. A single-currency
@@ -67,6 +71,7 @@ fn balance_postings(
     postings: &[Posting],
     date: NaiveDate,
     tags: &Option<String>,
+    placeholder_root: Option<&str>,
 ) -> Result<Vec<PostingRow>> {
     let inferred = postings.iter().filter(|p| p.amount.is_none()).count();
     if inferred > 1 {
@@ -92,7 +97,8 @@ fn balance_postings(
             }
         };
         *residual.entry(currency).or_default() += amount;
-        let placeholder = is_placeholder(&p.account).then(|| PLACEHOLDER_TAG.to_string());
+        let placeholder =
+            is_placeholder(&p.account, placeholder_root).then(|| PLACEHOLDER_TAG.to_string());
         rows.push(PostingRow {
             account: p.account.clone(),
             amount,
@@ -139,12 +145,13 @@ fn merge_tags(txn_tags: &Option<String>, extra: Option<String>) -> Option<String
 fn reconcile(
     model: &model::Model,
     manual: &[model::Transaction],
+    placeholder_root: Option<&str>,
 ) -> Result<(journal::Journal, Vec<BalanceAssertion>)> {
     let mut postings: Vec<journal::Posting> = Vec::new();
     for (group, txn) in (0u64..).zip(model.transactions().chain(manual)) {
         let tags = (!txn.tags.is_empty()).then(|| txn.tags.join(","));
         let payee = (!txn.payee.is_empty()).then(|| txn.payee.clone());
-        for leg in balance_postings(&txn.postings, txn.date, &tags)? {
+        for leg in balance_postings(&txn.postings, txn.date, &tags, placeholder_root)? {
             postings.push(journal::Posting {
                 group,
                 source: txn.source,
@@ -405,7 +412,8 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
     let manual_path = args.build.ledger_dir.join("manual.csv");
     let manual = if manual_path.exists() { manual::load(&manual_path)? } else { Vec::new() };
 
-    let (journal, assertions) = reconcile(&model, &manual)?;
+    let chart = Chart::load(args.build.ledger_dir.join("mapping.toml"))?;
+    let (journal, assertions) = reconcile(&model, &manual, placeholder_root(&chart))?;
     // Staged beside their final names, so a failed run never leaves an
     // unverified journal behind and the last verified pair survives it.
     let assertions_path = journal::assertions_path(&args.journal);
@@ -417,7 +425,6 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
     // Trust the journal only after re-reading what was written and checking it.
     let written = journal::read(&staged_journal)?;
     let written_assertions = journal::read_assertions(&staged_assertions)?;
-    let chart = Chart::load(args.build.ledger_dir.join("mapping.toml"))?;
     let (mismatches, negatives) = verify(&written, &written_assertions, &chart);
 
     let accounts: BTreeSet<&str> = written.postings.iter().map(|p| p.account.as_str()).collect();

@@ -21,6 +21,7 @@ fn a_balanced_single_currency_transaction_needs_no_conversion() {
         ],
         day(),
         &None,
+        None,
     )
     .expect("balances");
     assert_eq!(postings.len(), 2, "no conversion leg should be added");
@@ -39,6 +40,7 @@ fn two_postings_on_one_account_are_both_kept() {
         ],
         day(),
         &None,
+        None,
     )
     .expect("balances");
     assert_eq!(postings.len(), 2, "both same-account legs are kept");
@@ -55,6 +57,7 @@ fn a_cross_currency_transfer_is_plugged_through_conversions() {
         ],
         day(),
         &None,
+        None,
     )
     .expect("balances");
     // Two originals plus one conversion leg per currency.
@@ -76,6 +79,7 @@ fn a_single_currency_imbalance_is_rejected_not_masked() {
         ],
         day(),
         &None,
+        None,
     )
     .expect_err("a genuine imbalance must fail loudly");
     assert!(format!("{err:#}").contains("does not balance"), "got: {err:#}");
@@ -87,6 +91,7 @@ fn an_inferred_leg_is_filled_from_the_others() {
         &[explicit("Expenses:Food", dec!(100), Currency::TWD), Posting::inferred("Assets:Cash")],
         day(),
         &None,
+        None,
     )
     .expect("balances");
     let cash = postings.iter().find(|p| p.account == "Assets:Cash").unwrap();
@@ -98,14 +103,15 @@ fn an_inferred_leg_is_filled_from_the_others() {
 fn a_securities_posting_is_tagged_as_placeholder() {
     let postings = balance_postings(
         &[
-            explicit("Assets:Securities:ETF", dec!(3000), Currency::TWD),
+            explicit("Assets:Broker:Holdings", dec!(3000), Currency::TWD),
             explicit("Assets:Cathay:Savings", dec!(-3000), Currency::TWD),
         ],
         day(),
         &Some("investment".into()),
+        Some("Assets:Broker:Holdings"),
     )
     .expect("balances");
-    let etf = postings.iter().find(|p| p.account == "Assets:Securities:ETF").unwrap();
+    let etf = postings.iter().find(|p| p.account == "Assets:Broker:Holdings").unwrap();
     let tags = etf.tags.as_deref().unwrap();
     assert!(tags.contains(PLACEHOLDER_TAG), "placeholder marker missing: {tags}");
     assert!(tags.contains("investment"), "transaction tag lost: {tags}");
@@ -158,10 +164,14 @@ fn tag_merging_covers_every_combination() {
 
 #[test]
 fn placeholder_and_subtree_predicates_match_only_the_right_paths() {
-    assert!(is_placeholder("Assets:Securities:ETF"));
-    assert!(is_placeholder("Assets:Securities"));
-    assert!(!is_placeholder("Assets:Securities-Fund"));
-    assert!(!is_placeholder("Assets:Cash"));
+    // The root is the chart's securities account, whatever it is named.
+    let root = Some("Assets:Broker:Holdings");
+    assert!(is_placeholder("Assets:Broker:Holdings:ETF", root));
+    assert!(is_placeholder("Assets:Broker:Holdings", root));
+    assert!(!is_placeholder("Assets:Broker:Holdings-Old", root));
+    assert!(!is_placeholder("Assets:Cash", root));
+    // A chart that maps no securities account tags nothing.
+    assert!(!is_placeholder("Assets:Broker:Holdings", None));
     assert!(in_subtree("Assets:Cash:Petty", "Assets:Cash"));
     assert!(in_subtree("Assets:Cash", "Assets:Cash"));
     assert!(!in_subtree("Assets:Cashew", "Assets:Cash"));

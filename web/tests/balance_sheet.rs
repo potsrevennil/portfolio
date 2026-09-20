@@ -282,7 +282,7 @@ async fn the_landing_page_summarises() {
     position(&text, "淨資產");
     position(&text, "資產");
     position(&text, "負債");
-    // The tree itself lives on its own page, one link away.
+    // The tree itself lives on its own page, reached from the nav.
     assert!(html.contains(r#"href="/balance-sheet""#), "{html}");
     assert!(!text.contains("全部展開"), "{text}");
 }

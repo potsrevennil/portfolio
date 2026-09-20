@@ -46,7 +46,7 @@ expense = "Expenses:Uncategorized"
 "現金" = "Assets:Cash"
 "美金" = "Assets:USD-Wallet"
 "國泰" = "Assets:Cathay"
-"券商" = "Assets:Securities:ETF"
+"券商" = "Assets:Broker:Holdings"
 "起鼓" = "Equity:Opening-Balances"
 "#;
 
@@ -174,12 +174,16 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     // posting tag).
     let note: Option<String> = sqlx::query(
         "SELECT e.note FROM account_events e JOIN accounts a ON a.id = e.account_id WHERE a.path \
-         = 'Assets:Securities:ETF' AND e.event = 'created'",
+         = 'Assets:Broker:Holdings' AND e.event = 'created'",
     )
     .fetch_one(&pool)
     .await?
     .get(0);
-    assert!(note.unwrap_or_default().contains("backfilled"), "placeholder note missing");
+    assert!(
+        note.unwrap_or_default().contains("backfilled"),
+        "the placeholder subtree is read from the chart, so a securities account named anything \
+         else must still be tagged"
+    );
 
     // Every account has exactly one 'created' event.
     let accounts: i64 = sqlx::query("SELECT COUNT(*) FROM accounts").fetch_one(&pool).await?.get(0);
@@ -254,7 +258,7 @@ async fn load_journal_requires_the_assertions_file() -> anyhow::Result<()> {
     // level has one.
     let labels: Vec<(String, String)> = sqlx::query(
         "SELECT path, label FROM accounts WHERE path IN ('Assets', 'Assets:Cash', \
-         'Assets:Securities') ORDER BY path",
+         'Assets:Broker') ORDER BY path",
     )
     .fetch_all(&pool)
     .await?
@@ -263,8 +267,8 @@ async fn load_journal_requires_the_assertions_file() -> anyhow::Result<()> {
     .collect();
     assert_eq!(labels, [
         ("Assets".to_string(), "Assets".to_string()),
+        ("Assets:Broker".to_string(), "Broker".to_string()),
         ("Assets:Cash".to_string(), "現金".to_string()),
-        ("Assets:Securities".to_string(), "Securities".to_string()),
     ]);
     Ok(())
 }
