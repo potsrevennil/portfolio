@@ -150,3 +150,45 @@ fn the_example_config_is_valid() -> anyhow::Result<()> {
     assert!(!chart.expenses.is_empty(), "example maps no expense category");
     Ok(())
 }
+
+/// Account names become SQLite paths and are split on `:`, so a name outside
+/// that shape fails at load, naming the value.
+#[test]
+fn a_malformed_account_name_is_rejected_at_load() -> anyhow::Result<()> {
+    for (bad, why) in [("Assets:現金", "not ASCII"), ("Assets::Cash", "empty account segment")] {
+        let mapping = temp(&format!("{REQUIRED}\n[accounts]\n\"錢包\" = \"{bad}\"\n"))?;
+        let error = Chart::load(mapping.path()).expect_err("a malformed name should not load");
+        let shown = format!("{error:#}");
+        assert!(shown.contains(bad) && shown.contains(why), "got: {shown}");
+    }
+    Ok(())
+}
+
+/// A mapping is an account name or a `{ account, tags }` table; anything else
+/// says which two shapes it accepts.
+#[test]
+fn a_mapping_of_the_wrong_shape_is_rejected() -> anyhow::Result<()> {
+    let mapping = temp(&format!("{REQUIRED}\n[expenses]\n\"飲食\" = 5\n"))?;
+    let error = Chart::load(mapping.path()).expect_err("a number is not a mapping");
+    assert!(
+        format!("{error:#}").contains("an account name or a { account, tags } table"),
+        "got: {error:#}"
+    );
+    Ok(())
+}
+
+/// A statement account's app records are pooled by the one app account mapped
+/// to it; two would make the pool ambiguous.
+#[test]
+fn an_account_mapped_from_two_app_accounts_is_ambiguous() -> anyhow::Result<()> {
+    let mapping = temp(&format!(
+        "{REQUIRED}\n[accounts]\n\"活存\" = \"Assets:Bank:Savings\"\n\"存款\" = \
+         \"Assets:Bank:Savings\"\n\"現金\" = \"Assets:Cash\"\n"
+    ))?;
+    let chart = Chart::load(mapping.path())?;
+    assert_eq!(chart.app_account_for("Assets:Cash")?, Some("現金"));
+    assert_eq!(chart.app_account_for("Assets:Bank:Investment")?, None);
+    let error = chart.app_account_for("Assets:Bank:Savings").expect_err("two names map here");
+    assert!(format!("{error:#}").contains("several app accounts"), "got: {error:#}");
+    Ok(())
+}

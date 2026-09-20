@@ -214,8 +214,10 @@ struct Columns {
     memo: Option<usize>,
 }
 
-impl Columns {
-    fn from_header(rec: &csv::StringRecord) -> Result<Self> {
+impl TryFrom<&csv::StringRecord> for Columns {
+    type Error = anyhow::Error;
+
+    fn try_from(rec: &csv::StringRecord) -> Result<Self> {
         let find = |name: &str| rec.iter().position(|f| f.trim() == name);
         let need = |name: &str| find(name).with_context(|| format!("no {name} column"));
         Ok(Columns {
@@ -250,15 +252,13 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
         let f0 = rec.get(0).unwrap_or("").trim();
 
         let Some(cols) = &columns else {
-            if let Some(range) = rec.iter().find(|f| f.contains('至')) {
-                if let Some((_, tail)) = range.split_once('至') {
-                    let end = tail.trim_matches(|c: char| !c.is_ascii_digit() && c != '/');
-                    period_end = parse_slash_date(end).ok();
-                }
+            if let Some((_, tail)) = rec.iter().find_map(|f| f.split_once('至')) {
+                let end = tail.trim_matches(|c: char| !c.is_ascii_digit() && c != '/');
+                period_end = parse_slash_date(end).ok();
             }
             if f0 == "交易日期" {
                 columns = Some(
-                    Columns::from_header(&rec)
+                    Columns::try_from(&rec)
                         .with_context(|| format!("header of {}", file_path.display()))?,
                 );
             } else if account_no.is_empty() && f0.contains(' ') {
@@ -606,5 +606,41 @@ mod tests {
         let dropped = s.trim_before(NaiveDate::from_ymd_opt(2026, 6, 2).expect("date"));
         assert_eq!(dropped, 1);
         assert_eq!(s.opening_balance(), dec!(100));
+    }
+
+    #[test]
+    fn info_names_an_account_by_its_digits() {
+        // Masked incoming rows, zero padding, and another digit run first.
+        assert!(info_names_account("(013)0000123***789012", "123456789012"));
+        assert!(info_names_account("(822)000999 0123456789012", "123456789012"));
+        assert!(!info_names_account("(013)0000123456789013", "123456789012"));
+        // An all-zero account number names nothing.
+        assert!(!info_names_account("000000", "000"));
+    }
+
+    #[test]
+    fn a_dash_cell_reads_as_empty() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let s = load(write(
+            &dir,
+            "savings.csv",
+            "123456789012 \
+             活存\n幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n2024/06/01,\
+             2024/06/01,存入,,100,100,−,−\n",
+        ))
+        .expect("loads");
+        assert!(s.lines[0].info.is_empty() && s.lines[0].memo.is_empty());
+    }
+
+    #[test]
+    fn a_statement_with_no_rows_is_rejected() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let err = load(write(
+            &dir,
+            "empty.csv",
+            "123456789012 活存\n幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n",
+        ))
+        .expect_err("a statement with no rows");
+        assert!(format!("{err:#}").contains("no statement rows"), "{err:#}");
     }
 }

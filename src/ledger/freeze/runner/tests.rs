@@ -117,7 +117,7 @@ fn a_securities_posting_is_tagged_as_placeholder() {
 fn subtree_balance_covers_descendants_and_respects_the_cutoff() {
     let leg = |account: &str, amount: Decimal, year: i32| journal::Posting {
         group: 0,
-        source: "manual".into(),
+        source: model::Source::Manual,
         date: NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
         payee: None,
         narration: String::new(),
@@ -168,7 +168,66 @@ fn placeholder_and_subtree_predicates_match_only_the_right_paths() {
 }
 
 #[test]
-fn a_non_beancount_root_is_rejected() {
-    assert!(account_type("Assets:Cash").is_ok());
-    assert!(account_type("Nonsense:Root").is_err());
+fn an_account_path_parses_to_its_root() {
+    assert_eq!("Assets:Cash:Petty".parse(), Ok(AccountType::Assets));
+    assert_eq!("Liabilities".parse(), Ok(AccountType::Liabilities));
+    assert_eq!("Nonsense:Root".parse::<AccountType>(), Err(()));
+}
+
+#[test]
+fn two_inferred_legs_are_rejected() {
+    let err = balance_postings(
+        &[
+            explicit("Expenses:Food", dec!(100), Currency::TWD),
+            Posting::inferred("Assets:Cash"),
+            Posting::inferred("Assets:Wallet"),
+        ],
+        day(),
+        &None,
+    )
+    .expect_err("which leg takes the remainder is ambiguous");
+    assert!(format!("{err:#}").contains("more than one inferred"), "got: {err:#}");
+}
+
+#[test]
+fn an_inferred_leg_in_a_multi_currency_transaction_is_rejected() {
+    let err = balance_postings(
+        &[
+            explicit("Assets:Cash", dec!(-300), Currency::TWD),
+            explicit("Assets:USD-Wallet", dec!(10), Currency::USD),
+            Posting::inferred("Expenses:Fees"),
+        ],
+        day(),
+        &None,
+    )
+    .expect_err("the inferred leg has no single currency to take");
+    assert!(format!("{err:#}").contains("multi-currency"), "got: {err:#}");
+}
+
+/// Two transactions under one (source, external_ref) cannot be loaded, so the
+/// freeze refuses to write them rather than leaving the loader to fail.
+#[test]
+fn a_repeated_dedup_key_is_refused() {
+    let txn = |account: &str| model::Transaction {
+        date: day(),
+        payee: String::new(),
+        narration: String::new(),
+        tags: Vec::new(),
+        postings: vec![
+            explicit(account, dec!(100), Currency::TWD),
+            explicit("Assets:Cash", dec!(-100), Currency::TWD),
+        ],
+        source: model::Source::Tiantian,
+        external_ref: Some("U-1".to_string()),
+    };
+    let model = model::Model {
+        cathay: vec![
+            model::Directive::Transaction(txn("Expenses:Food")),
+            model::Directive::Transaction(txn("Expenses:Travel")),
+        ],
+        ..model::Model::default()
+    };
+
+    let err = reconcile(&model, &[]).expect_err("one key, two transactions");
+    assert!(format!("{err:#}").contains("(tiantian, U-1)"), "got: {err:#}");
 }

@@ -29,9 +29,10 @@ pub enum AccountType {
 impl FromStr for AccountType {
     type Err = ();
 
-    /// The five roots Beancount allows, and nothing else.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
+    /// An account path's type, read from its first segment: one of the five
+    /// roots Beancount allows, and nothing else. A bare root parses too.
+    fn from_str(path: &str) -> Result<Self, Self::Err> {
+        Ok(match path.split_once(':').map_or(path, |(root, _)| root) {
             "Assets" => Self::Assets,
             "Liabilities" => Self::Liabilities,
             "Income" => Self::Income,
@@ -78,7 +79,7 @@ impl FromStr for Account {
         if !name.is_ascii() {
             return Err(format!("{name:?} is not ASCII, which Beancount account names must be"));
         }
-        if name.split(':').next().unwrap_or("").parse::<AccountType>().is_err() {
+        if name.parse::<AccountType>().is_err() {
             return Err(format!(
                 "{name:?} is not a Beancount account: the first segment must be one of Assets, \
                  Liabilities, Income, Expenses, Equity"

@@ -42,7 +42,7 @@ pub(super) fn resolve(
     unmapped: &mut BTreeSet<String>,
     used_overrides: &mut BTreeSet<String>,
 ) -> (String, Vec<String>) {
-    let (account, mut tags) = match corrected(chart, &event.id, used_overrides) {
+    let (account, mut tags) = match corrected(chart, event.correction_id(), used_overrides) {
         Some(found) => found,
         None => {
             let found = match &event.contra {
@@ -65,7 +65,7 @@ pub(super) fn resolve(
             }
         }
     };
-    with_trip_tags(chart, event.date, &event.id, &account, &mut tags);
+    with_trip_tags(chart, event.date, event.correction_id(), &account, &mut tags);
     (account, tags)
 }
 
@@ -219,6 +219,7 @@ pub(super) fn emit_daily_accounts(
                 inn,
                 in_currency,
                 memo,
+                id,
             } => {
                 if sent.is_zero() && inn.is_zero() {
                     continue;
@@ -242,9 +243,8 @@ pub(super) fn emit_daily_accounts(
                     tags: Vec::new(),
                     postings: vec![writer::Posting::new(source, -sent, *out_currency), credit],
                     source: model::Source::Tiantian,
-                    // A 轉帳 row has one id but two account sides; the app leaves
-                    // no per-side id, so there is nothing stable to dedup on.
-                    external_ref: None,
+                    // One transaction per 轉帳 row, so the row's id is its key.
+                    external_ref: (!id.is_empty()).then(|| id.clone()),
                 });
             }
         }

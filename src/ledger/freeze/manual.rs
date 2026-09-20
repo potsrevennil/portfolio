@@ -171,4 +171,11 @@ mod tests {
         let err = load(file.path()).expect_err("a missing contra column must fail");
         assert!(format!("{err:#}").contains("contra"), "got: {err:#}");
     }
+
+    #[test]
+    fn an_empty_account_or_contra_fails_loudly() {
+        let file = write("date,account,contra,amount\n2024-04-01,Assets:Cash,,500\n");
+        let err = load(file.path()).expect_err("a blank contra must fail");
+        assert!(format!("{err:#}").contains("empty account or contra"), "got: {err:#}");
+    }
 }

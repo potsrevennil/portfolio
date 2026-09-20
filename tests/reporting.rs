@@ -287,6 +287,101 @@ async fn periodic_report_clamps_partial_period_bounds_to_the_range() {
                                         // excluded
 }
 
+#[tokio::test]
+async fn quarter_week_and_day_grains_bucket_by_their_own_bounds() {
+    let (_dir, pool) = fresh_db().await;
+    seed_multicurrency(&pool).await;
+
+    // Q1 holds all of January and February; Q2 is empty but still reported.
+    let report =
+        periodic_report(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 6, 30), Grain::Quarter)
+            .await
+            .unwrap();
+    let bounds: Vec<(NaiveDate, NaiveDate)> =
+        report.periods.iter().map(|p| (p.start, p.end)).collect();
+    assert_eq!(bounds, [(d(2026, 1, 1), d(2026, 3, 31)), (d(2026, 4, 1), d(2026, 6, 30))]);
+    assert_eq!((report.periods[0].income, report.periods[0].expense), (dec!(50000), dec!(1900)));
+    assert_eq!((report.periods[1].income, report.periods[1].expense), (dec!(0), dec!(0)));
+
+    // Weeks start on Monday: 2026-01-10 is a Saturday, in the week of the 5th,
+    // which also holds the salary.
+    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 5), d(2026, 1, 18), Grain::Week)
+        .await
+        .unwrap();
+    let weeks: Vec<(NaiveDate, NaiveDate, Decimal, Decimal)> =
+        report.periods.iter().map(|p| (p.start, p.end, p.income, p.expense)).collect();
+    assert_eq!(weeks, [
+        (d(2026, 1, 5), d(2026, 1, 11), dec!(50000), dec!(300)),
+        (d(2026, 1, 12), d(2026, 1, 18), dec!(0), dec!(0))
+    ]);
+
+    // One period per day; only the 10th has the lunch.
+    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 9), d(2026, 1, 11), Grain::Day)
+        .await
+        .unwrap();
+    let expenses: Vec<(NaiveDate, Decimal)> =
+        report.periods.iter().map(|p| (p.start, p.expense)).collect();
+    assert_eq!(expenses, [
+        (d(2026, 1, 9), dec!(0)),
+        (d(2026, 1, 10), dec!(300)),
+        (d(2026, 1, 11), dec!(0))
+    ]);
+}
+
+/// A posting older than every recorded quote converts at the earliest one
+/// the report can see, rather than dropping out.
+#[tokio::test]
+async fn a_date_before_every_quote_converts_at_the_earliest() {
+    let (_dir, pool) = fresh_db().await;
+    let wallet = add_account(&pool, "Assets:USD-Wallet", "Wallet", "asset").await;
+    let food = add_account(&pool, "Expenses:Food", "Food", "expense").await;
+    add_txn(&pool, "2026-01-10", "lunch abroad", &[(food, "10", "USD"), (wallet, "-10", "USD")])
+        .await;
+    add_price(&pool, "TWD=X", "2026-03-01", 30.0).await;
+    add_price(&pool, "TWD=X", "2026-03-15", 40.0).await;
+
+    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 3, 31), Grain::Month)
+        .await
+        .unwrap();
+    assert_eq!(report.periods[0].expense, dec!(300));
+}
+
+/// A ledger held only in the base currency needs no rates at all.
+#[tokio::test]
+async fn a_base_currency_ledger_reports_without_rates() {
+    let (_dir, pool) = fresh_db().await;
+    let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
+    let food = add_account(&pool, "Expenses:Food", "Food", "expense").await;
+    add_txn(&pool, "2026-01-10", "lunch", &[(food, "120", "TWD"), (cash, "-120", "TWD")]).await;
+
+    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 1, 31), Grain::Month)
+        .await
+        .unwrap();
+    assert_eq!(report.periods[0].expense, dec!(120));
+}
+
+/// A posting whose account is gone would drop out of every report without a
+/// trace, so loading refuses it.
+#[tokio::test]
+async fn a_posting_naming_a_missing_account_fails_the_load() {
+    let (_dir, pool) = fresh_db().await;
+    let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
+    let food = add_account(&pool, "Expenses:Food", "Food", "expense").await;
+    add_txn(&pool, "2026-01-10", "lunch", &[(food, "120", "TWD"), (cash, "-120", "TWD")]).await;
+    // Only a database with its foreign keys off can hold such a row.
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query("PRAGMA foreign_keys = OFF").execute(&mut *conn).await.unwrap();
+    sqlx::query("UPDATE postings SET account_id = 999 WHERE account_id = ?")
+        .bind(food)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    drop(conn);
+
+    let err = account_balances(&pool, d(2026, 1, 31)).await.expect_err("an orphan posting");
+    assert!(format!("{err:#}").contains("account id 999"), "{err:#}");
+}
+
 /// Builds a portfolio holding 10 AAPL bought at 100 USD, reported in `broker`'s
 /// currency. Used by the holdings tests.
 fn aapl_portfolio(broker: Broker) -> Portfolio {

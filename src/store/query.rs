@@ -55,6 +55,20 @@ pub enum AccountType {
     Expense,
 }
 
+/// The schema word for each Beancount root.
+impl From<crate::ledger::accounts::AccountType> for AccountType {
+    fn from(root: crate::ledger::accounts::AccountType) -> Self {
+        use crate::ledger::accounts::AccountType as Root;
+        match root {
+            Root::Assets => Self::Asset,
+            Root::Liabilities => Self::Liability,
+            Root::Equity => Self::Equity,
+            Root::Income => Self::Income,
+            Root::Expenses => Self::Expense,
+        }
+    }
+}
+
 /// The calendar granularity a report is grouped by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -264,6 +278,11 @@ impl LedgerData {
         .context("loading postings")?;
         let postings =
             posting_rows.into_iter().map(PostingEntry::try_from).collect::<Result<Vec<_>>>()?;
+        // The reports index `accounts` by every posting's account; a posting
+        // that names none would otherwise vanish from them silently.
+        if let Some(orphan) = postings.iter().find(|p| !accounts.contains_key(&p.account_id)) {
+            anyhow::bail!("a posting names account id {}, which does not exist", orphan.account_id);
+        }
 
         Ok(Self { accounts, postings })
     }
@@ -284,8 +303,9 @@ impl LedgerData {
 
         let mut out: Vec<AccountBalance> = sums
             .into_iter()
-            .filter_map(|((account_id, currency), amount)| {
-                self.accounts.get(&account_id).map(|meta| AccountBalance {
+            .map(|((account_id, currency), amount)| {
+                let meta = &self.accounts[&account_id];
+                AccountBalance {
                     account_id,
                     path: meta.path.clone(),
                     label: meta.label.clone(),
@@ -294,7 +314,7 @@ impl LedgerData {
                     currency,
                     amount,
                     as_of,
-                })
+                }
             })
             .collect();
         out.sort_by(|a, b| a.path.cmp(&b.path).then(a.currency.cmp(&b.currency)));
@@ -342,18 +362,14 @@ impl LedgerData {
         }
 
         for p in self.postings.iter().filter(|p| p.date >= start && p.date <= end) {
-            let account_type = match self.accounts.get(&p.account_id) {
-                Some(meta) => meta.account_type,
-                None => continue,
-            };
-            let key = period_start_of(p.date, grain);
-            if let Some((_, income, expense)) = periods.get_mut(&key) {
-                let converted = p.amount * rate_as_of(p.currency, base, p.date, prices);
-                match account_type {
-                    AccountType::Income => *income += -converted,
-                    AccountType::Expense => *expense += converted,
-                    AccountType::Asset | AccountType::Liability | AccountType::Equity => {}
-                }
+            let (_, income, expense) = periods
+                .get_mut(&period_start_of(p.date, grain))
+                .expect("the periods cover every date in [start, end]");
+            let converted = p.amount * rate_as_of(p.currency, base, p.date, prices);
+            match self.accounts[&p.account_id].account_type {
+                AccountType::Income => *income += -converted,
+                AccountType::Expense => *expense += converted,
+                AccountType::Asset | AccountType::Liability | AccountType::Equity => {}
             }
         }
 

@@ -53,14 +53,6 @@ struct PostingRow {
     tags: Option<String>,
 }
 
-fn account_type(path: &str) -> Result<AccountType> {
-    path.split(':')
-        .next()
-        .unwrap_or("")
-        .parse()
-        .map_err(|_| anyhow::anyhow!("{path:?} has no root"))
-}
-
 /// True when an account is or lies under `root` (Beancount subtree semantics).
 fn in_subtree(account: &str, root: &str) -> bool {
     account == root || account.starts_with(&format!("{root}:"))
@@ -159,7 +151,7 @@ fn reconcile(
         for leg in balance_postings(&txn.postings, txn.date, &tags)? {
             postings.push(journal::Posting {
                 group,
-                source: txn.source.as_str().to_string(),
+                source: txn.source,
                 date: txn.date,
                 payee: payee.clone(),
                 narration: txn.narration.clone(),
@@ -169,6 +161,17 @@ fn reconcile(
                 currency: leg.currency,
                 tags: leg.tags,
             });
+        }
+    }
+
+    // The loader keys dedup on (source, external_ref), so a journal with two
+    // transactions under one key cannot be loaded at all. Refuse to write one.
+    let mut keys: BTreeSet<(model::Source, &str)> = BTreeSet::new();
+    for txn in model.transactions().chain(manual) {
+        if let Some(external_ref) = &txn.external_ref {
+            if !keys.insert((txn.source, external_ref)) {
+                bail!("two transactions share the dedup key ({}, {external_ref})", txn.source);
+            }
         }
     }
 
@@ -223,6 +226,22 @@ pub struct Negative {
     pub amount: Decimal,
 }
 
+impl fmt::Display for Mismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "MISMATCH {} {} @ {}: expected {}, journal has {}",
+            self.account, self.currency, self.date, self.expected, self.actual
+        )
+    }
+}
+
+impl fmt::Display for Negative {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} = {}", self.account, self.currency, self.amount)
+    }
+}
+
 /// What the freeze produced and whether the journal reconciles.
 #[derive(Debug)]
 pub struct Report {
@@ -270,18 +289,14 @@ impl fmt::Display for Report {
             self.mismatches.len()
         )?;
         for m in &self.mismatches {
-            writeln!(
-                f,
-                "  MISMATCH {} {} @ {}: expected {}, journal has {}",
-                m.account, m.currency, m.date, m.expected, m.actual
-            )?;
+            writeln!(f, "  {m}")?;
         }
         if self.negatives.is_empty() {
             writeln!(f, "no asset account closes negative")?;
         } else {
             writeln!(f, "NEGATIVE asset balances (opening balance missing?):")?;
             for n in &self.negatives {
-                writeln!(f, "  {} {} = {}", n.account, n.currency, n.amount)?;
+                writeln!(f, "  {n}")?;
             }
         }
         if self.manual > 0 {
@@ -325,7 +340,7 @@ fn verify(
         .postings
         .iter()
         .map(|m| m.account.as_str())
-        .filter(|a| matches!(account_type(a), Ok(AccountType::Assets)))
+        .filter(|a| matches!(a.parse(), Ok(AccountType::Assets)))
         .filter(|a| !chart.is_split_account(a))
         .collect();
     let mut negatives = Vec::new();

@@ -15,6 +15,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+use super::model::Source;
 use crate::currency::Currency;
 
 /// The reserved posting tag marking a securities-placeholder leg (the ETF
@@ -27,8 +28,7 @@ pub const PLACEHOLDER_TAG: &str = "securities-placeholder";
 pub struct Posting {
     /// Groups the legs of one transaction together.
     pub group: u64,
-    /// `import` / `tiantian` / `manual` — the `transactions.source` value.
-    pub source: String,
+    pub source: Source,
     pub date: NaiveDate,
     pub payee: Option<String>,
     pub narration: String,
@@ -50,7 +50,7 @@ pub struct Journal {
 #[derive(Serialize, Deserialize)]
 struct Row {
     group: u64,
-    source: String,
+    source: Source,
     date: NaiveDate,
     account: String,
     amount: Decimal,
@@ -71,7 +71,7 @@ pub fn write(path: impl AsRef<Path>, journal: &Journal) -> Result<()> {
     for p in &journal.postings {
         writer.serialize(Row {
             group: p.group,
-            source: p.source.clone(),
+            source: p.source,
             date: p.date,
             account: p.account.clone(),
             amount: p.amount,
@@ -130,7 +130,7 @@ mod tests {
             postings: vec![
                 Posting {
                     group: 0,
-                    source: "manual".into(),
+                    source: Source::Manual,
                     date: NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
                     payee: Some("Store".into()),
                     narration: "lunch".into(),
@@ -142,7 +142,7 @@ mod tests {
                 },
                 Posting {
                     group: 0,
-                    source: "manual".into(),
+                    source: Source::Manual,
                     date: NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
                     payee: Some("Store".into()),
                     narration: "lunch".into(),
@@ -158,6 +158,28 @@ mod tests {
         write(file.path(), &journal)?;
         let back = read(file.path())?;
         assert_eq!(back.postings, journal.postings);
+        Ok(())
+    }
+
+    #[test]
+    fn a_journal_with_no_rows_is_rejected() -> Result<()> {
+        let file = tempfile::Builder::new().suffix(".csv").tempfile()?;
+        write(file.path(), &Journal::default())?;
+        let err = read(file.path()).expect_err("an empty journal must not load");
+        assert!(format!("{err:#}").contains("contains no rows"), "got: {err:#}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_source_is_rejected_on_read() -> Result<()> {
+        let file = tempfile::Builder::new().suffix(".csv").tempfile()?;
+        std::fs::write(
+            file.path(),
+            "group,source,date,account,amount,currency,payee,narration,external_ref,tags\n0,imprt,\
+             2024-07-01,Assets:Cash,-120,TWD,,,,\n",
+        )?;
+        let err = read(file.path()).expect_err("a misspelt source must not load");
+        assert!(format!("{err:#}").contains("imprt"), "got: {err:#}");
         Ok(())
     }
 }

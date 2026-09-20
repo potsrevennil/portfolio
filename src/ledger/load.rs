@@ -23,8 +23,8 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::{Row, SqlitePool};
 
-use super::{accounts::AccountType, journal};
-use crate::{currency::Currency, db};
+use super::{accounts::AccountType, journal, model::Source};
+use crate::{currency::Currency, db, store::query};
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -37,18 +37,12 @@ pub struct Args {
     pub database_url: String,
 }
 
-/// The `accounts.type` value for an account path's root.
-fn schema_type(path: &str) -> Result<&'static str> {
-    let root: AccountType = path.split(':').next().unwrap_or("").parse().map_err(|_| {
+/// The `accounts.type` value for an account path.
+fn schema_type(path: &str) -> Result<query::AccountType> {
+    let root: AccountType = path.parse().map_err(|()| {
         anyhow::anyhow!("{path:?} is not a Beancount account (no Assets/Liabilities/… root)")
     })?;
-    Ok(match root {
-        AccountType::Assets => "asset",
-        AccountType::Liabilities => "liability",
-        AccountType::Equity => "equity",
-        AccountType::Income => "income",
-        AccountType::Expenses => "expense",
-    })
+    Ok(root.into())
 }
 
 /// What the loader wrote.
@@ -92,7 +86,7 @@ pub async fn run(args: &Args) -> Result<Report> {
             sqlx::query("INSERT INTO accounts (path, label, type, closed) VALUES (?, ?, ?, 0)")
                 .bind(path)
                 .bind(label)
-                .bind(schema_type(path)?)
+                .bind(schema_type(path)?.to_string())
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("inserting account {path}"))?
@@ -138,7 +132,7 @@ pub async fn run(args: &Args) -> Result<Report> {
             header.date,
             header.payee.as_deref(),
             Some(&header.narration),
-            &header.source,
+            header.source,
             header.external_ref.as_deref(),
         )
         .await
@@ -170,7 +164,7 @@ async fn insert_transaction(
     date: NaiveDate,
     payee: Option<&str>,
     narration: Option<&str>,
-    source: &str,
+    source: Source,
     external_ref: Option<&str>,
 ) -> Result<i64> {
     Ok(sqlx::query(
@@ -180,7 +174,7 @@ async fn insert_transaction(
     .bind(date.to_string())
     .bind(payee)
     .bind(narration)
-    .bind(source)
+    .bind(source.to_string())
     .bind(external_ref)
     .execute(tx)
     .await?
