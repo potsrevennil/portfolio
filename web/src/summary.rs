@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use leptos_meta::Title;
 
 use crate::{
-    balance_sheet::{load_balance_sheet, Excluded, MoneyText, Unpriced},
+    balance_sheet::{load_balance_sheet, Excluded, MoneyText, UnpricedNote},
     model::{BalanceSheet, Converted},
 };
 
@@ -35,7 +35,7 @@ pub fn SummaryView(sheet: BalanceSheet) -> impl IntoView {
             <div class="headline">
                 <span class="name">"淨資產"</span>
                 <MoneyText money=sheet.net_worth.money.clone() />
-                <Unpriced currencies=sheet.net_worth.unpriced />
+                <UnpricedNote unpriced=sheet.net_worth.unpriced />
                 <Excluded excluded=sheet.excluded />
             </div>
             <div class="tiles">
@@ -46,7 +46,7 @@ pub fn SummaryView(sheet: BalanceSheet) -> impl IntoView {
                             <div class="tile">
                                 <span class="name">{label}</span>
                                 <MoneyText money=total.money />
-                                <Unpriced currencies=total.unpriced />
+                                <UnpricedNote unpriced=total.unpriced />
                             </div>
                         }
                     })

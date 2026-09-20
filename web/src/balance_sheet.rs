@@ -1,12 +1,11 @@
-//! The landing page: 資產 and 負債 as fold-out account trees, per-currency
-//! sums, and net worth in the base currency.
+//! 資產 and 負債 as fold-out account trees, per-currency sums, and net worth.
 
 use std::collections::BTreeSet;
 
 use leptos::{prelude::*, web_sys::HtmlDetailsElement};
 use leptos_meta::Title;
 
-use crate::model::{BalanceSheet, Converted, Money, Node};
+use crate::model::{BalanceSheet, Converted, Money, Node, Unpriced};
 
 /// Where the open groups are remembered across visits, per browser.
 const OPEN_KEY: &str = "balance-sheet-open";
@@ -110,7 +109,7 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
                     <span class="amounts">
                         <MoneyText money=sheet.net_worth.money />
                     </span>
-                    <Unpriced currencies=sheet.net_worth.unpriced />
+                    <UnpricedNote unpriced=sheet.net_worth.unpriced />
                     <Excluded excluded=sheet.excluded />
                 </span>
             </div>
@@ -189,20 +188,20 @@ fn Figures(
     #[prop(default = None)]
     excluded: Option<Converted>,
 ) -> impl IntoView {
-    let amounts = match amounts.is_empty() {
-        true => vec![Money { text: "0".into(), negative: false }],
-        false => amounts,
-    };
+    // A group whose currencies all net to zero still has a row to fill, and no
+    // currency to name it in — as Fava prints it.
+    let zero = amounts.is_empty().then(|| view! { <span class="money">"0"</span> });
     view! {
         <span class="figures">
             <span class="amounts">
+                {zero}
                 {amounts.into_iter().map(|money| view! { <MoneyText money /> }).collect_view()}
             </span>
             {converted
                 .map(|c| {
                     view! {
                         <span class="converted">
-                            "≈ " <MoneyText money=c.money /> <Unpriced currencies=c.unpriced />
+                            "≈ " <MoneyText money=c.money /> <UnpricedNote unpriced=c.unpriced />
                         </span>
                     }
                 })}
@@ -218,7 +217,7 @@ pub fn Excluded(excluded: Option<Converted>) -> impl IntoView {
     excluded.map(|c| {
         view! {
             <span class="at-cost">
-                {format!("另有成本 {}", c.money.text)} <Unpriced currencies=c.unpriced />
+                {format!("另有成本 {}", c.money)} <UnpricedNote unpriced=c.unpriced />
             </span>
         }
     })
@@ -226,13 +225,12 @@ pub fn Excluded(excluded: Option<Converted>) -> impl IntoView {
 
 #[component]
 pub fn MoneyText(money: Money) -> impl IntoView {
-    view! { <span class="money" class:negative=money.negative>{money.text}</span> }
+    view! { <span class="money" class:negative=money.is_negative()>{money.to_string()}</span> }
 }
 
 #[component]
-pub fn Unpriced(currencies: Vec<String>) -> impl IntoView {
-    (!currencies.is_empty())
-        .then(|| view! { <span class="unpriced">{format!("（未換算：{}）", currencies.join("、"))}</span> })
+pub fn UnpricedNote(unpriced: Unpriced) -> impl IntoView {
+    view! { <span class="unpriced">{unpriced.to_string()}</span> }
 }
 
 fn storage() -> Option<leptos::web_sys::Storage> { window().local_storage().ok().flatten() }

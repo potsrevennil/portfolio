@@ -15,6 +15,7 @@ use portfolio::{
         model::Source,
         valuation::AtCost,
     },
+    store::assertions::{AssertionSource, BalanceAssertion},
     YFinanceSource,
 };
 use rust_decimal::Decimal;
@@ -83,6 +84,8 @@ fn journal() -> Journal {
             ("Assets:Unlisted:Gamma", "40000", TWD),
             ("Assets:Bank:Savings", "-40000", TWD),
         ]),
+        // Cents on a TWD balance: the display rounds them, the ledger keeps them.
+        ("2024-04-03", &[("Assets:Cash", "12.34", TWD), ("Income:Interest", "-12.34", TWD)]),
         // Closed out to zero: must not show.
         ("2024-05-01", &[("Assets:Old-Wallet", "70", TWD), ("Assets:Cash", "-70", TWD)]),
         ("2024-05-02", &[("Assets:Old-Wallet", "-70", TWD), ("Assets:Cash", "70", TWD)]),
@@ -110,11 +113,29 @@ fn journal() -> Journal {
     Journal { postings }
 }
 
+/// What the loader's gate checks this fixture against.
+fn assertions() -> Vec<BalanceAssertion> {
+    [("Assets:Cash", "912.34"), ("Liabilities:Card", "-2500")]
+        .into_iter()
+        .map(|(account, closing)| BalanceAssertion {
+            source: AssertionSource::Counted,
+            account: account.into(),
+            currency: Currency::TWD,
+            period_start: None,
+            opening: None,
+            period_end: AS_OF.parse().unwrap(),
+            closing: closing.parse().unwrap(),
+        })
+        .collect()
+}
+
 async fn ledger() -> (TempDir, SqlitePool) {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     std::fs::write(root.join("mapping.toml"), MAPPING).unwrap();
-    journal::write(root.join("journal.csv"), &journal()).unwrap();
+    let journal_path = root.join("journal.csv");
+    journal::write(&journal_path, &journal()).unwrap();
+    journal::write_assertions(&journal::assertions_path(&journal_path), &assertions()).unwrap();
     let url = format!("sqlite:{}", root.join("ledger-app.db").display());
     load::run(&load::Args {
         journal: root.join("journal.csv"),
@@ -233,7 +254,10 @@ async fn totals_are_per_currency_and_converted() {
     // 資產: 1,000 − 100 cash + 47,000 + 3,000 (USD) + 300 − 200 splits; the
     // 2025 deposit is after the date.
     let assets = &text[position(&text, "資產")..position(&text, "銀行")];
-    assert!(assets.contains("5,000 JPY 8,000 TWD 100 USD ≈ 11,000 TWD"), "{assets}");
+    assert!(assets.contains("5,000 JPY 8,012 TWD 100 USD ≈ 11,012 TWD"), "{assets}");
+    // TWD is quoted whole, as Fava prints it; the cents are still in the ledger.
+    let cash = &text[position(&text, "現金")..position(&text, "分帳")];
+    assert_eq!(cash.trim(), "現金 912 TWD");
     // The at-cost holding is named apart from the total, not added to it.
     assert!(assets.contains("另有成本 40,000 TWD"), "{assets}");
     let unlisted = &text[position(&text, "未上市持股")..position(&text, "負債")];
@@ -246,7 +270,7 @@ async fn totals_are_per_currency_and_converted() {
     let liabilities = &text[position(&text, "負債")..position(&text, "信用卡")];
     assert_eq!(liabilities.trim(), "負債 -2,500 TWD");
     let net = &text[position(&text, "淨資產")..];
-    assert!(net.starts_with("淨資產 8,500 TWD （未換算：JPY） 另有成本 40,000 TWD"), "{net}");
+    assert!(net.starts_with("淨資產 8,512 TWD （未換算：JPY） 另有成本 40,000 TWD"), "{net}");
 }
 
 #[tokio::test]

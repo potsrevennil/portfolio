@@ -216,6 +216,23 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     assert!(stored.iter().any(|a| a.source == AssertionSource::Tiantian));
     let figures: usize = stored.iter().map(|a| a.points().count()).sum();
     assert!(loaded.check.ok() && loaded.check.figures() == figures, "{}", loaded.check);
+
+    // Labels come from mapping.toml; ancestors are accounts too, so every tree
+    // level has one.
+    let labels: Vec<(String, String)> = sqlx::query(
+        "SELECT path, label FROM accounts WHERE path IN ('Assets', 'Assets:Cash', \
+         'Assets:Broker') ORDER BY path",
+    )
+    .fetch_all(&pool)
+    .await?
+    .iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect();
+    assert_eq!(labels, [
+        ("Assets".to_string(), "Assets".to_string()),
+        ("Assets:Broker".to_string(), "Broker".to_string()),
+        ("Assets:Cash".to_string(), "現金".to_string()),
+    ]);
     Ok(())
 }
 
@@ -254,22 +271,6 @@ async fn load_journal_requires_the_assertions_file() -> anyhow::Result<()> {
     let err = load::run(&load_args).await.expect_err("an unchecked journal must not load");
     assert!(format!("{err:#}").contains("assertions.csv"), "{err:#}");
 
-    // Labels come from mapping.toml; ancestors are accounts too, so every tree
-    // level has one.
-    let labels: Vec<(String, String)> = sqlx::query(
-        "SELECT path, label FROM accounts WHERE path IN ('Assets', 'Assets:Cash', \
-         'Assets:Broker') ORDER BY path",
-    )
-    .fetch_all(&pool)
-    .await?
-    .iter()
-    .map(|r| (r.get(0), r.get(1)))
-    .collect();
-    assert_eq!(labels, [
-        ("Assets".to_string(), "Assets".to_string()),
-        ("Assets:Broker".to_string(), "Broker".to_string()),
-        ("Assets:Cash".to_string(), "現金".to_string()),
-    ]);
     Ok(())
 }
 

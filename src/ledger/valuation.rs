@@ -9,8 +9,7 @@
 //! accounts = ["Assets:Unlisted"]
 //! ```
 //!
-//! Reports show them at cost, apart from the totals. Deliberately read from
-//! the config rather than stored per account: which holdings have a real
+//! Config rather than a column on the account: which holdings have a real
 //! valuation changes with the data, not with the ledger's history.
 
 use std::{fs, path::Path};

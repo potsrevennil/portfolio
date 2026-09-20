@@ -15,10 +15,10 @@ use portfolio::{
         query::{self, AccountBalance, AccountType, LedgerData},
     },
 };
-use rust_decimal::{Decimal, RoundingStrategy};
+use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 
-use crate::model::{BalanceSheet, Converted, Money, Node, Section};
+use crate::model::{BalanceSheet, Converted, Money, Node, Section, Unpriced};
 
 /// Section headings when the chart has no label for the root.
 const SECTIONS: [(&str, &str); 2] = [("Assets", "資產"), ("Liabilities", "負債")];
@@ -70,7 +70,7 @@ pub fn build(
                 None => unpriced.push(currency.to_string()),
             }
         }
-        Converted { money: money(total, base), unpriced }
+        Converted { money: money(total, base, base), unpriced: Unpriced(unpriced) }
     };
 
     // Equity, income and expense never reach the tree.
@@ -107,15 +107,16 @@ pub fn build(
         convert: &dyn Fn(&BTreeMap<Currency, Decimal>) -> Converted,
         foreign: &dyn Fn(&BTreeMap<Currency, Decimal>) -> bool,
         at_cost: &AtCost,
+        base: Currency,
     ) -> Vec<Node> {
         children
             .into_iter()
             .map(|(path, tree)| Node {
                 label: label(&path),
-                amounts: amounts(&tree.sums),
+                amounts: amounts(&tree.sums, base),
                 converted: foreign(&tree.sums).then(|| convert(&tree.sums)),
                 at_cost: at_cost.covers(&path),
-                children: nodes(tree.children, label, convert, foreign, at_cost),
+                children: nodes(tree.children, label, convert, foreign, at_cost, base),
                 path,
             })
             .collect()
@@ -138,11 +139,11 @@ pub fn build(
             Section {
                 path: root.to_string(),
                 label: if own == *root { fallback.to_string() } else { own },
-                amounts: amounts(&tree.sums),
+                amounts: amounts(&tree.sums, base),
                 converted: foreign(&tree.sums).then(|| convert(&tree.sums)),
                 total: convert(&tree.sums),
                 excluded: (!excluded.is_empty()).then(|| convert(&excluded)),
-                nodes: nodes(tree.children, &label, &convert, &foreign, at_cost),
+                nodes: nodes(tree.children, &label, &convert, &foreign, at_cost, base),
             }
         })
         .collect();
@@ -164,50 +165,12 @@ fn node_path(path: &str, depth: usize) -> &str {
     }
 }
 
-fn amounts(sums: &BTreeMap<Currency, Decimal>) -> Vec<Money> {
-    sums.iter().filter(|(_, v)| !v.is_zero()).map(|(c, v)| money(*v, *c)).collect()
+fn amounts(sums: &BTreeMap<Currency, Decimal>, base: Currency) -> Vec<Money> {
+    sums.iter().filter(|(_, v)| !v.is_zero()).map(|(c, v)| money(*v, *c, base)).collect()
 }
 
-fn money(amount: Decimal, currency: Currency) -> Money {
-    Money {
-        text: format!("{} {currency}", number(amount)),
-        negative: amount.is_sign_negative() && !amount.is_zero(),
-    }
-}
-
-/// Grouped thousands, at most two decimals, as Fava prints them.
-pub fn number(amount: Decimal) -> String {
-    let rounded =
-        amount.round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero).normalize();
-    let text = rounded.abs().to_string();
-    let (int, frac) = text.split_once('.').map_or((text.as_str(), None), |(i, f)| (i, Some(f)));
-    let mut grouped = String::new();
-    for (i, ch) in int.chars().enumerate() {
-        if i > 0 && (int.len() - i) % 3 == 0 {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    let sign = if rounded.is_sign_negative() && !rounded.is_zero() { "-" } else { "" };
-    match frac {
-        Some(f) => format!("{sign}{grouped}.{f}"),
-        None => format!("{sign}{grouped}"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use rust_decimal_macros::dec;
-
-    use super::*;
-
-    #[test]
-    fn numbers_print_like_fava() {
-        assert_eq!(number(dec!(1234567.891)), "1,234,567.89");
-        assert_eq!(number(dec!(-1000)), "-1,000");
-        assert_eq!(number(dec!(0.005)), "0.01");
-        assert_eq!(number(dec!(12.50)), "12.5");
-        assert_eq!(number(dec!(-0.001)), "0");
-        assert_eq!(node_path("Assets:Split:Alpha", 2), "Assets:Split");
-    }
+/// The base currency is quoted whole (as Fava prints TWD); the rest to two.
+fn money(amount: Decimal, currency: Currency, base: Currency) -> Money {
+    let decimals = if currency == base { 0 } else { 2 };
+    Money { amount, currency: currency.to_string(), decimals }
 }
