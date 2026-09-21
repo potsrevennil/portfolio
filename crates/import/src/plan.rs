@@ -6,22 +6,20 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{bail, Result};
 use chrono::NaiveDate;
-use rust_decimal::Decimal;
-
-use crate::{
-    currency::Currency,
-    ledger::{
-        accounts::Chart,
-        model::{Source, CONVERSIONS, OPENING_EQUITY},
-        names::fallback_account,
-        statements::cathay::{self, info_names_account, BankStatement},
-    },
-    matcher::{Engine, Record},
-    store::{
-        import::{Posting, Transaction},
-        import_batch::LedgerPosting,
-    },
+use ledger::{
+    accounts::Chart,
+    model::{Source, CONVERSIONS, OPENING_EQUITY},
+    names::fallback_account,
+    statements::cathay::{self, info_names_account, BankStatement},
 };
+use ledger_types::currency::Currency;
+use rust_decimal::Decimal;
+use store::{
+    import::{Posting, Transaction},
+    import_batch::LedgerPosting,
+};
+
+use crate::matcher::{Engine, Record};
 
 /// One merged statement and where it lands.
 pub struct Statement<'a> {

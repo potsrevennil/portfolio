@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use ledger_types::{assertion::BalanceAssertion, currency::Currency};
 use rust_decimal::Decimal;
 
 use super::{
@@ -21,7 +22,6 @@ use super::{
     summary::Summary,
     writer,
 };
-use crate::{currency::Currency, store::assertions::BalanceAssertion};
 
 /// Each account's balance as the app's own records imply it, per currency.
 ///

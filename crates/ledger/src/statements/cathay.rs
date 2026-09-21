@@ -1,8 +1,8 @@
 //! 國泰世華 (Cathay United Bank) account statements — 活存, 投資 and 外幣.
 //!
 //! Only this bank's format; other institutions get their own sibling module.
-//! Distinct from `crate::cathay`, which reads Cathay's *brokerage trade* export
-//! for the portfolio calculator.
+//! Distinct from `portfolio::cathay`, which reads Cathay's *brokerage trade*
+//! export for the portfolio calculator.
 //!
 //! One row per cash movement, with a running 餘額 column. That running balance
 //! is what lets the ledger assert a figure the transactions must agree with.
@@ -14,12 +14,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
-use rust_decimal::Decimal;
-
-use crate::{
+use ledger_types::{
+    assertion::{AssertionSource, BalanceAssertion},
     currency::Currency,
-    store::assertions::{AssertionSource, BalanceAssertion},
 };
+use rust_decimal::Decimal;
 
 /// Namespaces this bank's `external_ref`s: every importer shares one dedup
 /// scope (`transactions.source = 'import'`).

@@ -26,17 +26,15 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, Months, NaiveDate};
+pub use ledger::accounts::in_subtree;
+use ledger::valuation::AtCost;
+use ledger_types::currency::Currency;
+use portfolio::portfolio::{holding::Holding, statement::Statement, Portfolio};
+use prices::{source::YFinanceSource, StockPrice, StockPriceStore};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 use strum_macros::{Display, EnumIter, EnumString};
-
-use crate::{
-    currency::Currency,
-    ledger::valuation::AtCost,
-    portfolio::{holding::Holding, statement::Statement, Portfolio},
-    prices::{source::YFinanceSource, StockPrice, StockPriceStore},
-};
 
 // --- Report vocabulary ---------------------------------------------------
 
@@ -58,9 +56,9 @@ pub enum AccountType {
 }
 
 /// The schema word for each Beancount root.
-impl From<crate::ledger::accounts::AccountType> for AccountType {
-    fn from(root: crate::ledger::accounts::AccountType) -> Self {
-        use crate::ledger::accounts::AccountType as Root;
+impl From<ledger::accounts::AccountType> for AccountType {
+    fn from(root: ledger::accounts::AccountType) -> Self {
+        use ledger::accounts::AccountType as Root;
         match root {
             Root::Assets => Self::Asset,
             Root::Liabilities => Self::Liability,
@@ -650,12 +648,6 @@ fn ticker_rate(
 pub fn in_net_worth(b: &AccountBalance, at_cost: &AtCost) -> bool {
     matches!(b.account_type, AccountType::Asset | AccountType::Liability)
         && !at_cost.covers(&b.path)
-}
-
-/// True when `path` is `root` or lies under it — the subtree a Beancount
-/// `balance` assertion covers.
-pub fn in_subtree(path: &str, root: &str) -> bool {
-    path == root || path.strip_prefix(root).is_some_and(|rest| rest.starts_with(':'))
 }
 
 /// The first day of the period a date falls in.

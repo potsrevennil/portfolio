@@ -4,7 +4,7 @@
 //!
 //! All the heavy machinery lives here — [`assemble`](super::build::assemble)'s
 //! reconciliation and the balance checks — so the app's ongoing load path
-//! ([`super::load`]) carries none of it. It is meant to be re-run while the
+//! (`store::load`) carries none of it. It is meant to be re-run while the
 //! corrected records are still being audited; each run regenerates the
 //! journal. The journal is trusted only after it verifies: freeze writes it
 //! under a staged name, re-reads that, and proves the rows reproduce every

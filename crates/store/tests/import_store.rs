@@ -1,17 +1,15 @@
-use portfolio::{
-    currency::Currency,
-    ledger::{labels::Labels, model::Source},
-    store::import::{ImportStore, InsertOutcome, Posting, Transaction},
-};
+use ledger::{labels::Labels, model::Source};
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::SqlitePool;
+use store::import::{ImportStore, InsertOutcome, Posting, Transaction};
 
 async fn fixture() -> (tempfile::TempDir, SqlitePool) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.db");
     let url = format!("sqlite:{}", path.to_str().unwrap());
-    let pool = portfolio::init_db(&url).await.unwrap();
+    let pool = db::init_db(&url).await.unwrap();
     (dir, pool)
 }
 

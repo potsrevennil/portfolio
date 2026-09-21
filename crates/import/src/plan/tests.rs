@@ -1,7 +1,7 @@
+use ledger::statements::cathay::StatementLine;
 use rust_decimal_macros::dec;
 
 use super::*;
-use crate::ledger::statements::cathay::StatementLine;
 
 fn chart() -> Chart {
     toml::from_str(

@@ -1,9 +1,9 @@
 //! What the server sends a page: display-ready figures. The one ledger type
-//! it shares with the wasm client is `Currency`, from `portfolio-types`.
+//! it shares with the wasm client is `Currency`, from `ledger-types`.
 
 use std::fmt;
 
-use portfolio_types::Currency;
+use ledger_types::Currency;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 

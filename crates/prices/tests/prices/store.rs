@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use portfolio::prices::{StockPrice, StockPriceStore};
+use prices::{StockPrice, StockPriceStore};
 use tokio;
 
 #[path = "../common/mod.rs"]

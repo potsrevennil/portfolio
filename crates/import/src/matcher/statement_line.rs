@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
+use ledger::matching::match_subsets;
 use rust_decimal::Decimal;
 
 use super::{Consumption, Match, MatchMode, Pool, Record};
-use crate::ledger::matching::match_subsets;
 
 pub const MODE: &str = "statement-line";
 

@@ -12,12 +12,12 @@
 //! the text has no place for but the schema does.
 
 use chrono::NaiveDate;
+use ledger_types::{assertion::BalanceAssertion, currency::Currency};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use strum_macros::Display;
 
 use super::writer::{self, Posting};
-use crate::{currency::Currency, store::assertions::BalanceAssertion};
 
 /// The equity account every opening balance is booked against.
 pub const OPENING_EQUITY: &str = "Equity:Opening-Balances";

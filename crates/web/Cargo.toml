@@ -1,7 +1,7 @@
 [package]
-name    = "web"
-version = "0.1.0"
-edition = "2021"
+name              = "web"
+version.workspace = true
+edition.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -12,10 +12,10 @@ required-features = ["ssr"]
 
 [dependencies]
 console_error_panic_hook = { version = "0.1", optional = true }
+ledger-types             = { workspace = true }
 leptos                   = "0.8"
 leptos_meta              = "0.8"
 leptos_router            = "0.8"
-portfolio-types          = { workspace = true }
 # Shared: the view model carries exact amounts to the client.
 rust_decimal = { workspace = true }
 serde        = { workspace = true }
@@ -28,10 +28,13 @@ web-sys      = { version = "=0.3.77", features = ["HtmlDetailsElement", "Storage
 # Server only.
 anyhow      = { workspace = true, optional = true }
 axum        = { version = "0.8", optional = true }
-chrono      = { workspace = true, optional = true }
+chrono      = { workspace = true, features = ["clock"], optional = true }
+db          = { workspace = true, optional = true }
+ledger      = { workspace = true, optional = true }
 leptos_axum = { version = "0.8", optional = true }
-portfolio   = { workspace = true, optional = true }
+prices      = { workspace = true, optional = true }
 sqlx        = { workspace = true, optional = true }
+store       = { workspace = true, optional = true }
 tokio       = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -48,7 +51,10 @@ ssr = [
   "dep:axum",
   "dep:chrono",
   "dep:leptos_axum",
-  "dep:portfolio",
+  "dep:db",
+  "dep:ledger",
+  "dep:prices",
+  "dep:store",
   "dep:sqlx",
   "dep:tokio",
   "leptos/ssr",

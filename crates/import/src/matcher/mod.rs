@@ -1,6 +1,6 @@
 //! Matcher: places incoming records against a pool of candidates, one
 //! [`MatchMode`] at a time. Import dedup is separate, in
-//! `crate::store::import`.
+//! `store::import`.
 
 pub mod engine;
 pub mod statement_line;

@@ -2,7 +2,7 @@
 //! command line. Two statements for the
 //! same account passed either way must produce the identical ledger.
 
-use portfolio::ledger::{self, args::Args as BuildArgs};
+use ledger::{self, args::Args as BuildArgs};
 use tempfile::TempDir;
 
 const MAPPING: &str = r#"

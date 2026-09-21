@@ -9,25 +9,21 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
+use ledger_types::{
+    assertion::{AssertionSource, BalanceAssertion},
+    currency::Currency,
+};
 use model::CONVERSIONS;
 use rust_decimal::Decimal;
 
 use super::manual;
 use crate::{
-    currency::Currency,
-    ledger::{
-        self,
-        accounts::{AccountType, Chart},
-        args::Args as BuildArgs,
-        journal,
-        journal::PLACEHOLDER_TAG,
-        model,
-        writer::Posting,
-    },
-    store::{
-        assertions::{AssertionSource, BalanceAssertion},
-        query::in_subtree,
-    },
+    accounts::{in_subtree, AccountType, Chart},
+    args::Args as BuildArgs,
+    journal,
+    journal::PLACEHOLDER_TAG,
+    model,
+    writer::Posting,
 };
 
 /// Where the securities backfill lands. Every posting under it is tagged
@@ -409,7 +405,7 @@ fn verify(
 /// Runs the freeze: reconcile, write the journal, and verify it — keeping the
 /// journal only if it reconciles.
 pub fn run(args: &FreezeArgs) -> Result<Report> {
-    let (model, summary) = ledger::build::assemble(&args.build)?;
+    let (model, summary) = crate::build::assemble(&args.build)?;
     log::info!("freeze: assembled ledger model\n{summary}");
 
     let manual_path = args.build.ledger_dir.join("manual.csv");

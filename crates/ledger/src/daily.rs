@@ -8,9 +8,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
-
-use crate::currency::Currency;
 
 #[derive(Debug)]
 pub enum Contra {

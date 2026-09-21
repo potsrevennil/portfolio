@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 use super::accounts::{Account, Chart};
 
 /// The ledger account a statement's own account number refers to.
-pub(crate) fn statement_account<'a>(chart: &'a Chart, account_no: &str) -> Result<&'a Account> {
+pub fn statement_account<'a>(chart: &'a Chart, account_no: &str) -> Result<&'a Account> {
     chart
         .institution
         .accounts
@@ -25,11 +25,7 @@ pub(crate) fn statement_account<'a>(chart: &'a Chart, account_no: &str) -> Resul
 /// worth recognising differ per institution and are configured rather than
 /// compiled in. Anything unrecognised is bucketed by direction, which is all
 /// the statement alone can tell us.
-pub(crate) fn fallback_account<'a>(
-    chart: &'a Chart,
-    description: &str,
-    delta: Decimal,
-) -> &'a Account {
+pub fn fallback_account<'a>(chart: &'a Chart, description: &str, delta: Decimal) -> &'a Account {
     match chart.fallback.descriptions.get(description) {
         Some(account) => account,
         None if delta.is_sign_positive() => &chart.fallback.income,

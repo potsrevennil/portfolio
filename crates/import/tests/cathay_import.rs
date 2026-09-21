@@ -4,16 +4,15 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
-use portfolio::{
-    import::{
-        cathay_bank::{import, Report},
-        plan::Candidate,
-    },
-    ledger::{accounts::Chart, args::Args as BuildArgs, freeze, load},
+use import::{
+    cathay_bank::{import, Report},
+    plan::Candidate,
 };
+use ledger::{accounts::Chart, args::Args as BuildArgs, freeze};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::{Row, SqlitePool};
+use store::load;
 use tempfile::TempDir;
 
 const MAPPING: &str = r#"
@@ -140,7 +139,7 @@ impl Fixture {
 
     async fn db(&self, name: &str) -> Result<SqlitePool> {
         let url = format!("sqlite:{}", self.dir.path().join(name).display());
-        portfolio::init_db(&url).await
+        db::init_db(&url).await
     }
 }
 
@@ -249,7 +248,7 @@ async fn a_frozen_ledger_holds_every_line() -> Result<()> {
         mapping: f.dir.path().join("mapping.toml"),
     })
     .await?;
-    let pool = portfolio::init_db(&url).await?;
+    let pool = db::init_db(&url).await?;
     let before = count(&pool, "SELECT count(*) FROM transactions").await?;
 
     let report = import_files(&pool, &f.chart, &statements, &[]).await?;
@@ -412,7 +411,7 @@ async fn labels_come_from_the_matched_record_then_the_rules() -> Result<()> {
     let lunch = Candidate {
         date: "2023-02-01".parse()?,
         amount: dec!(-100),
-        currency: portfolio::currency::Currency::TWD,
+        currency: ledger_types::currency::Currency::TWD,
         account: "Expenses:Food".into(),
     };
     let paths = f.statements()?;

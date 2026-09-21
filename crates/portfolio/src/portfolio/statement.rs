@@ -1,14 +1,12 @@
 use std::{collections::HashMap, fmt};
 
 use chrono::NaiveDate;
+use prices::{source::YFinanceSource, StockPrice};
 use rust_decimal::Decimal;
 
-use crate::{
-    portfolio::{
-        holding::{Holding, HoldingDisplay},
-        portfolio::{Currency, Order, Security, SortBy},
-    },
-    prices::{source::YFinanceSource, StockPrice},
+use crate::portfolio::{
+    holding::{Holding, HoldingDisplay},
+    portfolio::{Currency, Order, Security, SortBy},
 };
 
 #[derive(Debug, Default, Clone)]

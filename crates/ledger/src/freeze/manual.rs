@@ -3,7 +3,7 @@
 //!
 //! This replaced a hand-authored `manual.beancount`, and with it the last
 //! reason the freeze tool ever parsed Beancount: every input is now structured
-//! data folded into [`crate::ledger::model`]. Each row is one **balanced
+//! data folded into [`crate::model`]. Each row is one **balanced
 //! two-leg, single-currency** transaction — `amount` is the signed effect on
 //! `account`, and `contra` gets its negation — so a hand-typed entry cannot
 //! drift out of balance, which is the founding invariant. Cross-currency and
@@ -18,14 +18,12 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
 use crate::{
-    currency::Currency,
-    ledger::{
-        model::{Source, Transaction},
-        writer::Posting,
-    },
+    model::{Source, Transaction},
+    writer::Posting,
 };
 
 /// Loads `manual.csv` into model transactions tagged [`Source::Manual`].

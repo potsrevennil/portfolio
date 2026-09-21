@@ -2,10 +2,8 @@
 
 use std::io::Write;
 
-use portfolio::{
-    currency::Currency,
-    ledger::{accounts::Chart, daily},
-};
+use ledger::{accounts::Chart, daily};
+use ledger_types::currency::Currency;
 use rust_decimal_macros::dec;
 use tempfile::NamedTempFile;
 
@@ -145,7 +143,8 @@ fn a_non_beancount_account_is_rejected_at_load() -> anyhow::Result<()> {
 /// the example is not updated, this fails rather than the user's first run.
 #[test]
 fn the_example_config_is_valid() -> anyhow::Result<()> {
-    let chart = Chart::load("ledger/mapping.example.toml")?;
+    let chart =
+        Chart::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ledger/mapping.example.toml"))?;
     assert!(!chart.institution.accounts.is_empty(), "example names no statement account");
     assert!(!chart.expenses.is_empty(), "example maps no expense category");
     Ok(())

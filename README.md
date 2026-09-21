@@ -95,7 +95,7 @@ cargo run -- --sort-by name --order +
 ```
 ### Browse the Ledger (web UI)
 
-`web/` is the ledger's own UI (Leptos, rendered on the server and hydrated in
+`crates/web/` is the ledger's own UI (Leptos, rendered on the server and hydrated in
 the browser). It reads the SQLite ledger that `load-journal` writes; account
 labels come from `ledger/mapping.toml` at load time. Inside `nix develop`:
 

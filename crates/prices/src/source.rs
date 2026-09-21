@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use ledger_types::Currency;
 use rust_decimal::prelude::FromPrimitive;
 use thiserror::Error;
 use yfinance_rs::{core::conversions, Ticker, YfClient, YfError};
-
-use crate::portfolio::portfolio::Currency;
 
 // --- Custom Error Type ---
 #[derive(Error, Debug)]

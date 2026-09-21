@@ -5,17 +5,15 @@ use std::{
 
 use chrono::{DateTime, NaiveDate};
 use clap::ValueEnum;
+pub use ledger_types::currency::Currency;
+use prices::StockPrice;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use strum_macros::{Display, EnumIter};
 
-pub use crate::currency::Currency;
-use crate::{
-    portfolio::{
-        holding::{adjust_holdings, mark_to_market, settle_transactions, Holding},
-        statement::Statement,
-    },
-    prices::StockPrice,
+use crate::portfolio::{
+    holding::{adjust_holdings, mark_to_market, settle_transactions, Holding},
+    statement::Statement,
 };
 
 // --- Enums for Type-Safety ---

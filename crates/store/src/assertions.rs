@@ -1,66 +1,9 @@
 //! The `balance_assertion` table: the outside figures `check` holds the ledger
 //! to.
 
-use std::fmt;
-
 use anyhow::{bail, Context, Result};
-use chrono::NaiveDate;
-use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+pub use ledger_types::assertion::{AssertionSource, BalanceAssertion};
 use sqlx::SqliteConnection;
-use strum_macros::{Display, EnumString};
-
-use crate::currency::Currency;
-
-/// Who vouches for the figure.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Display, EnumString,
-)]
-#[strum(serialize_all = "lowercase")]
-#[serde(rename_all = "lowercase")]
-pub enum AssertionSource {
-    /// An institution's statement.
-    Statement,
-    /// 天天記帳's own closing balance, for accounts it was the record of.
-    Tiantian,
-    /// A balance the user counted (cash).
-    Counted,
-}
-
-/// One assertion. Dates are inclusive: `opening` is the balance before
-/// `period_start`, `closing` the balance at the end of `period_end`. Both cover
-/// `account` and its subtree in `currency`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BalanceAssertion {
-    pub source: AssertionSource,
-    pub account: String,
-    pub currency: Currency,
-    pub period_start: Option<NaiveDate>,
-    pub opening: Option<Decimal>,
-    pub period_end: NaiveDate,
-    pub closing: Decimal,
-}
-
-impl fmt::Display for BalanceAssertion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} ({} ", self.account, self.currency, self.source)?;
-        match self.period_start {
-            Some(start) => write!(f, "period {start}..={})", self.period_end),
-            None => write!(f, "as of {})", self.period_end),
-        }
-    }
-}
-
-impl BalanceAssertion {
-    /// The (day, balance at the end of it) pairs this states: the opening, if
-    /// any, then the closing.
-    pub fn points(&self) -> impl Iterator<Item = (NaiveDate, Decimal)> {
-        let opening = self.period_start.zip(self.opening).map(|(start, opening)| {
-            (start.pred_opt().expect("a day before period_start"), opening)
-        });
-        opening.into_iter().chain([(self.period_end, self.closing)])
-    }
-}
 
 const SELECT: &str = "SELECT b.source, a.path AS account, b.currency, b.period_start, b.opening, \
                       b.period_end, b.closing FROM balance_assertion b JOIN accounts a ON a.id = \

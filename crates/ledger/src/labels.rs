@@ -9,8 +9,7 @@
 //! 3. Else the ASCII leaf.
 //!
 //! This is the label a tree shows. Outside a tree, a label two accounts share
-//! needs its parent's in front; see
-//! [`standalone_labels`](crate::store::chart::standalone_labels).
+//! needs its parent's in front; see `store::chart::standalone_labels`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -116,7 +115,7 @@ mod tests {
 
     #[test]
     fn the_example_mapping_parses() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/ledger/mapping.example.toml");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ledger/mapping.example.toml");
         let labels = Labels::load(path).unwrap();
         assert_eq!(labels.label("Assets"), "資產");
     }

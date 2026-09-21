@@ -9,13 +9,12 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
+use ledger::{labels::Labels, model::Source};
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::{SqliteConnection, SqlitePool};
 
-use crate::{
-    currency::Currency,
-    ledger::{labels::Labels, load::schema_type, model::Source},
-};
+use crate::load::schema_type;
 
 /// A transaction not yet stored, with its legs.
 #[derive(Clone, Debug)]

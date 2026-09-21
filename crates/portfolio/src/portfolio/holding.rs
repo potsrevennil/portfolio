@@ -1,13 +1,11 @@
 use std::collections::HashMap;
 use std::fmt; // Needed for fmt::Display
 
+use prices::{source::YFinanceSource, StockPrice};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    portfolio::portfolio::{AssetClass, Currency, Security, Transaction, TransactionKind},
-    prices::{source::YFinanceSource, StockPrice},
-};
+use crate::portfolio::portfolio::{AssetClass, Currency, Security, Transaction, TransactionKind};
 
 /// Represents the current holding of a specific security.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]

@@ -1,14 +1,14 @@
 //! The **journal loader**: the app's only historical-load path.
 //!
-//! It reads a trusted [`journal`](super::journal) — already reconciled and
-//! verified by the [freeze tool](super::freeze) — and writes it into the SQLite
-//! core schema. Deliberately dumb: no reconciliation, no chart, no Beancount.
-//! It derives the chart of accounts from the paths the journal mentions and
-//! their ancestors (type from the root, label from `mapping.toml`, see
-//! [`labels`](super::labels)) and, as a cheap tripwire, refuses a
+//! It reads a trusted [`journal`](ledger::journal) — already reconciled and
+//! verified by the [freeze tool](ledger::freeze) — and writes it into the
+//! SQLite core schema. Deliberately dumb: no reconciliation, no chart, no
+//! Beancount. It derives the chart of accounts from the paths the journal
+//! mentions and their ancestors (type from the root, label from `mapping.toml`,
+//! see [`labels`](ledger::labels)) and, as a cheap tripwire, refuses a
 //! transaction whose legs do not sum to zero per currency. It is one-time: it
 //! refuses a non-empty database. It also loads the journal's balance assertions
-//! and commits only if [`check`](crate::store::check) passes. Frozen history is
+//! and commits only if [`check`](crate::check) passes. Frozen history is
 //! loaded as reviewed.
 //!
 //! ```text
@@ -23,15 +23,12 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
+use ledger::{accounts::AccountType, journal, labels::Labels, model::Source};
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::{Row, SqlitePool};
 
-use super::{accounts::AccountType, journal, labels::Labels, model::Source};
-use crate::{
-    currency::Currency,
-    db,
-    store::{assertions, check, query},
-};
+use crate::{assertions, check, query};
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {

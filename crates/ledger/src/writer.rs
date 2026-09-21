@@ -1,9 +1,8 @@
 use std::fmt::Write;
 
 use chrono::NaiveDate;
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
-
-use crate::currency::Currency;
 
 /// A single posting leg. `amount == None` lets Beancount infer the value, which
 /// is how the contra-leg of a two-posting transaction is normally written.

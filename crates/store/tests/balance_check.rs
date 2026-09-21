@@ -2,17 +2,14 @@
 //! small hand-built ledgers. All figures are invented.
 
 use chrono::NaiveDate;
-use portfolio::{
-    currency::Currency,
-    db,
-    store::{
-        assertions::{self, AssertionSource, BalanceAssertion},
-        check::{self, Unchecked},
-    },
-};
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::{SqliteConnection, SqlitePool};
+use store::{
+    assertions::{self, AssertionSource, BalanceAssertion},
+    check::{self, Unchecked},
+};
 use tempfile::TempDir;
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, day).unwrap() }

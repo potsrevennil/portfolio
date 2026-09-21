@@ -13,7 +13,6 @@ pub mod emit;
 pub mod freeze;
 pub mod journal;
 pub mod labels;
-pub mod load;
 pub mod matching;
 pub mod model;
 pub mod names;

@@ -1,31 +1,24 @@
-use std::{env, fs};
+//! Creates and migrates the database the sqlx query macros in `prices`,
+//! `portfolio` and `store` check against. It lives at the workspace root: in a
+//! workspace the macros resolve a relative `DATABASE_URL` from there, while
+//! this script runs in `crates/db`.
 
-use anyhow::Result;
+use std::{fs, path::PathBuf};
+
+use anyhow::{Context, Result};
 use sqlx::sqlite::SqlitePoolOptions;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=migrations");
 
-    let db_path = "sqlite.db";
-    let db_url = format!("sqlite:{}", db_path);
-
-    // Create the database file if it doesn't exist
-    if fs::metadata(db_path).is_err() {
-        println!("Build script: Creating database file: {}", db_path);
-        fs::File::create(db_path)?;
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
+    let db_path = manifest_dir.join("../../sqlite.db");
+    if !db_path.exists() {
+        fs::File::create(&db_path).with_context(|| format!("creating {}", db_path.display()))?;
     }
-
-    println!("Build script: Using database: {}", db_url);
-
-    // Set DATABASE_URL for sqlx macros
-    env::set_var("DATABASE_URL", &db_url);
-
-    // Run migrations
-    println!("Build script: Running migrations...");
+    let db_url = format!("sqlite:{}", db_path.display());
     let pool = SqlitePoolOptions::new().connect(&db_url).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
-    println!("Build script: Migrations completed.");
-
     Ok(())
 }

@@ -43,6 +43,12 @@ impl FromStr for AccountType {
     }
 }
 
+/// True when `path` is `root` or lies under it — the subtree a Beancount
+/// `balance` assertion covers.
+pub fn in_subtree(path: &str, root: &str) -> bool {
+    path == root || path.strip_prefix(root).is_some_and(|rest| rest.starts_with(':'))
+}
+
 /// A Beancount account name, e.g. `Assets:Bank:Savings`.
 ///
 /// Its own type rather than a bare `String` so a field holding an account

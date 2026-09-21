@@ -5,12 +5,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use portfolio::{
-    import::cathay_bank::{import, Report},
-    ledger::{accounts::Chart, args::Args as BuildArgs, freeze, load, statements::cathay},
-};
+use import::cathay_bank::{import, Report};
+use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, statements::cathay};
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
+use store::load;
 use tempfile::TempDir;
 
 fn records_dir() -> Option<PathBuf> {
@@ -83,7 +82,7 @@ async fn importing_every_download_into_the_frozen_ledger_adds_nothing() -> Resul
         mapping: records.join("ledger/mapping.toml"),
     })
     .await?;
-    let pool = portfolio::init_db(&url).await?;
+    let pool = db::init_db(&url).await?;
 
     let report = import_all(&pool, &records).await?;
     eprintln!("{report}");
@@ -101,7 +100,7 @@ async fn importing_every_download_into_an_empty_ledger_closes_every_statement() 
     };
     let scratch = TempDir::new()?;
     let url = format!("sqlite:{}", scratch.path().join("empty.db").display());
-    let pool = portfolio::init_db(&url).await?;
+    let pool = db::init_db(&url).await?;
 
     let report = import_all(&pool, &records).await?;
     eprintln!("{report}");

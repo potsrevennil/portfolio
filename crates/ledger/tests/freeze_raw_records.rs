@@ -3,10 +3,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use portfolio::{
-    currency::Currency,
-    ledger::{args::Args as BuildArgs, freeze, journal, model},
-};
+use ledger::{args::Args as BuildArgs, freeze, journal, model};
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use tempfile::TempDir;

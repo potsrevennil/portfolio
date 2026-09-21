@@ -12,8 +12,8 @@ use std::{collections::BTreeSet, fmt::Write as _, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::{Datelike, NaiveDate, Utc};
-
-use crate::{currency::Currency, prices::PriceService};
+use ledger_types::currency::Currency;
+use prices::PriceService;
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {

@@ -7,18 +7,16 @@
 //! no gitignored CSV is committed.
 
 use chrono::NaiveDate;
-use portfolio::{
-    currency::Currency,
-    db,
-    ledger::{args::Args as BuildArgs, freeze, journal, load, model},
-    store::{
-        self,
-        assertions::{self, AssertionSource, BalanceAssertion},
-    },
-};
+use ledger::{args::Args as BuildArgs, freeze, journal, model};
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::Row;
+use store::{
+    self,
+    assertions::{self, AssertionSource, BalanceAssertion},
+    load,
+};
 use tempfile::TempDir;
 
 const MAPPING: &str = r#"
@@ -587,7 +585,7 @@ async fn the_hledger_export_passes_hledger_check_and_catches_drift() -> anyhow::
     assertions::insert(&mut *pool.acquire().await?, &BalanceAssertion {
         source: AssertionSource::Counted,
         account: "Assets:Cash".into(),
-        currency: portfolio::currency::Currency::USD,
+        currency: ledger_types::currency::Currency::USD,
         period_start: None,
         opening: None,
         period_end: NaiveDate::from_ymd_opt(2024, 12, 31).unwrap(),

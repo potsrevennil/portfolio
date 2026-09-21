@@ -18,7 +18,8 @@ fn temp(contents: &str) -> anyhow::Result<NamedTempFile> {
 /// is not updated, this fails rather than the user's first run.
 #[test]
 fn the_example_config_is_valid() -> anyhow::Result<()> {
-    let securities = Securities::load("securities.example.toml")?;
+    let securities =
+        Securities::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../securities.example.toml"))?;
     assert!(!securities.symbols.is_empty(), "example maps no security name");
     assert!(!securities.splits.is_empty(), "example lists no split");
     Ok(())

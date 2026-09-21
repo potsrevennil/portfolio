@@ -7,15 +7,14 @@
 use anyhow::Result;
 use chrono::{Duration, Months, NaiveDate, Utc};
 use clap::{builder::PossibleValue, Parser};
+use prices::PriceService;
 
 use crate::{
-    db,
     event::{self, loader::DataSource},
     portfolio::{
         consolidated::{ConsolidatedPortfolio, ConsolidatedPortfolioDisplay},
         Currency, Portfolio,
     },
-    prices::PriceService,
     securities::Securities,
     split::store::SplitStore,
     Order, SortBy,

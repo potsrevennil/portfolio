@@ -5,10 +5,10 @@ use std::{collections::HashSet, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use ledger::model::OPENING_EQUITY;
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
-
-use crate::{currency::Currency, ledger::model::OPENING_EQUITY};
 
 pub async fn create(
     db: &mut SqliteConnection,

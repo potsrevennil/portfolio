@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, fmt};
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
@@ -14,7 +15,6 @@ use super::{
     assertions::{self, BalanceAssertion},
     query::{in_subtree, AccountBalance, AccountType, LedgerData},
 };
-use crate::currency::Currency;
 
 /// One figure that disagrees with the postings.
 #[derive(Debug, Clone, PartialEq)]

@@ -1,6 +1,6 @@
 //! The **journal**: a flat CSV that is the single source of truth of reconciled
 //! history. The freeze tool ([`super::freeze`]) writes it once
-//! reconciliation passes and the loader ([`super::load`]) reads it into SQLite;
+//! reconciliation passes and the loader (`store::load`) reads it into SQLite;
 //! it stays deliberately dumb — no Beancount, no chart, no reconciliation — so
 //! that load path carries none of that complexity. It is financial data, so it
 //! is gitignored.
@@ -16,11 +16,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
+use ledger_types::{assertion::BalanceAssertion, currency::Currency};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use super::model::Source;
-use crate::{currency::Currency, store::assertions::BalanceAssertion};
 
 /// The reserved posting tag marking a securities-placeholder leg (the ETF
 /// backfill). The freeze tool stamps it, the loader reads it back to note the
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn assertions_round_trip_with_and_without_an_opening() -> Result<()> {
-        use crate::store::assertions::AssertionSource;
+        use ledger_types::assertion::AssertionSource;
         let day = |d| NaiveDate::from_ymd_opt(2024, 7, d).unwrap();
         let assertions = vec![
             BalanceAssertion {

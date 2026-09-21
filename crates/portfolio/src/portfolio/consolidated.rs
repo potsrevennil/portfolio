@@ -6,11 +6,11 @@ use std::{
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use prices::{source::YFinanceSource, PriceService, StockPrice};
 use rust_decimal::Decimal;
 
 use crate::{
     portfolio::portfolio::{Broker, Currency, Portfolio, PortfolioDisplay},
-    prices::{source::YFinanceSource, PriceService, StockPrice},
     Order, SortBy,
 };
 

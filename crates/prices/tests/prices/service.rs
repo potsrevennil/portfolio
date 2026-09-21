@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use portfolio::prices::{PriceService, StockPrice, StockPriceStore};
+use prices::{PriceService, StockPrice, StockPriceStore};
 
 #[path = "../common/mod.rs"]
 mod common;

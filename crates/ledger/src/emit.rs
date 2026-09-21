@@ -255,10 +255,10 @@ pub(super) fn emit_daily_accounts(
 
 #[cfg(test)]
 mod tests {
+    use ledger_types::currency::Currency;
     use rust_decimal_macros::dec;
 
     use super::*;
-    use crate::currency::Currency;
 
     /// Both routes a record can take into the ledger, against one chart.
     fn chart() -> accounts::Chart {

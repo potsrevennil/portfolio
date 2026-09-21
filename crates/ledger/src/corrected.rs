@@ -6,11 +6,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
 use super::daily::Entry;
-use crate::currency::Currency;
 
 #[derive(Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]

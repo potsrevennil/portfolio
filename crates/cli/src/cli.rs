@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-
-use crate::{calculate, db, import, ledger, prices::PriceService, record, store};
+use portfolio::{calculate, record};
+use prices::PriceService;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -30,7 +30,7 @@ enum Command {
     /// Freeze reconciled history to a journal CSV (one-time / audit-time)
     Freeze(ledger::freeze::FreezeArgs),
     /// Load a frozen journal CSV into the SQLite core tables
-    LoadJournal(ledger::load::Args),
+    LoadJournal(store::load::Args),
     /// Check every balance assertion against the postings; fails on any
     /// mismatch
     Check(Database),
@@ -86,7 +86,7 @@ impl Cli {
                 }
             }
             Some(Command::LoadJournal(args)) => {
-                print!("{}", ledger::load::run(args).await?);
+                print!("{}", store::load::run(args).await?);
                 Ok(())
             }
             Some(Command::Check(args)) => {
