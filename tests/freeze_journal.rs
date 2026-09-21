@@ -557,9 +557,8 @@ async fn the_journal_load_types_accounts_by_their_root() -> anyhow::Result<()> {
         load_journal(vec![leg(0, "Spending:Food", dec!(120)), leg(0, "Assets:Cash", dec!(-120))])
             .await
             .expect_err("a rootless account must not load");
-    // The root is what has no type, and the root is the account reported: the
-    // loader reaches "Spending" before the leaf hanging off it.
-    assert!(format!("{err:#}").contains("\"Spending\" is not a Beancount account"), "{err:#}");
+    // The error names the whole account, not just the root that has no type.
+    assert!(format!("{err:#}").contains("\"Spending:Food\" is not a Beancount account"), "{err:#}");
     Ok(())
 }
 

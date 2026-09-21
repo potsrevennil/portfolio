@@ -91,6 +91,10 @@ pub async fn run(args: &Args) -> Result<Report> {
         .filter(|p| p.tags.as_deref().is_some_and(|t| t.contains(journal::PLACEHOLDER_TAG)))
         .map(|p| p.account.as_str())
         .collect();
+    // Checked whole first, so an error names the account, not just its root.
+    for p in &journal.postings {
+        schema_type(&p.account)?;
+    }
     // Ancestors too, so every level of the tree has a label.
     let paths: BTreeSet<&str> = journal
         .postings
