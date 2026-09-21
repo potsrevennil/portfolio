@@ -19,7 +19,7 @@ pub struct Money {
 impl Money {
     pub fn is_negative(&self) -> bool { self.rounded().is_sign_negative() && !self.is_zero() }
 
-    fn is_zero(&self) -> bool { self.rounded().is_zero() }
+    pub fn is_zero(&self) -> bool { self.rounded().is_zero() }
 
     /// Half away from zero, as Fava rounds an account's own balance. A total
     /// is rounded once, from the exact sum; Fava instead adds up figures it has

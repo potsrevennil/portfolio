@@ -354,3 +354,35 @@ fn a_missing_mapping_lists_no_at_cost_holdings_but_a_broken_one_stops_the_server
     std::fs::write(&broken, "[at_cost]\naccounts = \"Assets:Unlisted\"\n").unwrap();
     assert!(server::at_cost(&broken).is_err());
 }
+
+#[test]
+fn at_cost_holdings_that_cancel_out_leave_no_note() {
+    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
+    let balance = |path: &str, amount: &str| portfolio::store::query::AccountBalance {
+        account_id: 0,
+        path: path.into(),
+        label: String::new(),
+        account_type: portfolio::store::query::AccountType::Asset,
+        closed: false,
+        currency: Currency::TWD,
+        amount: amount.parse().unwrap(),
+        as_of,
+    };
+    let balances = [
+        balance("Assets:Cash", "100"),
+        balance("Assets:Unlisted:Gamma", "400"),
+        balance("Assets:Unlisted:Delta", "-400"),
+    ];
+    let at_cost = AtCost::parse(
+        "[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\", \"Assets:Unlisted:Delta\"]\n",
+    )
+    .unwrap();
+    let sheet =
+        web::sheet::build(&Default::default(), &balances, as_of, Currency::TWD, &at_cost, |_| {
+            Some(Decimal::ONE)
+        });
+    assert_eq!(sheet.excluded, None);
+    assert_eq!(sheet.sections[0].excluded, None);
+    let unlisted = sheet.sections[0].nodes.iter().find(|n| n.path == "Assets:Unlisted").unwrap();
+    assert_eq!(unlisted.excluded, None);
+}

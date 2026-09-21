@@ -121,7 +121,7 @@ pub fn build(
                     false => Vec::new(),
                 },
                 at_cost: at_cost.covers(&path),
-                excluded: (!tree.cost.is_empty()).then(|| convert(&tree.cost)),
+                excluded: left_out(convert(&tree.cost)),
                 children: nodes(tree.children, label, convert, foreign, at_cost, base),
                 path,
             })
@@ -146,7 +146,7 @@ pub fn build(
                 path: root.to_string(),
                 label: if own == *root { fallback.to_string() } else { own },
                 total: convert(&tree.sums),
-                excluded: (!excluded.is_empty()).then(|| convert(&excluded)),
+                excluded: left_out(convert(&excluded)),
                 nodes: nodes(tree.children, &label, &convert, &foreign, at_cost, base),
             }
         })
@@ -157,8 +157,14 @@ pub fn build(
         base: base.to_string(),
         sections,
         net_worth: convert(&net),
-        excluded: (!net_cost.is_empty()).then(|| convert(&net_cost)),
+        excluded: left_out(convert(&net_cost)),
     }
+}
+
+/// Holdings at cost that cancel out leave nothing to mention.
+fn left_out(converted: Converted) -> Option<Converted> {
+    let nothing = converted.money.is_zero() && converted.unpriced.0.is_empty();
+    (!nothing).then_some(converted)
 }
 
 /// The first `depth` segments of `path`.
