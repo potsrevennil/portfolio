@@ -22,8 +22,10 @@ impl Money {
     /// already rounded, so a group of halves can differ from it by one unit.
     pub fn new(amount: Decimal, currency: Currency, base: Currency) -> Self {
         let decimals = if currency == base { 0 } else { 2 };
-        let amount =
+        let mut amount =
             amount.round_dp_with_strategy(decimals, RoundingStrategy::MidpointAwayFromZero);
+        // Padded too, so 12.5 USD prints as 12.50.
+        amount.rescale(decimals);
         Money { amount, currency }
     }
 
@@ -36,7 +38,7 @@ impl Money {
 impl fmt::Display for Money {
     /// Grouped thousands, as Fava prints them.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let text = self.amount.normalize().abs().to_string();
+        let text = self.amount.abs().to_string();
         let (int, frac) = match text.split_once('.') {
             Some((int, frac)) => (int, Some(frac)),
             None => (text.as_str(), None),
@@ -138,7 +140,7 @@ mod tests {
     #[test]
     fn amounts_print_like_fava() {
         assert_eq!(money(dec!(1234567.891), Currency::USD).to_string(), "1,234,567.89 USD");
-        assert_eq!(money(dec!(12.50), Currency::USD).to_string(), "12.5 USD");
+        assert_eq!(money(dec!(12.50), Currency::USD).to_string(), "12.50 USD");
         assert_eq!(money(dec!(-1000), Currency::TWD).to_string(), "-1,000 TWD");
         // The base currency is quoted whole; the ledger keeps its cents.
         assert_eq!(money(dec!(295.26), Currency::TWD).to_string(), "295 TWD");
@@ -155,6 +157,6 @@ mod tests {
         assert_eq!(Unpriced::default().to_string(), "");
         let unpriced =
             Unpriced(vec![money(dec!(5000), Currency::JPY), money(dec!(-2), Currency::VND)]);
-        assert_eq!(unpriced.to_string(), "（未換算：5,000 JPY、-2 VND）");
+        assert_eq!(unpriced.to_string(), "（未換算：5,000.00 JPY、-2.00 VND）");
     }
 }
