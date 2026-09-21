@@ -150,13 +150,17 @@ impl BankStatement {
         }
     }
 
-    /// The last day this download is known to hold in full: the day before
-    /// the latest it could have been made on, since it may have been made
-    /// partway through that day. For a TWD export that is the end of its
-    /// stated range; a 外幣 export states none, so its last line's day.
+    /// The last day this download holds in full. A TWD export may have been
+    /// made partway through the end of its stated range, so the day before.
+    /// A 外幣 export states no range; its last line's balance is taken as
+    /// current (the user's call until downloads carry a date), so a second
+    /// download made later that same day is refused as contradicting it.
     pub fn settled_through(&self) -> NaiveDate {
         let last = self.lines.last().expect("load rejects empty statements").book_date;
-        self.period_end.unwrap_or(last).pred_opt().expect("a day before a line")
+        match self.period_end {
+            Some(end) => end.pred_opt().expect("a day before a range end"),
+            None => last,
+        }
     }
 
     /// The statement's figures for `account`, over the lines dated after
@@ -825,8 +829,8 @@ mod tests {
         load(write(&dir, "s.csv", &signed(period_end, lines))).expect("loads")
     }
 
-    /// A download may have been made partway through the last day it could
-    /// have been made on, so the closing is the day before's.
+    /// A TWD download may have been made partway through the end of its range,
+    /// so the closing is the day before's.
     #[test]
     fn the_closing_is_the_day_before_the_download_could_have_been_made() {
         let lines = [("2024/03/01", 100, 100), ("2024/03/05", 10, 110), ("2024/03/05", 5, 115)];
@@ -836,9 +840,10 @@ mod tests {
             assert_eq!((a.period_start, a.opening), (Some(day(1)), Some(dec!(0))));
             (a.period_end, a.closing)
         };
-        // Made during 3/05, or (外幣, no range) possibly so.
+        // Made during 3/05.
         assert_eq!(closes(Some("2024/03/05")), (day(4), dec!(100)));
-        assert_eq!(closes(None), (day(4), dec!(100)));
+        // 外幣: no range, the last balance stands.
+        assert_eq!(closes(None), (day(5), dec!(115)));
         // Made at noon on 3/06, nothing posted yet that day.
         assert_eq!(closes(Some("2024/03/06")), (day(5), dec!(115)));
         let year_end = NaiveDate::from_ymd_opt(2024, 12, 30).unwrap();

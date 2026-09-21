@@ -434,9 +434,7 @@ fn a_statement_that_does_not_add_up_fails_the_freeze() -> anyhow::Result<()> {
         panic!("expected one mismatch:\n{frozen}");
     };
     assert_eq!(mismatch.account, "Assets:Cathay:Savings");
-    // The last day may be the download day, so the day before is what the
-    // lines cannot reach: 4900 by the statement, 5000 by its lines.
-    assert_eq!((mismatch.expected, mismatch.actual), (dec!(4900), dec!(5000)));
+    assert_eq!((mismatch.expected, mismatch.actual), (dec!(4800), dec!(4900)));
     let shown = frozen.to_string();
     assert!(shown.contains("reconciliation FAILED"), "{shown}");
     assert!(shown.contains("MISMATCH Assets:Cathay:Savings TWD"), "{shown}");

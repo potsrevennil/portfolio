@@ -363,24 +363,27 @@ async fn a_download_made_before_anything_posted_that_day_is_completed_later() ->
     Ok(())
 }
 
-/// A 外幣 export states no range, so its last line's day may be the day it
-/// was downloaded: a morning conversion, a download, an afternoon one.
+/// A 外幣 export states no range, and its last balance is taken as current.
+/// Downloaded between a morning conversion and an afternoon one, it recorded
+/// a half day: the later download contradicts it, and the import stops rather
+/// than record a second closing for that day.
 #[tokio::test]
-async fn a_foreign_download_does_not_close_its_last_day() -> Result<()> {
+async fn a_second_foreign_download_the_same_day_is_refused_loudly() -> Result<()> {
     let f = Fixture::new()?;
     let pool = f.db("fx.db").await?;
     import_files(&pool, &f.chart, &[f.write("morning.csv", FX_2023_USD)?], &[]).await?;
+    let before = count(&pool, "SELECT count(*) FROM transactions").await?;
 
     let afternoon = FX_2023_USD.replace(
         "\"交易資訊\"\n",
         "\"交易資訊\"\n\"2023/02/10\",\"2023/02/10\",\"USD 0.50\",\"−\",\"USD \
          1.50\",\"−\",\"網銀轉\"\n",
     );
-    let report = import_files(&pool, &f.chart, &[f.write("later.csv", &afternoon)?], &[]).await?;
-    assert_eq!(report.inserted, 1, "{report}");
-    assert!(report.check.ok(), "{report}");
-    let b = balances(&pool).await?;
-    assert_eq!(bal(&b, "Assets:Cathay:FX", "USD"), dec!(1.50));
+    let err = import_files(&pool, &f.chart, &[f.write("later.csv", &afternoon)?], &[])
+        .await
+        .expect_err("contradicts the recorded closing");
+    assert!(format!("{err:#}").contains("stale"), "{err:#}");
+    assert_eq!(count(&pool, "SELECT count(*) FROM transactions").await?, before);
     Ok(())
 }
 
