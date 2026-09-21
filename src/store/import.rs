@@ -39,6 +39,13 @@ pub struct Posting {
     pub tags: Option<String>,
 }
 
+/// An untagged leg: `(account, amount, currency).into()`.
+impl<A: Into<String>> From<(A, Decimal, Currency)> for Posting {
+    fn from((account, amount, currency): (A, Decimal, Currency)) -> Self {
+        Posting { account: account.into(), amount, currency, tags: None }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InsertOutcome {
     Inserted(i64),
@@ -197,15 +204,11 @@ mod tests {
 
     use super::*;
 
-    fn posting(account: &str, amount: Decimal, currency: Currency) -> Posting {
-        Posting { account: account.into(), amount, currency, tags: None }
-    }
-
     #[test]
     fn balanced_single_currency_passes() {
         let ps = vec![
-            posting("Assets:A1", dec!(-100), Currency::TWD),
-            posting("Assets:A2", dec!(100), Currency::TWD),
+            Posting::from(("Assets:A1", dec!(-100), Currency::TWD)),
+            Posting::from(("Assets:A2", dec!(100), Currency::TWD)),
         ];
         assert!(validate_balanced(&ps).is_ok());
     }
@@ -213,10 +216,10 @@ mod tests {
     #[test]
     fn balanced_per_currency_passes() {
         let ps = vec![
-            posting("Assets:A1", dec!(-100), Currency::TWD),
-            posting("Assets:A2", dec!(100), Currency::TWD),
-            posting("Assets:A3", dec!(-5), Currency::USD),
-            posting("Assets:A4", dec!(5), Currency::USD),
+            Posting::from(("Assets:A1", dec!(-100), Currency::TWD)),
+            Posting::from(("Assets:A2", dec!(100), Currency::TWD)),
+            Posting::from(("Assets:A3", dec!(-5), Currency::USD)),
+            Posting::from(("Assets:A4", dec!(5), Currency::USD)),
         ];
         assert!(validate_balanced(&ps).is_ok());
     }
@@ -224,8 +227,8 @@ mod tests {
     #[test]
     fn unbalanced_is_rejected() {
         let ps = vec![
-            posting("Assets:A1", dec!(-100), Currency::TWD),
-            posting("Assets:A2", dec!(99), Currency::TWD),
+            Posting::from(("Assets:A1", dec!(-100), Currency::TWD)),
+            Posting::from(("Assets:A2", dec!(99), Currency::TWD)),
         ];
         assert!(validate_balanced(&ps).is_err());
     }

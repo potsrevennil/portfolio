@@ -90,8 +90,7 @@ pub async fn import(
     let mut first_file = 0;
     for Merged { statement, spans, .. } in &merged {
         let account = statement_account(chart, &statement.account_no)?.to_string();
-        let existing =
-            import_batch::postings(db, &account, &statement.currency.to_string()).await?;
+        let existing = import_batch::postings(db, &account, statement.currency).await?;
         let files: Vec<usize> = spans
             .iter()
             .enumerate()
@@ -110,8 +109,7 @@ pub async fn import(
         let batch = match batches.get(&file) {
             Some(id) => *id,
             None => {
-                let id =
-                    import_batch::create(db, SOURCE, &files[file].display().to_string()).await?;
+                let id = import_batch::create(db, SOURCE, files[file]).await?;
                 batches.insert(file, id);
                 id
             }

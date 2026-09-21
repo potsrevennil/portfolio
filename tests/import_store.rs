@@ -15,12 +15,11 @@ async fn fixture() -> (tempfile::TempDir, SqlitePool) {
     (dir, pool)
 }
 
-fn posting(account: &str, amount: Decimal) -> Posting {
-    Posting { account: account.into(), amount, currency: Currency::TWD, tags: None }
-}
-
 fn balanced(amount: Decimal) -> Vec<Posting> {
-    vec![posting("Assets:Cash", -amount), posting("Expenses:Food", amount)]
+    vec![
+        ("Assets:Cash", -amount, Currency::TWD).into(),
+        ("Expenses:Food", amount, Currency::TWD).into(),
+    ]
 }
 
 fn txn(source: Source, external_ref: Option<&str>, postings: Vec<Posting>) -> Transaction {
@@ -78,7 +77,10 @@ async fn unbalanced_postings_are_rejected_and_write_nothing() {
     let (_dir, pool) = fixture().await;
     let store = ImportStore::new(pool);
 
-    let unbalanced = vec![posting("Assets:Cash", dec!(-100)), posting("Expenses:Food", dec!(99))];
+    let unbalanced = vec![
+        ("Assets:Cash", dec!(-100), Currency::TWD).into(),
+        ("Expenses:Food", dec!(99), Currency::TWD).into(),
+    ];
     assert!(store.insert_deduped(&txn(Source::Import, Some("BAD"), unbalanced)).await.is_err());
     assert_eq!(count(&store).await, 0);
     let accounts: i64 =

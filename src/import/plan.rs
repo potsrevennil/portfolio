@@ -23,10 +23,6 @@ use crate::{
     },
 };
 
-fn leg(account: impl Into<String>, amount: Decimal, currency: Currency) -> Posting {
-    Posting { account: account.into(), amount, currency, tags: None }
-}
-
 /// One merged statement and where it lands.
 pub struct Statement<'a> {
     pub account: String,
@@ -119,8 +115,8 @@ pub fn plan(
                     external_ref: Some(cathay::opening_ref(&s.account, st.currency)),
                     import_batch_id: None,
                     postings: vec![
-                        leg(&s.account, st.opening_balance(), st.currency),
-                        leg(OPENING_EQUITY, -st.opening_balance(), st.currency),
+                        (&s.account, st.opening_balance(), st.currency).into(),
+                        (OPENING_EQUITY, -st.opening_balance(), st.currency).into(),
                     ],
                 }));
                 plan.counts.openings += 1;
@@ -307,42 +303,42 @@ pub fn plan(
         let s = &statements[si];
         let l = line(at);
         let currency = s.statement.currency;
-        let own = leg(&s.account, l.delta(), currency);
+        let own: Posting = (&s.account, l.delta(), currency).into();
         let postings = match &shape[&at] {
             Shape::Absorbed => continue,
             Shape::Reversal(r) => {
-                vec![own, leg(&s.account, s.statement.lines[*r].delta(), currency)]
+                vec![own, (&s.account, s.statement.lines[*r].delta(), currency).into()]
             }
             Shape::Transfer(other) => {
                 let far = &statements[other.0];
                 let far_amount = line(*other).delta();
-                let mut ps = vec![own, leg(&far.account, far_amount, far.statement.currency)];
+                let mut ps = vec![own, (&far.account, far_amount, far.statement.currency).into()];
                 if far.statement.currency != currency {
-                    ps.push(leg(CONVERSIONS, -l.delta(), currency));
-                    ps.push(leg(CONVERSIONS, -far_amount, far.statement.currency));
+                    ps.push((CONVERSIONS, -l.delta(), currency).into());
+                    ps.push((CONVERSIONS, -far_amount, far.statement.currency).into());
                 }
                 ps
             }
             Shape::InTransit => {
-                vec![own, leg(&*chart.institution.clearing, -l.delta(), currency)]
+                vec![own, (&*chart.institution.clearing, -l.delta(), currency).into()]
             }
             Shape::Matched(consumed) => {
                 plan.counts.matched += 1;
                 let mut ps = vec![own];
                 for (ci, amount) in consumed {
-                    ps.push(leg(&candidates[*ci].account, -*amount, currency));
+                    ps.push((&candidates[*ci].account, -*amount, currency).into());
                 }
                 let residual: Decimal = ps.iter().map(|p| p.amount).sum();
                 if !residual.is_zero() {
                     let fallback = fallback_account(chart, &l.description, residual);
-                    ps.push(leg(&**fallback, -residual, currency));
+                    ps.push((&**fallback, -residual, currency).into());
                 }
                 ps
             }
             Shape::Fallback => {
                 plan.counts.uncategorised += 1;
                 let fallback = fallback_account(chart, &l.description, l.delta());
-                vec![own, leg(&**fallback, -l.delta(), currency)]
+                vec![own, (&**fallback, -l.delta(), currency).into()]
             }
         };
         let payee = match &shape[&at] {

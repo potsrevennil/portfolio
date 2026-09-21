@@ -1,19 +1,24 @@
 //! What an importer needs around its transactions: `import_batch` provenance
 //! rows and the postings already on an account.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
-use crate::ledger::model::OPENING_EQUITY;
+use crate::{currency::Currency, ledger::model::OPENING_EQUITY};
 
-pub async fn create(db: &mut SqliteConnection, source: &str, file: &str) -> Result<i64> {
+pub async fn create(
+    db: &mut SqliteConnection,
+    source: &str,
+    file: impl AsRef<Path>,
+) -> Result<i64> {
+    let file = file.as_ref().display().to_string();
     Ok(sqlx::query("INSERT INTO import_batch (source, file) VALUES (?, ?)")
         .bind(source)
-        .bind(file)
+        .bind(&file)
         .execute(db)
         .await
         .with_context(|| format!("recording import batch for {file}"))?
@@ -35,7 +40,7 @@ struct Row {
     date: String,
     amount: String,
     external_ref: Option<String>,
-    opening: i64,
+    opening: bool,
 }
 
 impl TryFrom<Row> for LedgerPosting {
@@ -46,7 +51,7 @@ impl TryFrom<Row> for LedgerPosting {
             date: r.date.parse().with_context(|| format!("transaction date {:?}", r.date))?,
             amount: r.amount.parse().with_context(|| format!("posting amount {:?}", r.amount))?,
             external_ref: r.external_ref,
-            opening: r.opening != 0,
+            opening: r.opening,
         })
     }
 }
@@ -56,7 +61,7 @@ impl TryFrom<Row> for LedgerPosting {
 pub async fn postings(
     db: &mut SqliteConnection,
     path: &str,
-    currency: &str,
+    currency: Currency,
 ) -> Result<Vec<LedgerPosting>> {
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT t.date, p.amount, t.external_ref,
@@ -70,7 +75,7 @@ pub async fn postings(
     )
     .bind(OPENING_EQUITY)
     .bind(path)
-    .bind(currency)
+    .bind(currency.to_string())
     .fetch_all(db)
     .await?;
     rows.into_iter().map(LedgerPosting::try_from).collect()
