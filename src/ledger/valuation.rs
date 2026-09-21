@@ -56,7 +56,7 @@ impl AtCost {
                 anyhow::bail!("[{near}] is not a section; holdings at cost go under [at_cost]")
             }
             None => {
-                let config: Config = toml::from_str(text)?;
+                let config: Config = toml::Value::Table(table).try_into()?;
                 Ok(Self { roots: config.at_cost.accounts })
             }
         }
