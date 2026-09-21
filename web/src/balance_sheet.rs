@@ -1,4 +1,4 @@
-//! 資產 and 負債 as fold-out account trees, per-currency sums, and net worth.
+//! 資產 and 負債 as fold-out account trees, and net worth.
 
 use std::collections::BTreeSet;
 
