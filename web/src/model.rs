@@ -89,11 +89,14 @@ pub struct Node {
     pub path: String,
     pub label: String,
     pub total: Converted,
-    /// The account's own balance per currency, when it holds any currency
-    /// other than the base: the figure its statement shows. Empty on groups.
+    /// The account's own balance per currency, without its descendants',
+    /// when it holds any currency other than the base: the figure its
+    /// statement shows.
     pub native: Vec<Money>,
     /// A cost, not a valuation: shown, but left out of every total above it.
     pub at_cost: bool,
+    /// The at-cost holdings below it that `total` leaves out.
+    pub excluded: Option<Converted>,
     pub children: Vec<Node>,
 }
 

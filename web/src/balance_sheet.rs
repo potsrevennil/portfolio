@@ -129,7 +129,12 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         view! {
             <span class="marker" aria-hidden="true"></span>
             <span class="name">{n.label.clone()}</span>
-            <Figures total=n.total.clone() native=n.native.clone() at_cost=n.at_cost />
+            <Figures
+                total=n.total.clone()
+                native=n.native.clone()
+                at_cost=n.at_cost
+                excluded=n.excluded.clone()
+            />
         }
     };
     if n.children.is_empty() {
@@ -171,7 +176,7 @@ fn on_toggle(path: String, open: RwSignal<BTreeSet<String>>) -> impl Fn(leptos::
 #[component]
 fn Figures(
     total: Converted,
-    /// A foreign leaf's own balance, the figure its statement shows.
+    /// The account's own foreign balance, the figure its statement shows.
     #[prop(default = Vec::new())]
     native: Vec<Money>,
     /// A cost rather than a valuation, so it is labelled as one.

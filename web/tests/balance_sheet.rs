@@ -73,6 +73,8 @@ fn journal() -> Journal {
             ("Assets:Bank:FX", "5000", JPY),
             ("Equity:Opening-Balances", "-5000", JPY),
         ]),
+        // A group that holds money of its own, besides its sub-accounts'.
+        ("2024-02-03", &[("Assets:Bank", "10", USD), ("Assets:Bank:FX", "-10", USD)]),
         ("2024-03-01", &[
             ("Assets:Split:Alpha:Tab", "300", TWD),
             ("Assets:Split:Beta:Tab", "-200", TWD),
@@ -158,7 +160,7 @@ async fn ledger() -> (TempDir, SqlitePool) {
 
 async fn render(pool: &SqlitePool) -> String {
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
-    let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\"]\n").unwrap();
+    let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
     let sheet = web::sheet::load(pool, as_of, Currency::TWD, &at_cost).await.unwrap();
     Owner::new().with(|| view! { <SheetView sheet /> }.to_html())
 }
@@ -252,7 +254,10 @@ async fn every_row_is_one_figure_in_twd() {
     assert_eq!(assets.trim(), "資產 11,012 TWD （未換算：5,000 JPY） 另有成本 40,000 TWD");
     // A leaf holding foreign money keeps its own balance, the statement's figure.
     let fx = &text[position(&text, "外幣")..position(&text, "活存")];
-    assert_eq!(fx.trim(), "外幣 3,000 TWD （未換算：5,000 JPY） 5,000 JPY · 100 USD");
+    assert_eq!(fx.trim(), "外幣 2,700 TWD （未換算：5,000 JPY） 5,000 JPY · 90 USD");
+    // A group's own foreign money shows too, apart from its sub-accounts'.
+    let bank = &text[position(&text, "銀行")..position(&text, "外幣")];
+    assert_eq!(bank.trim(), "銀行 10,000 TWD （未換算：5,000 JPY） 10 USD");
     let savings = &text[position(&text, "活存")..position(&text, "現金")];
     assert_eq!(savings.trim(), "活存 7,000 TWD");
     // TWD is quoted whole, as Fava prints it; the cents are still in the ledger.
@@ -262,8 +267,12 @@ async fn every_row_is_one_figure_in_twd() {
     assert_eq!(split.trim(), "分帳 100 TWD");
     let alpha = &text[position(&text, "甲公司")..position(&text, "乙公司")];
     assert_eq!(alpha.trim(), "甲公司 300 TWD 分帳 300 TWD");
+    // A group above an at-cost holding says what its total leaves out.
     let unlisted = &text[position(&text, "未上市持股")..position(&text, "負債")];
-    assert!(unlisted.contains("40,000 TWD 成本，未計入總額"), "{unlisted}");
+    assert_eq!(
+        unlisted.trim(),
+        "未上市持股 0 TWD 另有成本 40,000 TWD 丙公司股 40,000 TWD 成本，未計入總額"
+    );
     let liabilities = &text[position(&text, "負債")..position(&text, "信用卡")];
     assert_eq!(liabilities.trim(), "負債 -2,500 TWD");
     let net = &text[position(&text, "淨資產")..];

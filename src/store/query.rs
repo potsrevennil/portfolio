@@ -295,6 +295,12 @@ impl LedgerData {
         Ok(Self { accounts, postings })
     }
 
+    /// Every account's label by path, including the group levels with no
+    /// postings of their own.
+    pub fn labels(&self) -> BTreeMap<&str, &str> {
+        self.accounts.values().map(|a| (a.path.as_str(), a.label.as_str())).collect()
+    }
+
     /// The newest posting on each account and currency.
     pub fn last_posting_dates(&self) -> BTreeMap<(i64, Currency), NaiveDate> {
         let mut latest: BTreeMap<(i64, Currency), NaiveDate> = BTreeMap::new();

@@ -10,10 +10,7 @@ use chrono::NaiveDate;
 use portfolio::{
     currency::Currency,
     ledger::valuation::AtCost,
-    store::{
-        chart::{self, ChartAccount},
-        query::{self, AccountBalance, AccountType, LedgerData},
-    },
+    store::query::{self, AccountBalance, AccountType, LedgerData},
 };
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
@@ -30,29 +27,32 @@ pub async fn load(
     at_cost: &AtCost,
 ) -> Result<BalanceSheet> {
     let data = LedgerData::load(pool).await?;
-    let chart = chart::accounts(pool).await?;
     let prices = query::load_fx_prices(pool, &data.currencies(), base, as_of).await?;
     let balances = data.balances_as_of(as_of);
-    Ok(build(&chart, &balances, as_of, base, at_cost, |c| query::rate(c, base, as_of, &prices)))
+    Ok(build(&data.labels(), &balances, as_of, base, at_cost, |c| {
+        query::rate(c, base, as_of, &prices)
+    }))
 }
 
 /// Sums per currency, keyed by path so children come out in chart order.
 #[derive(Default)]
 struct Tree {
     sums: BTreeMap<Currency, Decimal>,
+    /// The account's own postings, without its descendants'.
+    own: BTreeMap<Currency, Decimal>,
+    /// At-cost holdings below it, which `sums` leaves out.
+    cost: BTreeMap<Currency, Decimal>,
     children: BTreeMap<String, Tree>,
 }
 
 pub fn build(
-    chart: &[ChartAccount],
+    labels: &BTreeMap<&str, &str>,
     balances: &[AccountBalance],
     as_of: NaiveDate,
     base: Currency,
     at_cost: &AtCost,
     rate: impl Fn(Currency) -> Option<Decimal>,
 ) -> BalanceSheet {
-    let labels: BTreeMap<&str, &str> =
-        chart.iter().map(|a| (a.path.as_str(), a.label.as_str())).collect();
     let label = |path: &str| -> String {
         labels
             .get(path)
@@ -94,10 +94,13 @@ pub fn build(
         let from = (1..=depths).find(|d| at_cost.covers(node_path(&b.path, *d)));
         for depth in 2..=depths {
             node = node.children.entry(node_path(&b.path, depth).to_string()).or_default();
-            if counted || from.is_some_and(|first| depth >= first) {
-                *node.sums.entry(b.currency).or_default() += b.amount;
-            }
+            let sums = match counted || from.is_some_and(|first| depth >= first) {
+                true => &mut node.sums,
+                false => &mut node.cost,
+            };
+            *sums.entry(b.currency).or_default() += b.amount;
         }
+        *node.own.entry(b.currency).or_default() += b.amount;
     }
 
     fn nodes(
@@ -113,11 +116,12 @@ pub fn build(
             .map(|(path, tree)| Node {
                 label: label(&path),
                 total: convert(&tree.sums),
-                native: match tree.children.is_empty() && foreign(&tree.sums) {
-                    true => amounts(&tree.sums, base),
+                native: match foreign(&tree.own) {
+                    true => amounts(&tree.own, base),
                     false => Vec::new(),
                 },
                 at_cost: at_cost.covers(&path),
+                excluded: (!tree.cost.is_empty()).then(|| convert(&tree.cost)),
                 children: nodes(tree.children, label, convert, foreign, at_cost, base),
                 path,
             })
