@@ -67,10 +67,10 @@ pub fn build(
         for (&currency, &amount) in sums.iter().filter(|(_, v)| !v.is_zero()) {
             match rate(currency) {
                 Some(r) => total += amount * r,
-                None => unpriced.push(money(amount, currency, base)),
+                None => unpriced.push(Money::new(amount, currency, base)),
             }
         }
-        Converted { money: money(total, base, base), unpriced: Unpriced(unpriced) }
+        Converted { money: Money::new(total, base, base), unpriced: Unpriced(unpriced) }
     };
 
     // Equity, income and expense never reach the tree.
@@ -176,11 +176,5 @@ fn node_path(path: &str, depth: usize) -> &str {
 }
 
 fn amounts(sums: &BTreeMap<Currency, Decimal>, base: Currency) -> Vec<Money> {
-    sums.iter().filter(|(_, v)| !v.is_zero()).map(|(c, v)| money(*v, *c, base)).collect()
-}
-
-/// The base currency is quoted whole (as Fava prints TWD); the rest to two.
-fn money(amount: Decimal, currency: Currency, base: Currency) -> Money {
-    let decimals = if currency == base { 0 } else { 2 };
-    Money { amount, currency, decimals }
+    sums.iter().filter(|(_, v)| !v.is_zero()).map(|(c, v)| Money::new(*v, *c, base)).collect()
 }
