@@ -319,3 +319,14 @@ async fn shared_labels_stand_alone_with_their_parents() {
     assert_eq!(labels["Assets:Split:Beta:Tab"], "乙公司分帳");
     assert_eq!(labels["Assets:Cash"], "現金");
 }
+
+#[test]
+fn a_missing_mapping_lists_no_at_cost_holdings_but_a_broken_one_stops_the_server() {
+    let dir = TempDir::new().unwrap();
+    let missing = server::at_cost(&dir.path().join("mapping.toml")).unwrap();
+    assert!(!missing.covers("Assets:Unlisted"));
+
+    let broken = dir.path().join("broken.toml");
+    std::fs::write(&broken, "[at_cost]\naccounts = \"Assets:Unlisted\"\n").unwrap();
+    assert!(server::at_cost(&broken).is_err());
+}

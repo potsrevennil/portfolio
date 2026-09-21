@@ -1,6 +1,6 @@
 //! The axum server: Leptos routes and server functions over one SQLite pool.
 
-use std::str::FromStr;
+use std::{path::Path, str::FromStr};
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -45,20 +45,24 @@ pub async fn run() -> Result<()> {
     let url = std::env::var("LEDGER_DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.into());
     let pool = open(&url).await?;
     let mapping = std::env::var("LEDGER_MAPPING").unwrap_or_else(|_| DEFAULT_MAPPING.into());
-    // Without it every balance is read as a valuation, which is the behaviour
-    // of a ledger that lists no at-cost holdings; say so rather than refusing.
-    let at_cost = match AtCost::load(&mapping) {
-        Ok(at_cost) => at_cost,
-        Err(e) => {
-            println!("no at-cost accounts ({e:#})");
-            AtCost::default()
-        }
-    };
+    let at_cost = at_cost(Path::new(&mapping))?;
     let addr = options.site_addr;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log_listening(addr);
     axum::serve(listener, router(options, pool, at_cost).into_make_service()).await?;
     Ok(())
+}
+
+/// A ledger with no mapping lists no at-cost holdings; one whose mapping
+/// does not parse must not start, or it would count them silently.
+pub fn at_cost(mapping: &Path) -> Result<AtCost> {
+    match mapping.exists() {
+        true => AtCost::load(mapping),
+        false => {
+            println!("{} not found: no holdings carried at cost", mapping.display());
+            Ok(AtCost::default())
+        }
+    }
 }
 
 fn log_listening(addr: std::net::SocketAddr) {
