@@ -4,4 +4,5 @@ pub mod assertions;
 pub mod check;
 pub mod hledger;
 pub mod import;
+pub mod import_batch;
 pub mod query;

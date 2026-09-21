@@ -1,4 +1,9 @@
-use portfolio::store::import::{ImportStore, InsertOutcome, NewPosting, NewTransaction};
+use portfolio::{
+    currency::Currency,
+    ledger::model::Source,
+    store::import::{ImportStore, InsertOutcome, Posting, Transaction},
+};
+use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::SqlitePool;
 
@@ -10,30 +15,22 @@ async fn fixture() -> (tempfile::TempDir, SqlitePool) {
     (dir, pool)
 }
 
-async fn seed_account(pool: &SqlitePool, path: &str) -> i64 {
-    sqlx::query("INSERT INTO accounts (path, label, type) VALUES (?, ?, 'asset')")
-        .bind(path)
-        .bind(path)
-        .execute(pool)
-        .await
-        .unwrap()
-        .last_insert_rowid()
-}
-
-fn balanced(cash: i64, expense: i64, amount: rust_decimal::Decimal) -> Vec<NewPosting> {
+fn balanced(amount: Decimal) -> Vec<Posting> {
     vec![
-        NewPosting { account_id: cash, amount: -amount, currency: "TWD".into(), tags: None },
-        NewPosting { account_id: expense, amount, currency: "TWD".into(), tags: None },
+        ("Assets:Cash", -amount, Currency::TWD).into(),
+        ("Expenses:Food", amount, Currency::TWD).into(),
     ]
 }
 
-fn txn(source: &str, external_ref: Option<&str>) -> NewTransaction {
-    NewTransaction {
+fn txn(source: Source, external_ref: Option<&str>, postings: Vec<Posting>) -> Transaction {
+    Transaction {
         date: "2026-03-01".parse().unwrap(),
         payee: Some("shop".into()),
         narration: None,
-        source: source.into(),
+        source,
         external_ref: external_ref.map(str::to_string),
+        import_batch_id: None,
+        postings,
     }
 }
 
@@ -44,21 +41,19 @@ async fn count(store: &ImportStore) -> i64 {
 #[tokio::test]
 async fn duplicate_within_a_source_is_rejected_same_ref_across_sources_is_allowed() {
     let (_dir, pool) = fixture().await;
-    let cash = seed_account(&pool, "Assets:Cash").await;
-    let expense = seed_account(&pool, "Expenses:Food").await;
     let store = ImportStore::new(pool);
-    let ps = balanced(cash, expense, dec!(100));
+    let ps = balanced(dec!(100));
 
-    let first = store.insert_deduped(&txn("import", Some("L1")), &ps).await.unwrap();
+    let first = store.insert_deduped(&txn(Source::Import, Some("L1"), ps.clone())).await.unwrap();
     let first_id = first.inserted_id().expect("first insert should write");
 
-    let again = store.insert_deduped(&txn("import", Some("L1")), &ps).await.unwrap();
+    let again = store.insert_deduped(&txn(Source::Import, Some("L1"), ps.clone())).await.unwrap();
     assert_eq!(again, InsertOutcome::Duplicate(first_id));
     // A duplicate wrote nothing but still names the row it matched.
     assert_eq!(again.inserted_id(), None);
     assert_eq!((first.transaction_id(), again.transaction_id()), (first_id, first_id));
 
-    let other = store.insert_deduped(&txn("manual", Some("L1")), &ps).await.unwrap();
+    let other = store.insert_deduped(&txn(Source::Manual, Some("L1"), ps)).await.unwrap();
     assert!(matches!(other, InsertOutcome::Inserted(id) if id != first_id));
 
     assert_eq!(count(&store).await, 2);
@@ -67,13 +62,11 @@ async fn duplicate_within_a_source_is_rejected_same_ref_across_sources_is_allowe
 #[tokio::test]
 async fn null_external_ref_is_exempt_and_always_inserts() {
     let (_dir, pool) = fixture().await;
-    let cash = seed_account(&pool, "Assets:Cash").await;
-    let expense = seed_account(&pool, "Expenses:Food").await;
     let store = ImportStore::new(pool);
-    let ps = balanced(cash, expense, dec!(50));
+    let ps = balanced(dec!(50));
 
-    let a = store.insert_deduped(&txn("manual", None), &ps).await.unwrap();
-    let b = store.insert_deduped(&txn("manual", None), &ps).await.unwrap();
+    let a = store.insert_deduped(&txn(Source::Manual, None, ps.clone())).await.unwrap();
+    let b = store.insert_deduped(&txn(Source::Manual, None, ps)).await.unwrap();
     assert!(matches!(a, InsertOutcome::Inserted(_)));
     assert!(matches!(b, InsertOutcome::Inserted(_)));
     assert_ne!(a.inserted_id(), b.inserted_id());
@@ -82,14 +75,15 @@ async fn null_external_ref_is_exempt_and_always_inserts() {
 #[tokio::test]
 async fn unbalanced_postings_are_rejected_and_write_nothing() {
     let (_dir, pool) = fixture().await;
-    let cash = seed_account(&pool, "Assets:Cash").await;
-    let expense = seed_account(&pool, "Expenses:Food").await;
     let store = ImportStore::new(pool);
 
     let unbalanced = vec![
-        NewPosting { account_id: cash, amount: dec!(-100), currency: "TWD".into(), tags: None },
-        NewPosting { account_id: expense, amount: dec!(99), currency: "TWD".into(), tags: None },
+        ("Assets:Cash", dec!(-100), Currency::TWD).into(),
+        ("Expenses:Food", dec!(99), Currency::TWD).into(),
     ];
-    assert!(store.insert_deduped(&txn("import", Some("BAD")), &unbalanced).await.is_err());
+    assert!(store.insert_deduped(&txn(Source::Import, Some("BAD"), unbalanced)).await.is_err());
     assert_eq!(count(&store).await, 0);
+    let accounts: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts").fetch_one(store.pool()).await.unwrap();
+    assert_eq!(accounts, 0, "a rejected transaction creates no accounts");
 }

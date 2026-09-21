@@ -44,7 +44,7 @@ pub struct Args {
 }
 
 /// The `accounts.type` value for an account path.
-fn schema_type(path: &str) -> Result<query::AccountType> {
+pub(crate) fn schema_type(path: &str) -> Result<query::AccountType> {
     let root: AccountType = path.parse().map_err(|()| {
         anyhow::anyhow!("{path:?} is not a Beancount account (no Assets/Liabilities/… root)")
     })?;

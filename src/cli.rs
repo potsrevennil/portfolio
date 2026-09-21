@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use crate::{calculate, db, ledger, prices::PriceService, record, store};
+use crate::{calculate, db, import, ledger, prices::PriceService, record, store};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -37,6 +37,9 @@ enum Command {
     /// Export the SQLite ledger as an hledger journal (audit with `hledger
     /// check`)
     ExportHledger(ExportHledger),
+    /// Import Cathay bank downloads into SQLite (scratch databases until the
+    /// Cutover)
+    ImportCathayBank(import::cathay_bank::Args),
     /// Fetch daily exchange rates so the ledger's currencies can be compared
     Rates(ledger::rates::Args),
 }
@@ -105,6 +108,10 @@ impl Cli {
                 let journal = store::hledger::export(&mut *pool.acquire().await?).await?;
                 std::fs::write(&args.output, journal)?;
                 println!("wrote {}", args.output.display());
+                Ok(())
+            }
+            Some(Command::ImportCathayBank(args)) => {
+                print!("{}", import::cathay_bank::run(args).await?);
                 Ok(())
             }
             Some(Command::Rates(args)) => {

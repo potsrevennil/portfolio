@@ -275,10 +275,8 @@ fn freeze_reads_yearly_exports_a_foreign_account_and_corrected_records() -> anyh
     assert_eq!(savings_opening.amount, dec!(5000), "the 2023 line was not folded in");
 
     assert!(
-        written
-            .postings
-            .iter()
-            .any(|p| p.external_ref.as_deref() == Some("222222222222:2024-06-11:-100.00:0.50")),
+        written.postings.iter().any(|p| p.external_ref.as_deref()
+            == Some("cathay-bank:222222222222:2024-06-11:-100.00:0.50")),
         "the FX line's dedup key is missing"
     );
     Ok(())
