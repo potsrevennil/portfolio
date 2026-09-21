@@ -21,10 +21,7 @@ use super::{
     summary::Summary,
     writer,
 };
-use crate::{
-    currency::Currency,
-    store::assertions::{AssertionSource, BalanceAssertion},
-};
+use crate::{currency::Currency, store::assertions::BalanceAssertion};
 
 /// Each account's balance as the app's own records imply it, per currency.
 ///
@@ -648,16 +645,10 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             amount: statement.closing_balance(),
             currency,
         }));
-        statement_periods.push(BalanceAssertion {
-            source: AssertionSource::Statement,
-            account: account.to_string(),
-            currency,
-            period_start: Some(first.book_date),
-            opening: Some(statement.opening_balance()),
-            // Beancount asserts at the start of assert_date.
-            period_end: statement.assert_date().pred_opt().expect("assert_date follows a line"),
-            closing: statement.closing_balance(),
-        });
+        let before_first = first.book_date.pred_opt().expect("a day before a line");
+        statement_periods.push(
+            statement.assertion(account, before_first).expect("load rejects empty statements"),
+        );
         cathay.push(Directive::Blank);
     }
 

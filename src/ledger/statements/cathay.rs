@@ -16,7 +16,10 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
-use crate::currency::Currency;
+use crate::{
+    currency::Currency,
+    store::assertions::{AssertionSource, BalanceAssertion},
+};
 
 /// Namespaces this bank's `external_ref`s: every importer shares one dedup
 /// scope (`transactions.source = 'import'`).
@@ -27,7 +30,7 @@ pub fn opening_ref(account: &str, currency: Currency) -> String {
     format!("{REF_PREFIX}opening:{account}:{currency}")
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct StatementLine {
     pub book_date: NaiveDate,
     pub description: String,
@@ -145,6 +148,45 @@ impl BankStatement {
             Some(end) if end >= after_last => end,
             _ => after_last,
         }
+    }
+
+    /// The statement's figures for `account`, over the lines dated after
+    /// `after` (the ones before are in the account's opening). `None` when no
+    /// line is.
+    ///
+    /// A download can stop partway through its final day, so that day is
+    /// asserted only when the export's own period runs past it; otherwise the
+    /// closing is the day before's. Asserting a half day would refuse the next
+    /// download that completes it.
+    pub fn assertion(&self, account: &str, after: NaiveDate) -> Option<BalanceAssertion> {
+        let from = self.lines.partition_point(|l| l.book_date <= after);
+        let first = self.lines.get(from)?;
+        let last = self.lines.last().expect("a line follows `first`");
+        let before = |i: usize| self.lines[i].balance - self.lines[i].delta();
+        let (end, closing) = match self.period_end {
+            Some(end) if end > last.book_date => (end, last.balance),
+            _ => {
+                let day = self.lines.partition_point(|l| l.book_date < last.book_date);
+                (last.book_date.pred_opt().expect("a day before a line"), before(day.max(from)))
+            }
+        };
+        let opening = before(from);
+        let (period_start, opening, period_end, closing) = if end >= first.book_date {
+            (Some(first.book_date), Some(opening), end, closing)
+        } else {
+            // Only a possibly partial first day is tracked: vouch for the
+            // balance it started from.
+            (None, None, first.book_date.pred_opt().expect("a day before a line"), opening)
+        };
+        Some(BalanceAssertion {
+            source: AssertionSource::Statement,
+            account: account.to_string(),
+            currency: self.currency,
+            period_start,
+            opening,
+            period_end,
+            closing,
+        })
     }
 }
 
@@ -327,8 +369,13 @@ pub struct Merged {
 }
 
 /// Joins the exports of each account and currency into one statement. They
-/// must follow on (no overlap, no balance gap), or a missing download would
-/// hide as an unexplained jump.
+/// must follow on with no balance gap, or a missing download would hide as an
+/// unexplained jump.
+///
+/// `raw/` keeps every download, so one can re-cover days another already
+/// holds: a partial download and the full one that replaced it. Where one
+/// holds exactly the other's lines from the day the later one starts, the
+/// longer is kept; any other overlap is an error.
 pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
     let mut groups: BTreeMap<(String, Currency), Vec<(BankStatement, PathBuf)>> = BTreeMap::new();
     for path in paths {
@@ -354,18 +401,40 @@ pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
         for (next, path) in parts {
             let last = statement.lines.last().expect("load rejects empty statements");
             let first = next.lines.first().expect("load rejects empty statements");
+            let from = statement.lines.partition_point(|l| l.book_date < first.book_date);
+            let held = &statement.lines[from..];
+            let shared = held.len().min(next.lines.len());
+            if !held.is_empty() && held[..shared] == next.lines[..shared] {
+                if next.lines.len() > held.len() {
+                    // The later download re-covers those lines, so drop them.
+                    let mut dropped = held.len();
+                    for span in spans.iter_mut().rev() {
+                        let d = dropped.min(*span);
+                        *span -= d;
+                        dropped -= d;
+                    }
+                    statement.lines.truncate(from);
+                    spans.push(next.lines.len());
+                    statement.lines.extend(next.lines);
+                    statement.period_end = next.period_end;
+                } else {
+                    spans.push(0);
+                }
+                paths.push(path);
+                continue;
+            }
             // Exports are cut by trade date, so a late 12/31 trade booked on the
             // next business day can share the next file's first book date.
             anyhow::ensure!(
                 first.book_date >= last.book_date,
-                "{account_no} {currency}: {} overlaps the export before it (it starts {}, the \
-                 other ends {})",
+                "{account_no} {currency}: {} overlaps the export before it and disagrees with it \
+                 (it starts {}, the other ends {})",
                 path.display(),
                 first.book_date,
                 last.book_date
             );
             anyhow::ensure!(
-                next.opening_balance() == statement.closing_balance(),
+                !held.is_empty() || next.opening_balance() == statement.closing_balance(),
                 "{account_no} {currency}: gap between {} and {} — balance {} on {} but {} before \
                  {}; an export is missing",
                 paths.last().expect("non-empty").display(),
@@ -373,6 +442,13 @@ pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
                 statement.closing_balance(),
                 last.book_date,
                 next.opening_balance(),
+                first.book_date
+            );
+            anyhow::ensure!(
+                next.opening_balance() == statement.closing_balance(),
+                "{account_no} {currency}: {} and {} both hold {} and disagree about it",
+                paths.last().expect("non-empty").display(),
+                path.display(),
                 first.book_date
             );
             spans.push(next.lines.len());
@@ -663,5 +739,112 @@ mod tests {
         ))
         .expect_err("a statement with no rows");
         assert!(format!("{err:#}").contains("no statement rows"), "{err:#}");
+    }
+
+    /// Like `export`, with signed amounts: (book date, delta, balance).
+    fn signed(period_end: Option<&str>, lines: &[(&str, i64, i64)]) -> String {
+        let period = period_end.map(|end| format!("筆數,(自 2023/01/01 至 {end})\n"));
+        let mut out = format!(
+            "123456789012 活存\n{}幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n",
+            period.unwrap_or_default()
+        );
+        for (date, delta, balance) in lines.iter().rev() {
+            let (out_, in_) = match delta.is_negative() {
+                true => (delta.abs().to_string(), String::new()),
+                false => (String::new(), delta.to_string()),
+            };
+            out.push_str(&format!("{date},{date},轉帳,{out_},{in_},{balance},,\n"));
+        }
+        out
+    }
+
+    /// A download that stopped partway through a day, then the one that
+    /// re-covers the day, given together: the day is taken once, from the
+    /// later one. The partial one ends back on the day's opening balance, so
+    /// balance continuity alone would have joined them and counted twice.
+    #[test]
+    fn a_partial_download_and_its_replacement_merge_once() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let day = [("2024/03/05", -10, 90), ("2024/03/05", 10, 100)];
+        let partial = [&[("2024/03/01", 100, 100)][..], &day].concat();
+        let full = [&day[..], &[("2024/03/05", -30, 70), ("2024/04/01", 1, 71)]].concat();
+        let paths = [
+            write(&dir, "full.csv", &signed(Some("2024/12/31"), &full)),
+            write(&dir, "partial.csv", &signed(None, &partial)),
+        ];
+        let merged = load_merged(&paths).expect("merges");
+        let m = &merged[0];
+        assert_eq!(m.statement.lines.len(), 5);
+        assert_eq!(m.statement.closing_balance(), dec!(71));
+        assert_eq!(m.paths, [paths[1].clone(), paths[0].clone()]);
+        assert_eq!(m.spans, [1, 4]);
+    }
+
+    /// A full-year re-download supersedes the partial one it started with; a
+    /// download that another already holds entirely adds nothing.
+    #[test]
+    fn a_redownload_keeps_the_longer_of_the_two() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let lines = [("2024/03/01", 100, 100), ("2024/03/05", -10, 90), ("2024/04/01", 1, 91)];
+        let paths = [
+            write(&dir, "partial.csv", &signed(None, &lines[..1])),
+            write(&dir, "full.csv", &signed(Some("2024/12/31"), &lines)),
+            write(&dir, "inner.csv", &signed(None, &lines[1..2])),
+        ];
+        let merged = load_merged(&paths).expect("merges");
+        let m = &merged[0];
+        assert_eq!(m.statement.lines.len(), 3);
+        assert_eq!(m.statement.period_end, NaiveDate::from_ymd_opt(2024, 12, 31));
+        assert_eq!(m.spans.iter().sum::<usize>(), 3);
+        assert_eq!(m.spans, [0, 3, 0]);
+    }
+
+    #[test]
+    fn an_overlap_that_disagrees_is_rejected() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let paths = [
+            write(
+                &dir,
+                "a.csv",
+                &signed(None, &[("2024/03/01", 100, 100), ("2024/03/05", -10, 90)]),
+            ),
+            write(&dir, "b.csv", &signed(None, &[("2024/03/05", -20, 80)])),
+        ];
+        let err = load_merged(&paths).err().expect("a disagreeing overlap");
+        assert!(err.to_string().contains("disagree"), "{err}");
+    }
+
+    fn day(d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(2024, 3, d).expect("date") }
+
+    fn statement_of(period_end: Option<&str>, lines: &[(&str, i64, i64)]) -> BankStatement {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        load(write(&dir, "s.csv", &signed(period_end, lines))).expect("loads")
+    }
+
+    /// With no period running past it, the last day may be partial, so the
+    /// closing is the day before's.
+    #[test]
+    fn the_last_day_is_asserted_only_when_the_period_covers_it() {
+        let lines = [("2024/03/01", 100, 100), ("2024/03/05", 10, 110), ("2024/03/05", 5, 115)];
+        let before = day(1).pred_opt().unwrap();
+        let open = statement_of(None, &lines).assertion("A", before).unwrap();
+        assert_eq!((open.period_start, open.opening), (Some(day(1)), Some(dec!(0))));
+        assert_eq!((open.period_end, open.closing), (day(4), dec!(100)));
+
+        let covered = statement_of(Some("2024/12/31"), &lines).assertion("A", day(1)).unwrap();
+        assert_eq!((covered.period_start, covered.opening), (Some(day(5)), Some(dec!(100))));
+        assert_eq!(covered.period_end, NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
+        assert_eq!(covered.closing, dec!(115));
+    }
+
+    /// Only one tracked day, maybe partial: all that is vouched for is the
+    /// balance it started from.
+    #[test]
+    fn a_single_open_day_asserts_only_its_opening() {
+        let s = statement_of(None, &[("2024/03/05", 10, 110), ("2024/03/05", 5, 115)]);
+        let a = s.assertion("A", day(1)).unwrap();
+        assert_eq!((a.period_start, a.opening), (None, None));
+        assert_eq!((a.period_end, a.closing), (day(4), dec!(100)));
+        assert!(s.assertion("A", day(5)).is_none());
     }
 }

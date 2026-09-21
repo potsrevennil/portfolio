@@ -187,8 +187,16 @@ fn reconcile(
     let assertions: Vec<BalanceAssertion> =
         model.statements.iter().cloned().chain(tiantian).collect();
 
-    // Every Beancount balance must be carried over.
-    let carried = figures(&assertions);
+    // Every Beancount balance must be carried over: a statement's opening and
+    // closing by its one assertion (which may hold back a possibly partial
+    // last day), a 天天記帳 balance by its own.
+    let carried: usize = assertions
+        .iter()
+        .map(|a| match a.source {
+            AssertionSource::Statement => 2,
+            AssertionSource::Tiantian | AssertionSource::Counted => 1,
+        })
+        .sum();
     if carried != model.balances().count() {
         bail!(
             "{} ledger balance assertions but {carried} carried into the journal",

@@ -301,19 +301,45 @@ async fn a_download_starting_mid_day_fails_loudly() -> Result<()> {
     Ok(())
 }
 
-/// A download that ends mid-day is fine: the next one repeats the whole day
-/// and only its new lines land.
+/// A download that stopped partway through 2/05, ending on a balance the full
+/// day doesn't end on. Its half day must not be asserted as the day's close,
+/// or the download that completes the day is refused.
+fn partial(f: &Fixture) -> Result<PathBuf> {
+    f.write("partial.csv", &twd("111111111111", &SAVINGS_2023[..4]))
+}
+
+/// The download that re-covers the partial one's days in full.
+fn full(f: &Fixture) -> Result<PathBuf> { f.write("full.csv", &twd("111111111111", SAVINGS_2023)) }
+
 #[tokio::test]
 async fn a_download_ending_mid_day_is_completed_by_the_next() -> Result<()> {
     let f = Fixture::new()?;
     let pool = f.db("partial.db").await?;
-    let head = f.write("head.csv", &twd("111111111111", &SAVINGS_2023[..3]))?;
-    import_files(&pool, &f.chart, &[head], &[]).await?;
-    let rest = f.write("rest.csv", &twd("111111111111", &SAVINGS_2023[2..]))?;
-    let report = import_files(&pool, &f.chart, &[rest], &[]).await?;
-    assert_eq!(report.counts.known, 1);
+    import_files(&pool, &f.chart, &[partial(&f)?], &[]).await?;
+    let report = import_files(&pool, &f.chart, &[full(&f)?], &[]).await?;
+    assert_eq!(report.counts.known, 4);
+    assert!(report.check.ok(), "{report}");
     let b = balances(&pool).await?;
     assert_eq!(bal(&b, "Assets:Cathay:Savings", "TWD"), dec!(36));
+
+    // The stale partial download, imported again, is a no-op.
+    let again = import_files(&pool, &f.chart, &[partial(&f)?], &[]).await?;
+    assert_eq!(again.inserted, 0, "{again}");
+    Ok(())
+}
+
+/// `raw/` keeps both downloads, so importing it whole gives them together.
+#[tokio::test]
+async fn a_partial_download_and_its_replacement_import_together() -> Result<()> {
+    let f = Fixture::new()?;
+    let together = f.db("together.db").await?;
+    import_files(&together, &f.chart, &[partial(&f)?, full(&f)?], &[]).await?;
+    let alone = f.db("alone.db").await?;
+    import_files(&alone, &f.chart, &[full(&f)?], &[]).await?;
+
+    assert_eq!(balances(&together).await?, balances(&alone).await?);
+    let n = "SELECT count(*) FROM transactions";
+    assert_eq!(count(&together, n).await?, count(&alone, n).await?);
     Ok(())
 }
 

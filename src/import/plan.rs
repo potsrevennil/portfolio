@@ -428,14 +428,22 @@ fn chain(statements: &[Statement], openings: &[NaiveDate], planned: &[Planned]) 
         }
         let mut movements: Vec<(NaiveDate, Decimal)> =
             s.existing.iter().map(|p| (p.date, p.amount)).collect();
+        let last = s.statement.lines.last().expect("load rejects empty statements").book_date;
+        let mut adds_to_last_day = false;
         for t in planned {
             for p in &t.postings {
                 if p.account == s.account && p.currency == currency {
                     movements.push((t.date, p.amount));
+                    adds_to_last_day |= t.date == last;
                 }
             }
         }
         movements.sort_by_key(|(date, _)| *date);
+        // The download may have stopped partway through its last day. When it
+        // adds nothing to that day, the ledger may already hold the rest of
+        // it (a stale partial re-imported), so that day proves nothing.
+        let may_be_partial = !s.statement.period_end.is_some_and(|end| end > last);
+        let skip = (may_be_partial && !adds_to_last_day).then_some(last);
 
         let mut balance = Decimal::ZERO;
         let mut next = movements.iter().peekable();
@@ -443,7 +451,7 @@ fn chain(statements: &[Statement], openings: &[NaiveDate], planned: &[Planned]) 
             while let Some((_, amount)) = next.next_if(|(date, _)| *date <= day) {
                 balance += amount;
             }
-            if balance != want {
+            if Some(day) != skip && balance != want {
                 bail!(
                     "{} {currency}: the ledger would end {day} at {balance} but the statement \
                      says {want}. A download starts mid-day, overlaps one already imported \

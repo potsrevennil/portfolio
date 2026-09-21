@@ -19,8 +19,7 @@ use crate::{
         statements::cathay::{self, Merged},
     },
     store::{
-        assertions::{self, AssertionSource, BalanceAssertion},
-        check,
+        assertions, check,
         import::{insert_deduped, InsertOutcome, NewPosting, NewTransaction},
         import_batch,
     },
@@ -150,24 +149,12 @@ pub async fn import(
         }
     }
 
-    // Asserted from the first line the ledger tracks; earlier ones are in its
-    // opening. An assertion already recorded for the same closing day stands:
+    // An assertion already recorded for the same closing day stands:
     // a later download states a wider period for that day, which is the same
     // claim, and the balance chain above has already compared every day.
     let recorded = assertions::load(db).await?;
     for (s, opening) in statements.iter().zip(openings) {
-        let st = s.statement;
-        let Some(first) = st.lines.iter().find(|l| l.book_date > opening) else { continue };
-        let end = st.assert_date();
-        let assertion = BalanceAssertion {
-            account: s.account.clone(),
-            currency: st.currency,
-            source: AssertionSource::Statement,
-            period_start: Some(first.book_date),
-            opening: Some(first.balance - first.delta()),
-            period_end: end.pred_opt().unwrap_or(end),
-            closing: st.closing_balance(),
-        };
+        let Some(assertion) = s.statement.assertion(&s.account, opening) else { continue };
         let same_day = recorded.iter().find(|r| {
             (&r.account, r.currency, r.source, r.period_end)
                 == (&assertion.account, assertion.currency, assertion.source, assertion.period_end)
