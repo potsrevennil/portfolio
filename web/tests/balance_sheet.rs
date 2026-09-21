@@ -279,17 +279,41 @@ async fn every_row_is_one_figure_in_twd() {
     assert_eq!(net.trim(), "淨資產 8,512 TWD （未換算：5,000 JPY） 另有成本 40,000 TWD");
 }
 
+/// Only one site serves at a time. Leptos keeps process-wide state, and
+/// pages rendered at once on separate test runtimes can stall for good; the
+/// server runs one runtime, so it never does. The global at fault is not yet
+/// pinned down (separate reactive arenas did not help), so a second runtime in
+/// the app, e.g. for a batch job, would need the same care.
+static SERVING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The router over the fixture ledger. Tests reach pages only through it, so
+/// every one takes the lock without having to know about it.
+struct Site {
+    router: axum::Router,
+    _serving: tokio::sync::MutexGuard<'static, ()>,
+    _dir: TempDir,
+}
+
+async fn site() -> Site {
+    let serving = SERVING.lock().await;
+    let (dir, pool) = ledger().await;
+    let options = LeptosOptions::builder().output_name("web").build();
+    Site { router: server::router(options, pool, AtCost::default()), _serving: serving, _dir: dir }
+}
+
+impl Site {
+    async fn page(&self, path: &str) -> String {
+        let request = Request::get(path).body(Body::empty()).unwrap();
+        let response = self.router.clone().oneshot(request).await.unwrap();
+        assert!(response.status().is_success(), "{path}: {}", response.status());
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+}
+
 #[tokio::test]
 async fn the_server_renders_the_balance_sheet_route() {
-    let (_dir, pool) = ledger().await;
-    let options = LeptosOptions::builder().output_name("web").build();
-    let response = server::router(options, pool, AtCost::default())
-        .oneshot(Request::get("/balance-sheet").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert!(response.status().is_success(), "{}", response.status());
-    let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec())
-        .unwrap();
+    let html = site().await.page("/balance-sheet").await;
     assert!(html.contains(r#"<html lang="zh-Hant-TW">"#), "{html}");
     assert!(html.contains("資產負債表 · 帳簿"), "{html}");
     let text = visible(&html);
@@ -299,15 +323,7 @@ async fn the_server_renders_the_balance_sheet_route() {
 
 #[tokio::test]
 async fn the_landing_page_summarises() {
-    let (_dir, pool) = ledger().await;
-    let options = LeptosOptions::builder().output_name("web").build();
-    let response = server::router(options, pool, AtCost::default())
-        .oneshot(Request::get("/").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert!(response.status().is_success(), "{}", response.status());
-    let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec())
-        .unwrap();
+    let html = site().await.page("/").await;
     assert!(html.contains("總覽 · 帳簿"), "{html}");
     let text = visible(&html);
     position(&text, "淨資產");
