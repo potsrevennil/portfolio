@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-clap         = { version = "4.5.47", features = ["derive"], optional = true }
-serde        = { version = "1.0.225", features = ["derive"] }
-strum        = "0.26"
-strum_macros = "0.26"
+clap         = { workspace = true, optional = true }
+serde        = { workspace = true }
+strum        = { workspace = true }
+strum_macros = { workspace = true }
 
 [features]
 # The CLI parses currencies from arguments; the browser build has no CLI.
