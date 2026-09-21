@@ -439,9 +439,10 @@ fn chain(statements: &[Statement], openings: &[NaiveDate], planned: &[Planned]) 
             }
         }
         movements.sort_by_key(|(date, _)| *date);
-        // An unfinished last day that adds nothing (a stale partial download
+        // An unsettled last day that adds nothing (a stale partial download
         // re-imported) proves nothing: the ledger may hold the rest of it.
-        let skip = (!s.statement.last_day_complete() && !adds_to_last_day).then_some(last);
+        let unsettled = last > s.statement.settled_through();
+        let skip = (unsettled && !adds_to_last_day).then_some(last);
 
         let mut balance = Decimal::ZERO;
         let mut next = movements.iter().peekable();

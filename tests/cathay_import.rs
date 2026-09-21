@@ -343,6 +343,47 @@ async fn a_partial_download_and_its_replacement_import_together() -> Result<()> 
     Ok(())
 }
 
+/// Downloaded at noon on 2/06 with nothing posted yet that day, then again
+/// that evening after something did. The noon download must not have closed
+/// 2/06.
+#[tokio::test]
+async fn a_download_made_before_anything_posted_that_day_is_completed_later() -> Result<()> {
+    let f = Fixture::new()?;
+    let pool = f.db("noon.db").await?;
+    let noon =
+        f.write("noon.csv", &period("111111111111", Some("2023/02/06"), &SAVINGS_2023[..5]))?;
+    import_files(&pool, &f.chart, &[noon], &[]).await?;
+
+    let afternoon = ("2023/02/06", "消費", "20", "", "80", "", "");
+    let evening = [&SAVINGS_2023[..5], &[afternoon][..]].concat();
+    let evening = f.write("evening.csv", &period("111111111111", Some("2023/02/06"), &evening))?;
+    let report = import_files(&pool, &f.chart, &[evening], &[]).await?;
+    assert_eq!(report.inserted, 1, "{report}");
+    assert!(report.check.ok(), "{report}");
+    Ok(())
+}
+
+/// A 外幣 export states no range, so its last line's day may be the day it
+/// was downloaded: a morning conversion, a download, an afternoon one.
+#[tokio::test]
+async fn a_foreign_download_does_not_close_its_last_day() -> Result<()> {
+    let f = Fixture::new()?;
+    let pool = f.db("fx.db").await?;
+    import_files(&pool, &f.chart, &[f.write("morning.csv", FX_2023_USD)?], &[]).await?;
+
+    let afternoon = FX_2023_USD.replace(
+        "\"交易資訊\"\n",
+        "\"交易資訊\"\n\"2023/02/10\",\"2023/02/10\",\"USD 0.50\",\"−\",\"USD \
+         1.50\",\"−\",\"網銀轉\"\n",
+    );
+    let report = import_files(&pool, &f.chart, &[f.write("later.csv", &afternoon)?], &[]).await?;
+    assert_eq!(report.inserted, 1, "{report}");
+    assert!(report.check.ok(), "{report}");
+    let b = balances(&pool).await?;
+    assert_eq!(bal(&b, "Assets:Cathay:FX", "USD"), dec!(1.50));
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_missing_download_fails_loudly() -> Result<()> {
     let f = Fixture::new()?;
