@@ -439,11 +439,9 @@ fn chain(statements: &[Statement], openings: &[NaiveDate], planned: &[Planned]) 
             }
         }
         movements.sort_by_key(|(date, _)| *date);
-        // The download may have stopped partway through its last day. When it
-        // adds nothing to that day, the ledger may already hold the rest of
-        // it (a stale partial re-imported), so that day proves nothing.
-        let may_be_partial = !s.statement.period_end.is_some_and(|end| end > last);
-        let skip = (may_be_partial && !adds_to_last_day).then_some(last);
+        // An unfinished last day that adds nothing (a stale partial download
+        // re-imported) proves nothing: the ledger may hold the rest of it.
+        let skip = (!s.statement.last_day_complete() && !adds_to_last_day).then_some(last);
 
         let mut balance = Decimal::ZERO;
         let mut next = movements.iter().peekable();

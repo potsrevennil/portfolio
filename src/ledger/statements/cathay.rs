@@ -150,22 +150,34 @@ impl BankStatement {
         }
     }
 
+    /// Whether the download covers its last day in full. A TWD export states
+    /// its range, and when that ends on the last line's day the download may
+    /// have been made partway through it. A 外幣 export states none and runs
+    /// to when it was downloaded, so a later day with no line saw no movement.
+    pub fn last_day_complete(&self) -> bool {
+        let last = self.lines.last().map(|l| l.book_date);
+        match self.period_end {
+            Some(end) => last.is_some_and(|last| end > last),
+            None => true,
+        }
+    }
+
     /// The statement's figures for `account`, over the lines dated after
     /// `after` (the ones before are in the account's opening). `None` when no
     /// line is.
     ///
-    /// A download can stop partway through its final day, so that day is
-    /// asserted only when the export's own period runs past it; otherwise the
-    /// closing is the day before's. Asserting a half day would refuse the next
-    /// download that completes it.
+    /// The last day's closing is asserted only when
+    /// [`Self::last_day_complete`]; otherwise the day before's. Asserting a
+    /// half day would refuse the next download that completes it.
     pub fn assertion(&self, account: &str, after: NaiveDate) -> Option<BalanceAssertion> {
         let from = self.lines.partition_point(|l| l.book_date <= after);
         let first = self.lines.get(from)?;
         let last = self.lines.last().expect("a line follows `first`");
         let before = |i: usize| self.lines[i].balance - self.lines[i].delta();
-        let (end, closing) = match self.period_end {
-            Some(end) if end > last.book_date => (end, last.balance),
-            _ => {
+        let (end, closing) = match (self.last_day_complete(), self.period_end) {
+            (true, Some(end)) => (end, last.balance),
+            (true, None) => (last.book_date, last.balance),
+            (false, _) => {
                 let day = self.lines.partition_point(|l| l.book_date < last.book_date);
                 (last.book_date.pred_opt().expect("a day before a line"), before(day.max(from)))
             }
@@ -174,8 +186,8 @@ impl BankStatement {
         let (period_start, opening, period_end, closing) = if end >= first.book_date {
             (Some(first.book_date), Some(opening), end, closing)
         } else {
-            // Only a possibly partial first day is tracked: vouch for the
-            // balance it started from.
+            // Only an unfinished first day is tracked: vouch for the balance
+            // it started from.
             (None, None, first.book_date.pred_opt().expect("a day before a line"), opening)
         };
         Some(BalanceAssertion {
@@ -821,13 +833,14 @@ mod tests {
         load(write(&dir, "s.csv", &signed(period_end, lines))).expect("loads")
     }
 
-    /// With no period running past it, the last day may be partial, so the
-    /// closing is the day before's.
+    /// A range ending on the last line's day means the download may have been
+    /// made during it, so the closing is the day before's. A range past it, or
+    /// none at all (外幣), covers the day.
     #[test]
-    fn the_last_day_is_asserted_only_when_the_period_covers_it() {
+    fn the_last_day_is_asserted_only_when_the_download_covers_it() {
         let lines = [("2024/03/01", 100, 100), ("2024/03/05", 10, 110), ("2024/03/05", 5, 115)];
         let before = day(1).pred_opt().unwrap();
-        let open = statement_of(None, &lines).assertion("A", before).unwrap();
+        let open = statement_of(Some("2024/03/05"), &lines).assertion("A", before).unwrap();
         assert_eq!((open.period_start, open.opening), (Some(day(1)), Some(dec!(0))));
         assert_eq!((open.period_end, open.closing), (day(4), dec!(100)));
 
@@ -835,13 +848,17 @@ mod tests {
         assert_eq!((covered.period_start, covered.opening), (Some(day(5)), Some(dec!(100))));
         assert_eq!(covered.period_end, NaiveDate::from_ymd_opt(2024, 12, 31).unwrap());
         assert_eq!(covered.closing, dec!(115));
+
+        let rangeless = statement_of(None, &lines).assertion("A", before).unwrap();
+        assert_eq!((rangeless.period_end, rangeless.closing), (day(5), dec!(115)));
     }
 
-    /// Only one tracked day, maybe partial: all that is vouched for is the
+    /// Only one tracked day, unfinished: all that is vouched for is the
     /// balance it started from.
     #[test]
-    fn a_single_open_day_asserts_only_its_opening() {
-        let s = statement_of(None, &[("2024/03/05", 10, 110), ("2024/03/05", 5, 115)]);
+    fn a_single_unfinished_day_asserts_only_its_opening() {
+        let lines = [("2024/03/05", 10, 110), ("2024/03/05", 5, 115)];
+        let s = statement_of(Some("2024/03/05"), &lines);
         let a = s.assertion("A", day(1)).unwrap();
         assert_eq!((a.period_start, a.opening), (None, None));
         assert_eq!((a.period_end, a.closing), (day(4), dec!(100)));

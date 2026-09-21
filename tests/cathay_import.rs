@@ -301,11 +301,11 @@ async fn a_download_starting_mid_day_fails_loudly() -> Result<()> {
     Ok(())
 }
 
-/// A download that stopped partway through 2/05, ending on a balance the full
-/// day doesn't end on. Its half day must not be asserted as the day's close,
-/// or the download that completes the day is refused.
+/// A download made during 2/05, which stops on a balance the full day
+/// doesn't end on. Its half day must not be asserted as the day's close, or
+/// the download that completes the day is refused.
 fn partial(f: &Fixture) -> Result<PathBuf> {
-    f.write("partial.csv", &twd("111111111111", &SAVINGS_2023[..4]))
+    f.write("partial.csv", &period("111111111111", Some("2023/02/05"), &SAVINGS_2023[..4]))
 }
 
 /// The download that re-covers the partial one's days in full.
