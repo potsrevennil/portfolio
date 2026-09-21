@@ -1,5 +1,5 @@
 //! What an importer needs around its transactions: `import_batch` provenance
-//! rows, accounts created on first use, and the postings already on an account.
+//! rows and the postings already on an account.
 
 use std::collections::HashSet;
 
@@ -8,7 +8,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
-use crate::ledger::{load::schema_type, model::OPENING_EQUITY};
+use crate::ledger::model::OPENING_EQUITY;
 
 pub async fn create(db: &mut SqliteConnection, source: &str, file: &str) -> Result<i64> {
     Ok(sqlx::query("INSERT INTO import_batch (source, file) VALUES (?, ?)")
@@ -18,33 +18,6 @@ pub async fn create(db: &mut SqliteConnection, source: &str, file: &str) -> Resu
         .await
         .with_context(|| format!("recording import batch for {file}"))?
         .last_insert_rowid())
-}
-
-/// The account's id, creating it (label = leaf, as load-journal does) if new.
-pub async fn ensure_account(db: &mut SqliteConnection, path: &str) -> Result<i64> {
-    let found: Option<i64> = sqlx::query_scalar("SELECT id FROM accounts WHERE path = ?")
-        .bind(path)
-        .fetch_optional(&mut *db)
-        .await?;
-    match found {
-        Some(id) => Ok(id),
-        None => {
-            let label = path.rsplit(':').next().unwrap_or(path);
-            let id = sqlx::query("INSERT INTO accounts (path, label, type) VALUES (?, ?, ?)")
-                .bind(path)
-                .bind(label)
-                .bind(schema_type(path)?.to_string())
-                .execute(&mut *db)
-                .await
-                .with_context(|| format!("creating account {path}"))?
-                .last_insert_rowid();
-            sqlx::query("INSERT INTO account_events (account_id, event) VALUES (?, 'created')")
-                .bind(id)
-                .execute(&mut *db)
-                .await?;
-            Ok(id)
-        }
-    }
 }
 
 /// One posting already on an account.

@@ -20,7 +20,7 @@ use crate::{
     },
     store::{
         assertions, check,
-        import::{insert_deduped, InsertOutcome, NewPosting, NewTransaction},
+        import::{ensure_account, insert_deduped, InsertOutcome},
         import_batch,
     },
 };
@@ -104,48 +104,25 @@ pub async fn import(
     let Plan { transactions, counts, openings } =
         plan::plan(chart, &statements, &known, candidates)?;
 
+    let inserted = transactions.len();
     let mut batches: BTreeMap<usize, i64> = BTreeMap::new();
-    let mut accounts: BTreeMap<String, i64> = BTreeMap::new();
-    for t in &transactions {
-        let batch = match batches.get(&t.file) {
+    for (file, mut txn) in transactions {
+        let batch = match batches.get(&file) {
             Some(id) => *id,
             None => {
-                let file = files[t.file].display().to_string();
-                let id = import_batch::create(db, SOURCE, &file).await?;
-                batches.insert(t.file, id);
+                let id =
+                    import_batch::create(db, SOURCE, &files[file].display().to_string()).await?;
+                batches.insert(file, id);
                 id
             }
         };
-        let mut postings = Vec::with_capacity(t.postings.len());
-        for p in &t.postings {
-            let account_id = match accounts.get(&p.account) {
-                Some(id) => *id,
-                None => {
-                    let id = import_batch::ensure_account(db, &p.account).await?;
-                    accounts.insert(p.account.clone(), id);
-                    id
-                }
-            };
-            postings.push(NewPosting {
-                account_id,
-                amount: p.amount,
-                currency: p.currency.to_string(),
-                tags: None,
-            });
-        }
-        let txn = NewTransaction {
-            date: t.date,
-            payee: Some(t.payee.clone()),
-            narration: (!t.narration.is_empty()).then(|| t.narration.clone()),
-            source: "import".to_string(),
-            external_ref: Some(t.external_ref.clone()),
-            import_batch_id: Some(batch),
-        };
-        match insert_deduped(db, &txn, &postings).await.context("inserting import")? {
+        txn.import_batch_id = Some(batch);
+        match insert_deduped(db, &txn).await.context("inserting import")? {
             InsertOutcome::Inserted(_) => {}
-            InsertOutcome::Duplicate(_) => {
-                bail!("{} was planned as new but is already held", t.external_ref)
-            }
+            InsertOutcome::Duplicate(_) => bail!(
+                "{} was planned as new but is already held",
+                txn.external_ref.unwrap_or_default()
+            ),
         }
     }
 
@@ -168,10 +145,14 @@ pub async fn import(
                 other.closing
             ),
             Some(_) => continue,
-            None => assertions::insert(db, &assertion).await?,
+            // assertions::insert resolves the account by path.
+            None => {
+                ensure_account(db, &s.account).await?;
+                assertions::insert(db, &assertion).await?
+            }
         }
     }
     let check = check::gate(db).await?;
 
-    Ok(Report { counts, inserted: transactions.len(), batches: batches.len(), check })
+    Ok(Report { counts, inserted, batches: batches.len(), check })
 }

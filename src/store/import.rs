@@ -7,27 +7,35 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use sqlx::{SqliteConnection, SqlitePool};
 
+use crate::{
+    currency::Currency,
+    ledger::{load::schema_type, model::Source},
+};
+
+/// A transaction not yet stored, with its legs.
 #[derive(Clone, Debug)]
-pub struct NewTransaction {
+pub struct Transaction {
     pub date: NaiveDate,
     pub payee: Option<String>,
     pub narration: Option<String>,
-    pub source: String,
+    pub source: Source,
     /// `None` is exempt from dedup (hand-entered rows).
     pub external_ref: Option<String>,
     pub import_batch_id: Option<i64>,
+    pub postings: Vec<Posting>,
 }
 
-#[derive(Clone, Debug)]
-pub struct NewPosting {
-    pub account_id: i64,
+/// A leg, by account path: an account named for the first time is created.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Posting {
+    pub account: String,
     pub amount: Decimal,
-    pub currency: String,
+    pub currency: Currency,
     pub tags: Option<String>,
 }
 
@@ -69,13 +77,9 @@ impl ImportStore {
     /// The conflict is resolved by the insert itself, not a prior lookup, so
     /// two overlapping imports of one statement still yield `Duplicate` rather
     /// than a unique-index error.
-    pub async fn insert_deduped(
-        &self,
-        txn: &NewTransaction,
-        postings: &[NewPosting],
-    ) -> Result<InsertOutcome> {
+    pub async fn insert_deduped(&self, txn: &Transaction) -> Result<InsertOutcome> {
         let mut db = self.pool.begin().await?;
-        let outcome = insert_deduped(&mut db, txn, postings).await?;
+        let outcome = insert_deduped(&mut db, txn).await?;
         db.commit().await?;
         Ok(outcome)
     }
@@ -83,13 +87,10 @@ impl ImportStore {
 
 /// [`ImportStore::insert_deduped`] inside the caller's transaction, so a whole
 /// import commits or rolls back as one.
-pub async fn insert_deduped(
-    db: &mut SqliteConnection,
-    txn: &NewTransaction,
-    postings: &[NewPosting],
-) -> Result<InsertOutcome> {
-    validate_balanced(postings)?;
+pub async fn insert_deduped(db: &mut SqliteConnection, txn: &Transaction) -> Result<InsertOutcome> {
+    validate_balanced(&txn.postings)?;
 
+    let source = txn.source.to_string();
     let inserted = sqlx::query_scalar!(
         r#"
         INSERT INTO transactions (date, payee, narration, source, external_ref, import_batch_id)
@@ -100,7 +101,7 @@ pub async fn insert_deduped(
         txn.date,
         txn.payee,
         txn.narration,
-        txn.source,
+        source,
         txn.external_ref,
         txn.import_batch_id,
     )
@@ -109,17 +110,19 @@ pub async fn insert_deduped(
 
     match inserted {
         Some(txn_id) => {
-            for p in postings {
+            for p in &txn.postings {
+                let account_id = ensure_account(db, &p.account).await?;
                 let amount = p.amount.to_string();
+                let currency = p.currency.to_string();
                 sqlx::query!(
                     r#"
                     INSERT INTO postings (transaction_id, account_id, amount, currency, tags)
                     VALUES (?, ?, ?, ?, ?)
                     "#,
                     txn_id,
-                    p.account_id,
+                    account_id,
                     amount,
-                    p.currency,
+                    currency,
                     p.tags,
                 )
                 .execute(&mut *db)
@@ -130,7 +133,7 @@ pub async fn insert_deduped(
         None => {
             let existing = sqlx::query_scalar!(
                 r#"SELECT id AS "id!" FROM transactions WHERE source = ? AND external_ref = ?"#,
-                txn.source,
+                source,
                 txn.external_ref,
             )
             .fetch_one(&mut *db)
@@ -140,14 +143,41 @@ pub async fn insert_deduped(
     }
 }
 
+/// The account's id, creating it (label = leaf, as load-journal does) if new.
+pub async fn ensure_account(db: &mut SqliteConnection, path: &str) -> Result<i64> {
+    let found: Option<i64> = sqlx::query_scalar("SELECT id FROM accounts WHERE path = ?")
+        .bind(path)
+        .fetch_optional(&mut *db)
+        .await?;
+    match found {
+        Some(id) => Ok(id),
+        None => {
+            let label = path.rsplit(':').next().unwrap_or(path);
+            let id = sqlx::query("INSERT INTO accounts (path, label, type) VALUES (?, ?, ?)")
+                .bind(path)
+                .bind(label)
+                .bind(schema_type(path)?.to_string())
+                .execute(&mut *db)
+                .await
+                .with_context(|| format!("creating account {path}"))?
+                .last_insert_rowid();
+            sqlx::query("INSERT INTO account_events (account_id, event) VALUES (?, 'created')")
+                .bind(id)
+                .execute(&mut *db)
+                .await?;
+            Ok(id)
+        }
+    }
+}
+
 /// Summed with `rust_decimal`, not SQL `SUM`, which would CAST to REAL.
-fn validate_balanced(postings: &[NewPosting]) -> Result<()> {
+fn validate_balanced(postings: &[Posting]) -> Result<()> {
     if postings.is_empty() {
         bail!("transaction has no postings");
     }
-    let mut per_currency: BTreeMap<&str, Decimal> = BTreeMap::new();
+    let mut per_currency: BTreeMap<Currency, Decimal> = BTreeMap::new();
     for p in postings {
-        *per_currency.entry(p.currency.as_str()).or_default() += p.amount;
+        *per_currency.entry(p.currency).or_default() += p.amount;
     }
     let unbalanced: Vec<String> = per_currency
         .iter()
@@ -167,30 +197,36 @@ mod tests {
 
     use super::*;
 
-    fn posting(account_id: i64, amount: Decimal, ccy: &str) -> NewPosting {
-        NewPosting { account_id, amount, currency: ccy.into(), tags: None }
+    fn posting(account: &str, amount: Decimal, currency: Currency) -> Posting {
+        Posting { account: account.into(), amount, currency, tags: None }
     }
 
     #[test]
     fn balanced_single_currency_passes() {
-        let ps = vec![posting(1, dec!(-100), "TWD"), posting(2, dec!(100), "TWD")];
+        let ps = vec![
+            posting("Assets:A1", dec!(-100), Currency::TWD),
+            posting("Assets:A2", dec!(100), Currency::TWD),
+        ];
         assert!(validate_balanced(&ps).is_ok());
     }
 
     #[test]
     fn balanced_per_currency_passes() {
         let ps = vec![
-            posting(1, dec!(-100), "TWD"),
-            posting(2, dec!(100), "TWD"),
-            posting(3, dec!(-5), "USD"),
-            posting(4, dec!(5), "USD"),
+            posting("Assets:A1", dec!(-100), Currency::TWD),
+            posting("Assets:A2", dec!(100), Currency::TWD),
+            posting("Assets:A3", dec!(-5), Currency::USD),
+            posting("Assets:A4", dec!(5), Currency::USD),
         ];
         assert!(validate_balanced(&ps).is_ok());
     }
 
     #[test]
     fn unbalanced_is_rejected() {
-        let ps = vec![posting(1, dec!(-100), "TWD"), posting(2, dec!(99), "TWD")];
+        let ps = vec![
+            posting("Assets:A1", dec!(-100), Currency::TWD),
+            posting("Assets:A2", dec!(99), Currency::TWD),
+        ];
         assert!(validate_balanced(&ps).is_err());
     }
 

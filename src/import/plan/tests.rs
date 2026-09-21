@@ -61,7 +61,7 @@ fn a_new_account_gets_one_opening_before_its_first_line() -> Result<()> {
     let p = run(&st, vec![])?;
     assert_eq!(p.counts.openings, 1);
     assert_eq!(p.openings, vec![day(1)]);
-    assert_eq!(p.transactions[0].postings[0].amount, dec!(500));
+    assert_eq!(p.transactions[0].1.postings[0].amount, dec!(500));
     assert_eq!(p.transactions.len(), 3);
     Ok(())
 }

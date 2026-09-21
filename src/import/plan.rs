@@ -12,13 +12,20 @@ use crate::{
     currency::Currency,
     ledger::{
         accounts::Chart,
-        model::{CONVERSIONS, OPENING_EQUITY},
+        model::{Source, CONVERSIONS, OPENING_EQUITY},
         names::fallback_account,
         statements::cathay::{self, info_names_account, BankStatement},
     },
     matcher::{Engine, Record},
-    store::import_batch::LedgerPosting,
+    store::{
+        import::{Posting, Transaction},
+        import_batch::LedgerPosting,
+    },
 };
+
+fn leg(account: impl Into<String>, amount: Decimal, currency: Currency) -> Posting {
+    Posting { account: account.into(), amount, currency, tags: None }
+}
 
 /// One merged statement and where it lands.
 pub struct Statement<'a> {
@@ -40,23 +47,6 @@ pub struct Candidate {
     pub account: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Posting {
-    pub account: String,
-    pub amount: Decimal,
-    pub currency: Currency,
-}
-
-#[derive(Debug)]
-pub struct Planned {
-    pub date: NaiveDate,
-    pub payee: String,
-    pub narration: String,
-    pub external_ref: String,
-    pub file: usize,
-    pub postings: Vec<Posting>,
-}
-
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     /// Folded into the account's opening.
@@ -73,7 +63,9 @@ pub struct Counts {
 
 #[derive(Debug, Default)]
 pub struct Plan {
-    pub transactions: Vec<Planned>,
+    /// Each with the index of the file it came from; its batch is assigned at
+    /// insert.
+    pub transactions: Vec<(usize, Transaction)>,
     pub counts: Counts,
     /// Each statement's opening date; the ledger tracks its lines after it.
     pub openings: Vec<NaiveDate>,
@@ -119,25 +111,18 @@ pub fn plan(
         let opening = match (opening_dates.as_slice(), s.existing.is_empty()) {
             ([], true) => {
                 let date = first.book_date.pred_opt().unwrap_or(first.book_date);
-                plan.transactions.push(Planned {
+                plan.transactions.push((s.files[0], Transaction {
                     date,
-                    payee: "Opening balance".to_string(),
-                    narration: st.account_kind.clone(),
-                    external_ref: cathay::opening_ref(&s.account, st.currency),
-                    file: s.files[0],
+                    payee: Some("Opening balance".to_string()),
+                    narration: Some(st.account_kind.clone()),
+                    source: Source::Import,
+                    external_ref: Some(cathay::opening_ref(&s.account, st.currency)),
+                    import_batch_id: None,
                     postings: vec![
-                        Posting {
-                            account: s.account.clone(),
-                            amount: st.opening_balance(),
-                            currency: st.currency,
-                        },
-                        Posting {
-                            account: OPENING_EQUITY.to_string(),
-                            amount: -st.opening_balance(),
-                            currency: st.currency,
-                        },
+                        leg(&s.account, st.opening_balance(), st.currency),
+                        leg(OPENING_EQUITY, -st.opening_balance(), st.currency),
                     ],
-                });
+                }));
                 plan.counts.openings += 1;
                 date
             }
@@ -322,70 +307,42 @@ pub fn plan(
         let s = &statements[si];
         let l = line(at);
         let currency = s.statement.currency;
-        let own = Posting { account: s.account.clone(), amount: l.delta(), currency };
+        let own = leg(&s.account, l.delta(), currency);
         let postings = match &shape[&at] {
             Shape::Absorbed => continue,
             Shape::Reversal(r) => {
-                vec![own, Posting {
-                    account: s.account.clone(),
-                    amount: s.statement.lines[*r].delta(),
-                    currency,
-                }]
+                vec![own, leg(&s.account, s.statement.lines[*r].delta(), currency)]
             }
             Shape::Transfer(other) => {
                 let far = &statements[other.0];
                 let far_amount = line(*other).delta();
-                let mut ps = vec![own, Posting {
-                    account: far.account.clone(),
-                    amount: far_amount,
-                    currency: far.statement.currency,
-                }];
+                let mut ps = vec![own, leg(&far.account, far_amount, far.statement.currency)];
                 if far.statement.currency != currency {
-                    ps.push(Posting {
-                        account: CONVERSIONS.to_string(),
-                        amount: -l.delta(),
-                        currency,
-                    });
-                    ps.push(Posting {
-                        account: CONVERSIONS.to_string(),
-                        amount: -far_amount,
-                        currency: far.statement.currency,
-                    });
+                    ps.push(leg(CONVERSIONS, -l.delta(), currency));
+                    ps.push(leg(CONVERSIONS, -far_amount, far.statement.currency));
                 }
                 ps
             }
-            Shape::InTransit => vec![own, Posting {
-                account: chart.institution.clearing.to_string(),
-                amount: -l.delta(),
-                currency,
-            }],
+            Shape::InTransit => {
+                vec![own, leg(&*chart.institution.clearing, -l.delta(), currency)]
+            }
             Shape::Matched(consumed) => {
                 plan.counts.matched += 1;
                 let mut ps = vec![own];
                 for (ci, amount) in consumed {
-                    ps.push(Posting {
-                        account: candidates[*ci].account.clone(),
-                        amount: -*amount,
-                        currency,
-                    });
+                    ps.push(leg(&candidates[*ci].account, -*amount, currency));
                 }
                 let residual: Decimal = ps.iter().map(|p| p.amount).sum();
                 if !residual.is_zero() {
-                    ps.push(Posting {
-                        account: fallback_account(chart, &l.description, residual).to_string(),
-                        amount: -residual,
-                        currency,
-                    });
+                    let fallback = fallback_account(chart, &l.description, residual);
+                    ps.push(leg(&**fallback, -residual, currency));
                 }
                 ps
             }
             Shape::Fallback => {
                 plan.counts.uncategorised += 1;
-                vec![own, Posting {
-                    account: fallback_account(chart, &l.description, l.delta()).to_string(),
-                    amount: -l.delta(),
-                    currency,
-                }]
+                let fallback = fallback_account(chart, &l.description, l.delta());
+                vec![own, leg(&**fallback, -l.delta(), currency)]
             }
         };
         let payee = match &shape[&at] {
@@ -397,14 +354,15 @@ pub fn plan(
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
-        plan.transactions.push(Planned {
+        plan.transactions.push((s.files[li], Transaction {
             date: l.book_date,
-            payee,
-            narration,
-            external_ref: refs[si][li].clone(),
-            file: s.files[li],
+            payee: Some(payee),
+            narration: (!narration.is_empty()).then_some(narration),
+            source: Source::Import,
+            external_ref: Some(refs[si][li].clone()),
+            import_batch_id: None,
             postings,
-        });
+        }));
     }
 
     chain(statements, &openings, &plan.transactions)?;
@@ -419,7 +377,11 @@ pub fn plan(
 /// mid-day numbers its repeats from the wrong line, so a line is taken for one
 /// already held (or the reverse) and the day ends off by that amount. A missing
 /// or unevenly overlapping download shows up the same way.
-fn chain(statements: &[Statement], openings: &[NaiveDate], planned: &[Planned]) -> Result<()> {
+fn chain(
+    statements: &[Statement],
+    openings: &[NaiveDate],
+    planned: &[(usize, Transaction)],
+) -> Result<()> {
     for (s, &opening) in statements.iter().zip(openings) {
         let currency = s.statement.currency;
         let mut expected: BTreeMap<NaiveDate, Decimal> = BTreeMap::new();
@@ -430,7 +392,7 @@ fn chain(statements: &[Statement], openings: &[NaiveDate], planned: &[Planned]) 
             s.existing.iter().map(|p| (p.date, p.amount)).collect();
         let last = s.statement.lines.last().expect("load rejects empty statements").book_date;
         let mut adds_to_last_day = false;
-        for t in planned {
+        for (_, t) in planned {
             for p in &t.postings {
                 if p.account == s.account && p.currency == currency {
                     movements.push((t.date, p.amount));
