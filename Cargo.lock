@@ -2486,6 +2486,7 @@ dependencies = [
  "gxhash",
  "log",
  "portfolio",
+ "portfolio-types",
  "regex",
  "rust_decimal",
  "rust_decimal_macros",
@@ -2500,6 +2501,16 @@ dependencies = [
  "toml 0.8.23",
  "unicode-width 0.1.14",
  "yfinance-rs",
+]
+
+[[package]]
+name = "portfolio-types"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "strum",
+ "strum_macros",
 ]
 
 [[package]]
@@ -4642,6 +4653,7 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "portfolio",
+ "portfolio-types",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",

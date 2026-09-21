@@ -154,7 +154,7 @@ pub fn build(
 
     BalanceSheet {
         as_of: as_of.to_string(),
-        base: base.to_string(),
+        base,
         sections,
         net_worth: convert(&net),
         excluded: left_out(convert(&net_cost)),
@@ -182,5 +182,5 @@ fn amounts(sums: &BTreeMap<Currency, Decimal>, base: Currency) -> Vec<Money> {
 /// The base currency is quoted whole (as Fava prints TWD); the rest to two.
 fn money(amount: Decimal, currency: Currency, base: Currency) -> Money {
     let decimals = if currency == base { 0 } else { 2 };
-    Money { amount, currency: currency.to_string(), decimals }
+    Money { amount, currency, decimals }
 }

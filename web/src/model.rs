@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+use portfolio_types::Currency;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Money {
     pub amount: Decimal,
-    pub currency: String,
+    pub currency: Currency,
     pub decimals: u32,
 }
 
@@ -115,7 +116,7 @@ pub struct Section {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceSheet {
     pub as_of: String,
-    pub base: String,
+    pub base: Currency,
     pub sections: Vec<Section>,
     pub net_worth: Converted,
     /// The at-cost holdings net worth leaves out.
@@ -128,21 +129,21 @@ mod tests {
 
     use super::*;
 
-    fn money(amount: Decimal, currency: &str, decimals: u32) -> Money {
-        Money { amount, currency: currency.into(), decimals }
+    fn money(amount: Decimal, currency: Currency, decimals: u32) -> Money {
+        Money { amount, currency, decimals }
     }
 
     #[test]
     fn amounts_print_like_fava() {
-        assert_eq!(money(dec!(1234567.891), "USD", 2).to_string(), "1,234,567.89 USD");
-        assert_eq!(money(dec!(12.50), "USD", 2).to_string(), "12.5 USD");
-        assert_eq!(money(dec!(-1000), "TWD", 0).to_string(), "-1,000 TWD");
+        assert_eq!(money(dec!(1234567.891), Currency::USD, 2).to_string(), "1,234,567.89 USD");
+        assert_eq!(money(dec!(12.50), Currency::USD, 2).to_string(), "12.5 USD");
+        assert_eq!(money(dec!(-1000), Currency::TWD, 0).to_string(), "-1,000 TWD");
         // The base currency is quoted whole; the stored amount keeps its cents.
-        assert_eq!(money(dec!(295.26), "TWD", 0).to_string(), "295 TWD");
-        assert_eq!(money(dec!(838.5), "TWD", 0).to_string(), "839 TWD");
-        assert_eq!(money(dec!(-14670.5), "TWD", 0).to_string(), "-14,671 TWD");
+        assert_eq!(money(dec!(295.26), Currency::TWD, 0).to_string(), "295 TWD");
+        assert_eq!(money(dec!(838.5), Currency::TWD, 0).to_string(), "839 TWD");
+        assert_eq!(money(dec!(-14670.5), Currency::TWD, 0).to_string(), "-14,671 TWD");
         // Rounding to nothing is not a negative amount.
-        let dust = money(dec!(-0.001), "TWD", 0);
+        let dust = money(dec!(-0.001), Currency::TWD, 0);
         assert_eq!(dust.to_string(), "0 TWD");
         assert!(!dust.is_negative());
     }
@@ -150,7 +151,8 @@ mod tests {
     #[test]
     fn unpriced_amounts_render_only_when_there_are_some() {
         assert_eq!(Unpriced::default().to_string(), "");
-        let unpriced = Unpriced(vec![money(dec!(5000), "JPY", 2), money(dec!(-2), "VND", 2)]);
+        let unpriced =
+            Unpriced(vec![money(dec!(5000), Currency::JPY, 2), money(dec!(-2), Currency::VND, 2)]);
         assert_eq!(unpriced.to_string(), "（未換算：5,000 JPY、-2 VND）");
     }
 }
