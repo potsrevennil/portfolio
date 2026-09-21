@@ -242,35 +242,32 @@ async fn groups_fold_in_chart_order() {
 }
 
 #[tokio::test]
-async fn totals_are_per_currency_and_converted() {
+async fn every_row_is_one_figure_in_twd() {
     let (_dir, pool) = ledger().await;
     let text = visible(&render(&pool).await);
-    // 外幣 holds two currencies on one row; JPY has no rate and is named, not
-    // converted at 1:1.
+    // 資產: 912.34 cash + 7,000 savings + 3,000 (100 USD) + 100 splits; JPY has
+    // no rate, so it is named rather than taken at 1:1, and the at-cost holding
+    // and the 2025 deposit are left out.
+    let assets = &text[position(&text, "資產")..position(&text, "銀行")];
+    assert_eq!(assets.trim(), "資產 11,012 TWD （未換算：5,000 JPY） 另有成本 40,000 TWD");
+    // A leaf holding foreign money keeps its own balance, the statement's figure.
     let fx = &text[position(&text, "外幣")..position(&text, "活存")];
-    assert_eq!(fx.trim(), "外幣 5,000 JPY 100 USD ≈ 3,000 TWD （未換算：JPY）");
+    assert_eq!(fx.trim(), "外幣 3,000 TWD （未換算：5,000 JPY） 5,000 JPY · 100 USD");
     let savings = &text[position(&text, "活存")..position(&text, "現金")];
     assert_eq!(savings.trim(), "活存 7,000 TWD");
-    // 資產: 1,000 − 100 cash + 47,000 + 3,000 (USD) + 300 − 200 splits; the
-    // 2025 deposit is after the date.
-    let assets = &text[position(&text, "資產")..position(&text, "銀行")];
-    assert!(assets.contains("5,000 JPY 8,012 TWD 100 USD ≈ 11,012 TWD"), "{assets}");
     // TWD is quoted whole, as Fava prints it; the cents are still in the ledger.
     let cash = &text[position(&text, "現金")..position(&text, "分帳")];
     assert_eq!(cash.trim(), "現金 912 TWD");
-    // The at-cost holding is named apart from the total, not added to it.
-    assert!(assets.contains("另有成本 40,000 TWD"), "{assets}");
-    let unlisted = &text[position(&text, "未上市持股")..position(&text, "負債")];
-    assert!(unlisted.contains("40,000 TWD 成本，未計入總額"), "{unlisted}");
     let split = &text[position(&text, "分帳")..position(&text, "甲公司")];
     assert_eq!(split.trim(), "分帳 100 TWD");
     let alpha = &text[position(&text, "甲公司")..position(&text, "乙公司")];
     assert_eq!(alpha.trim(), "甲公司 300 TWD 分帳 300 TWD");
-    // A section holding only the base currency needs no converted line.
+    let unlisted = &text[position(&text, "未上市持股")..position(&text, "負債")];
+    assert!(unlisted.contains("40,000 TWD 成本，未計入總額"), "{unlisted}");
     let liabilities = &text[position(&text, "負債")..position(&text, "信用卡")];
     assert_eq!(liabilities.trim(), "負債 -2,500 TWD");
     let net = &text[position(&text, "淨資產")..];
-    assert!(net.starts_with("淨資產 8,512 TWD （未換算：JPY） 另有成本 40,000 TWD"), "{net}");
+    assert_eq!(net.trim(), "淨資產 8,512 TWD （未換算：5,000 JPY） 另有成本 40,000 TWD");
 }
 
 #[tokio::test]

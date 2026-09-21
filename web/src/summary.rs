@@ -28,7 +28,7 @@ pub fn SummaryPage() -> impl IntoView {
 #[component]
 pub fn SummaryView(sheet: BalanceSheet) -> impl IntoView {
     let sections: Vec<(String, Converted)> =
-        sheet.sections.into_iter().map(|s| (s.label, s.converted.unwrap_or(s.total))).collect();
+        sheet.sections.into_iter().map(|s| (s.label, s.total)).collect();
     view! {
         <div class="summary">
             <p class="as-of">{sheet.as_of}</p>

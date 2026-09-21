@@ -54,22 +54,28 @@ impl fmt::Display for Money {
     }
 }
 
-/// Currencies left out of a converted total for want of a rate. Renders as
+/// Amounts left out of a converted total for want of a rate. Renders as
 /// nothing when there are none, so a caller can always print it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Unpriced(pub Vec<String>);
+pub struct Unpriced(pub Vec<Money>);
 
 impl fmt::Display for Unpriced {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0.is_empty() {
-            true => Ok(()),
-            false => write!(f, "（未換算：{}）", self.0.join("、")),
+        match self.0.split_first() {
+            None => Ok(()),
+            Some((first, rest)) => {
+                write!(f, "（未換算：{first}")?;
+                for money in rest {
+                    write!(f, "、{money}")?;
+                }
+                f.write_str("）")
+            }
         }
     }
 }
 
-/// A sum converted into the base currency. A currency with no rate is named
-/// rather than converted at 1:1.
+/// A sum in the base currency. An amount with no rate is named rather than
+/// converted at 1:1.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Converted {
     pub money: Money,
@@ -82,10 +88,10 @@ pub struct Node {
     /// Identifies the node (fold state); never shown.
     pub path: String,
     pub label: String,
-    /// One per currency held, nonzero only.
-    pub amounts: Vec<Money>,
-    /// Only when a currency other than the base is held.
-    pub converted: Option<Converted>,
+    pub total: Converted,
+    /// The account's own balance per currency, when it holds any currency
+    /// other than the base: the figure its statement shows. Empty on groups.
+    pub native: Vec<Money>,
     /// A cost, not a valuation: shown, but left out of every total above it.
     pub at_cost: bool,
     pub children: Vec<Node>,
@@ -97,10 +103,6 @@ pub struct Section {
     /// The root path, identifying the section's fold state; never shown.
     pub path: String,
     pub label: String,
-    pub amounts: Vec<Money>,
-    /// Only when a currency other than the base is held, as on a row.
-    pub converted: Option<Converted>,
-    /// The section's own total, which the summary shows.
     pub total: Converted,
     /// The at-cost holdings this section's total leaves out.
     pub excluded: Option<Converted>,
@@ -143,8 +145,9 @@ mod tests {
     }
 
     #[test]
-    fn unpriced_currencies_render_only_when_there_are_some() {
+    fn unpriced_amounts_render_only_when_there_are_some() {
         assert_eq!(Unpriced::default().to_string(), "");
-        assert_eq!(Unpriced(vec!["JPY".into(), "VND".into()]).to_string(), "（未換算：JPY、VND）");
+        let unpriced = Unpriced(vec![money(dec!(5000), "JPY", 2), money(dec!(-2), "VND", 2)]);
+        assert_eq!(unpriced.to_string(), "（未換算：5,000 JPY、-2 VND）");
     }
 }

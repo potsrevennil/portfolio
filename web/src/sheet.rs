@@ -64,10 +64,10 @@ pub fn build(
     let convert = |sums: &BTreeMap<Currency, Decimal>| -> Converted {
         let mut total = Decimal::ZERO;
         let mut unpriced = Vec::new();
-        for (&currency, &amount) in sums {
+        for (&currency, &amount) in sums.iter().filter(|(_, v)| !v.is_zero()) {
             match rate(currency) {
                 Some(r) => total += amount * r,
-                None => unpriced.push(currency.to_string()),
+                None => unpriced.push(money(amount, currency, base)),
             }
         }
         Converted { money: money(total, base, base), unpriced: Unpriced(unpriced) }
@@ -113,8 +113,11 @@ pub fn build(
             .into_iter()
             .map(|(path, tree)| Node {
                 label: label(&path),
-                amounts: amounts(&tree.sums, base),
-                converted: foreign(&tree.sums).then(|| convert(&tree.sums)),
+                total: convert(&tree.sums),
+                native: match tree.children.is_empty() && foreign(&tree.sums) {
+                    true => amounts(&tree.sums, base),
+                    false => Vec::new(),
+                },
                 at_cost: at_cost.covers(&path),
                 children: nodes(tree.children, label, convert, foreign, at_cost, base),
                 path,
@@ -139,8 +142,6 @@ pub fn build(
             Section {
                 path: root.to_string(),
                 label: if own == *root { fallback.to_string() } else { own },
-                amounts: amounts(&tree.sums, base),
-                converted: foreign(&tree.sums).then(|| convert(&tree.sums)),
                 total: convert(&tree.sums),
                 excluded: (!excluded.is_empty()).then(|| convert(&excluded)),
                 nodes: nodes(tree.children, &label, &convert, &foreign, at_cost, base),

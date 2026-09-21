@@ -91,11 +91,7 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
                             <summary class="row section">
                                 <span class="marker" aria-hidden="true"></span>
                                 <span class="name">{s.label}</span>
-                                <Figures
-                                    amounts=s.amounts
-                                    converted=s.converted
-                                    excluded=s.excluded
-                                />
+                                <Figures total=s.total excluded=s.excluded />
                             </summary>
                             {s.nodes.into_iter().map(|n| node(n, 0, open)).collect_view()}
                         </details>
@@ -106,9 +102,7 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
             <div class="row net">
                 <span class="name">"淨資產"</span>
                 <span class="figures">
-                    <span class="amounts">
-                        <MoneyText money=sheet.net_worth.money />
-                    </span>
+                    <MoneyText money=sheet.net_worth.money />
                     <UnpricedNote unpriced=sheet.net_worth.unpriced />
                     <Excluded excluded=sheet.excluded />
                 </span>
@@ -135,11 +129,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         view! {
             <span class="marker" aria-hidden="true"></span>
             <span class="name">{n.label.clone()}</span>
-            <Figures
-                amounts=n.amounts.clone()
-                converted=n.converted.clone()
-                at_cost=n.at_cost
-            />
+            <Figures total=n.total.clone() native=n.native.clone() at_cost=n.at_cost />
         }
     };
     if n.children.is_empty() {
@@ -177,10 +167,13 @@ fn on_toggle(path: String, open: RwSignal<BTreeSet<String>>) -> impl Fn(leptos::
     }
 }
 
+/// One figure in the base currency, whatever the row holds.
 #[component]
 fn Figures(
-    amounts: Vec<Money>,
-    converted: Option<Converted>,
+    total: Converted,
+    /// A foreign leaf's own balance, the figure its statement shows.
+    #[prop(default = Vec::new())]
+    native: Vec<Money>,
     /// A cost rather than a valuation, so it is labelled as one.
     #[prop(default = false)]
     at_cost: bool,
@@ -188,23 +181,15 @@ fn Figures(
     #[prop(default = None)]
     excluded: Option<Converted>,
 ) -> impl IntoView {
-    // A group whose currencies all net to zero still has a row to fill, and no
-    // currency to name it in — as Fava prints it.
-    let zero = amounts.is_empty().then(|| view! { <span class="money">"0"</span> });
+    let native = (!native.is_empty()).then(|| {
+        let text = native.iter().map(ToString::to_string).collect::<Vec<_>>().join(" · ");
+        view! { <span class="native">{text}</span> }
+    });
     view! {
         <span class="figures">
-            <span class="amounts">
-                {zero}
-                {amounts.into_iter().map(|money| view! { <MoneyText money /> }).collect_view()}
-            </span>
-            {converted
-                .map(|c| {
-                    view! {
-                        <span class="converted">
-                            "≈ " <MoneyText money=c.money /> <UnpricedNote unpriced=c.unpriced />
-                        </span>
-                    }
-                })}
+            <MoneyText money=total.money />
+            <UnpricedNote unpriced=total.unpriced />
+            {native}
             {at_cost.then(|| view! { <span class="at-cost">"成本，未計入總額"</span> })}
             <Excluded excluded=excluded />
         </span>
