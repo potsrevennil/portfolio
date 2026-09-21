@@ -242,8 +242,12 @@ async fn a_frozen_ledger_holds_every_line() -> Result<()> {
     })?;
     assert!(frozen.ok(), "{frozen}");
     let url = format!("sqlite:{}", f.dir.path().join("frozen.db").display());
-    load::run(&load::Args { journal: f.dir.path().join("journal.csv"), database_url: url.clone() })
-        .await?;
+    load::run(&load::Args {
+        journal: f.dir.path().join("journal.csv"),
+        database_url: url.clone(),
+        mapping: f.dir.path().join("mapping.toml"),
+    })
+    .await?;
     let pool = portfolio::init_db(&url).await?;
     let before = count(&pool, "SELECT count(*) FROM transactions").await?;
 
