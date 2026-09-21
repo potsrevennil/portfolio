@@ -13,27 +13,14 @@
 //! [`standalone_labels`](crate::store::chart::standalone_labels).
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
 };
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
 
-use super::accounts::Mapping;
-
-#[derive(Debug, Default, Deserialize)]
-struct Sections {
-    #[serde(default)]
-    expenses: HashMap<String, Mapping>,
-    #[serde(default)]
-    income: HashMap<String, Mapping>,
-    #[serde(default)]
-    accounts: HashMap<String, Mapping>,
-    #[serde(default)]
-    display: BTreeMap<String, String>,
-}
+use super::accounts::Chart;
 
 #[derive(Debug, Default)]
 pub struct Labels {
@@ -52,21 +39,10 @@ impl Labels {
         Self::parse(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
+    /// Unvalidated: labels only need the categories and `[display]`.
     pub fn parse(text: &str) -> Result<Self> {
-        let sections: Sections = toml::from_str(text)?;
-        let mut labels = Self { explicit: sections.display, ..Self::default() };
-        let categories = [sections.expenses, sections.income, sections.accounts];
-        for (name, mapping) in categories.iter().flatten() {
-            let account = mapping.account.to_string();
-            if account.is_empty() {
-                continue;
-            }
-            labels.derived.entry(account.clone()).or_default().insert(name.clone());
-            if mapping.tags.is_empty() {
-                labels.plain.entry(account).or_default().insert(name.clone());
-            }
-        }
-        Ok(labels)
+        let chart: Chart = toml::from_str(text)?;
+        Ok(Self::from(&chart))
     }
 
     pub fn label(&self, account: &str) -> String {
@@ -80,6 +56,24 @@ impl Labels {
             .or_else(|| single(self.derived.get(account)))
             .or_else(|| single(self.plain.get(account)))
             .unwrap_or_else(|| leaf(account).to_string())
+    }
+}
+
+impl From<&Chart> for Labels {
+    fn from(chart: &Chart) -> Self {
+        let mut labels = Self { explicit: chart.display.clone(), ..Self::default() };
+        let categories = [&chart.expenses, &chart.income, &chart.accounts];
+        for (name, mapping) in categories.into_iter().flatten() {
+            let account = mapping.account.to_string();
+            if account.is_empty() {
+                continue;
+            }
+            labels.derived.entry(account.clone()).or_default().insert(name.clone());
+            if mapping.tags.is_empty() {
+                labels.plain.entry(account).or_default().insert(name.clone());
+            }
+        }
+        labels
     }
 }
 
