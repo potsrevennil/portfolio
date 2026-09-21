@@ -85,17 +85,16 @@ pub fn build(
     for b in shown {
         let Some(root) = b.path.split(':').next() else { continue };
         let Some(mut node) = roots.get_mut(root) else { continue };
+        let counted = query::in_net_worth(b, at_cost);
+        match counted {
+            true => *node.sums.entry(b.currency).or_default() += b.amount,
+            false => *cost.entry(root).or_default().entry(b.currency).or_default() += b.amount,
+        }
         let depths = b.path.split(':').count();
         let from = (1..=depths).find(|d| at_cost.covers(node_path(&b.path, *d)));
-        if from.is_some() {
-            *cost.entry(root).or_default().entry(b.currency).or_default() += b.amount;
-        }
-        if from.is_none() {
-            *node.sums.entry(b.currency).or_default() += b.amount;
-        }
         for depth in 2..=depths {
             node = node.children.entry(node_path(&b.path, depth).to_string()).or_default();
-            if from.is_none_or(|first| depth >= first) {
+            if counted || from.is_some_and(|first| depth >= first) {
                 *node.sums.entry(b.currency).or_default() += b.amount;
             }
         }

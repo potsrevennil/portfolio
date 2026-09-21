@@ -13,7 +13,8 @@
 //! therefore the plain signed sum of its postings; net worth is
 //! `assets + liabilities` (liabilities already carry their own negative sign),
 //! and equity — including the cross-currency `Equity:Conversions` plug the bake
-//! inserts in place of an `@@` price — is deliberately excluded.
+//! inserts in place of an `@@` price — is deliberately excluded. So are
+//! holdings carried at cost ([`AtCost`]); [`in_net_worth`] is the one rule.
 //!
 //! Amounts are stored as exact `TEXT` decimals; they are summed here with
 //! `rust_decimal`, never with SQL `SUM` over a lossy `CAST` to `REAL`.
@@ -32,6 +33,7 @@ use strum_macros::{Display, EnumIter, EnumString};
 
 use crate::{
     currency::Currency,
+    ledger::valuation::AtCost,
     portfolio::{holding::Holding, statement::Statement, Portfolio},
     prices::{source::YFinanceSource, StockPrice, StockPriceStore},
 };
@@ -337,18 +339,18 @@ impl LedgerData {
         out
     }
 
-    /// Net worth as of a date: asset and liability balances converted into
-    /// `base` at the rate in effect on that date. Equity, income and expense
-    /// accounts are excluded, so the `Equity:Conversions` plug never counts.
+    /// Net worth as of a date: the balances [`in_net_worth`] counts, converted
+    /// into `base` at the rate in effect on that date.
     pub fn net_worth_as_of(
         &self,
         base: Currency,
+        at_cost: &AtCost,
         as_of: NaiveDate,
         prices: &PriceTable,
     ) -> Result<NetWorthPoint> {
         let mut assets = Decimal::ZERO;
         let mut liabilities = Decimal::ZERO;
-        for b in self.balances_as_of(as_of) {
+        for b in self.balances_as_of(as_of).into_iter().filter(|b| in_net_worth(b, at_cost)) {
             // Only the arms that count are converted, so a currency seen solely
             // on an excluded account needs no rate.
             let convert = || convert_as_of(b.amount, b.currency, base, as_of, prices);
@@ -426,6 +428,7 @@ pub async fn account_balances(pool: &SqlitePool, as_of: NaiveDate) -> Result<Vec
 pub async fn net_worth_over_time(
     pool: &SqlitePool,
     base: Currency,
+    at_cost: &AtCost,
     start: NaiveDate,
     end: NaiveDate,
     grain: Grain,
@@ -434,7 +437,7 @@ pub async fn net_worth_over_time(
     let prices = load_fx_prices(pool, &data.currencies(), base, end).await?;
     let points = generate_periods(start, end, grain)
         .into_iter()
-        .map(|(_, period_end)| data.net_worth_as_of(base, period_end.min(end), &prices))
+        .map(|(_, period_end)| data.net_worth_as_of(base, at_cost, period_end.min(end), &prices))
         .collect::<Result<_>>()?;
     Ok(NetWorthSeries { base, grain, points })
 }
@@ -634,6 +637,13 @@ fn ticker_rate(
             }
         })
         .and_then(|quote| Decimal::from_f64(quote.close_price))
+}
+
+/// True when a balance adds to net worth: an asset or liability not carried
+/// at cost. Equity is out, so the `Equity:Conversions` plug never counts.
+pub fn in_net_worth(b: &AccountBalance, at_cost: &AtCost) -> bool {
+    matches!(b.account_type, AccountType::Asset | AccountType::Liability)
+        && !at_cost.covers(&b.path)
 }
 
 /// True when `path` is `root` or lies under it — the subtree a Beancount
