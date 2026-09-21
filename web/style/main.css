@@ -70,11 +70,12 @@ main {
 .columns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
-  column-gap: 2.5rem;
+  gap: 0.6rem 2.5rem;
   align-items: start;
 }
 
-.columns > details:first-child > summary.row.section {
+/* The row gap spaces stacked sections, so side by side they share one top. */
+.columns > details > summary.row.section {
   margin-top: 0;
 }
 
