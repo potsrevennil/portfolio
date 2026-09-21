@@ -44,6 +44,7 @@ expense = "Expenses:Uncategorized"
 "現金"     = "Assets:Cash"
 "美金"     = "Assets:USD-Wallet"
 "卡"       = "Liabilities:Card"
+"券商"     = "Assets:Broker"
 "起鼓"     = "Equity:Opening-Balances"
 
 [overrides]

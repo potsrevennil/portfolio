@@ -19,6 +19,9 @@ clearing               = "Assets:Cathay:Clearing"
 [fallback]
 income  = "Income:Uncategorized"
 expense = "Expenses:Uncategorized"
+
+[accounts]
+"券商" = "Assets:Broker"
 "#;
 
 /// A savings statement whose last running balance is `closing`; 4900 is what

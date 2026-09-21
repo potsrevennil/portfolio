@@ -357,6 +357,8 @@ clearing               = "Assets:Cathay:Clearing"
 [fallback]
 income  = "Income:Uncategorized"
 expense = "Expenses:Uncategorized"
+[accounts]
+"券商" = "Assets:Broker"
 "#;
     // Newest-first (load reverses it): the 錯誤更正 (negative withdrawal) undoes
     // the same-day, same-counterparty 電子轉出 debit above it.

@@ -33,8 +33,15 @@ use crate::{
 /// Where the securities backfill lands. Every posting under it is tagged
 /// [`journal::PLACEHOLDER_TAG`] so T11 can replace it rather than add to it;
 /// read from the chart so renaming the account cannot silently drop the tag.
-fn placeholder_root(chart: &Chart) -> Option<&str> {
-    chart.account(&chart.institution.settlement_app_account).map(|m| &*m.account)
+fn placeholder_root(chart: &Chart) -> Result<&str> {
+    let name = &chart.institution.settlement_app_account;
+    match chart.account(name) {
+        Some(mapping) => Ok(&mapping.account),
+        None => bail!(
+            "institution.settlement_app_account is {name:?}, which [accounts] does not map; \
+             without it the securities backfill cannot be tagged {PLACEHOLDER_TAG}"
+        ),
+    }
 }
 
 #[derive(clap::Parser, Debug)]
@@ -56,10 +63,6 @@ struct PostingRow {
     tags: Option<String>,
 }
 
-fn is_placeholder(path: &str, root: Option<&str>) -> bool {
-    root.is_some_and(|root| in_subtree(path, root))
-}
-
 /// Fills an inferred leg and balances the transaction, plugging a genuine
 /// cross-currency transfer through `Equity:Conversions`. A single-currency
 /// transaction that does not net to zero is a real error and stops the freeze.
@@ -71,7 +74,7 @@ fn balance_postings(
     postings: &[Posting],
     date: NaiveDate,
     tags: &Option<String>,
-    placeholder_root: Option<&str>,
+    placeholder_root: &str,
 ) -> Result<Vec<PostingRow>> {
     let inferred = postings.iter().filter(|p| p.amount.is_none()).count();
     if inferred > 1 {
@@ -98,7 +101,7 @@ fn balance_postings(
         };
         *residual.entry(currency).or_default() += amount;
         let placeholder =
-            is_placeholder(&p.account, placeholder_root).then(|| PLACEHOLDER_TAG.to_string());
+            in_subtree(&p.account, placeholder_root).then(|| PLACEHOLDER_TAG.to_string());
         rows.push(PostingRow {
             account: p.account.clone(),
             amount,
@@ -145,7 +148,7 @@ fn merge_tags(txn_tags: &Option<String>, extra: Option<String>) -> Option<String
 fn reconcile(
     model: &model::Model,
     manual: &[model::Transaction],
-    placeholder_root: Option<&str>,
+    placeholder_root: &str,
 ) -> Result<(journal::Journal, Vec<BalanceAssertion>)> {
     let mut postings: Vec<journal::Posting> = Vec::new();
     for (group, txn) in (0u64..).zip(model.transactions().chain(manual)) {
@@ -413,7 +416,7 @@ pub fn run(args: &FreezeArgs) -> Result<Report> {
     let manual = if manual_path.exists() { manual::load(&manual_path)? } else { Vec::new() };
 
     let chart = Chart::load(args.build.ledger_dir.join("mapping.toml"))?;
-    let (journal, assertions) = reconcile(&model, &manual, placeholder_root(&chart))?;
+    let (journal, assertions) = reconcile(&model, &manual, placeholder_root(&chart)?)?;
     // Staged beside their final names, so a failed run never leaves an
     // unverified journal behind and the last verified pair survives it.
     let assertions_path = journal::assertions_path(&args.journal);

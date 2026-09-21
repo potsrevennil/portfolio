@@ -43,6 +43,7 @@ expense = "Expenses:Uncategorized"
 "國泰"     = "Assets:Cathay"
 "外幣帳戶" = "Assets:Cathay:FX"
 "現金"     = "Assets:Cash"
+"券商"     = "Assets:Broker"
 "起鼓"     = "Equity:Opening-Balances"
 "#;
 
