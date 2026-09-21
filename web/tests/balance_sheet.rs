@@ -337,9 +337,8 @@ async fn the_landing_page_summarises() {
 #[tokio::test]
 async fn shared_labels_stand_alone_with_their_parents() {
     let (_dir, pool) = ledger().await;
-    let labels = portfolio::store::chart::standalone_labels(
-        &portfolio::store::chart::accounts(&pool).await.unwrap(),
-    );
+    let data = portfolio::store::query::LedgerData::load(&pool).await.unwrap();
+    let labels = portfolio::store::chart::standalone_labels(&data.labels());
     assert_eq!(labels["Assets:Split:Alpha:Tab"], "甲公司分帳");
     assert_eq!(labels["Assets:Split:Beta:Tab"], "乙公司分帳");
     assert_eq!(labels["Assets:Cash"], "現金");
