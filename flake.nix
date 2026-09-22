@@ -16,6 +16,7 @@
           mkShell (attrs // {
             shellHook = ''
               export PATH=$PWD/scripts:$PATH
+              export RUSTC_WRAPPER=sccache
             '';
           });
       in
@@ -42,6 +43,7 @@
                 protobuf
                 sqlx-cli
                 sqlite
+                sccache
 
                 # Web UI build (crates/web): cargo-leptos drives the server and wasm
                 # builds; its bundled wasm-bindgen must match the crate's,
