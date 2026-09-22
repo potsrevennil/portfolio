@@ -1,7 +1,11 @@
 //! What every bank import does once its statements are parsed: plan against
 //! the ledger, insert, record the statements' figures, and gate.
 
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+    path::PathBuf,
+};
 
 use anyhow::{bail, Context, Result};
 use db::{
@@ -55,6 +59,13 @@ impl fmt::Display for Report {
             c.new, c.matched, c.uncategorised
         )?;
         writeln!(f, "  {} lines already held, {} booked with their partner", c.known, c.covered)?;
+        if c.replaced > 0 {
+            writeln!(
+                f,
+                "  {} unverified records replaced by the lines verifying them",
+                c.replaced
+            )?;
+        }
         writeln!(f, "  {} lines on or before the account's opening", c.predate_opening)?;
         write!(f, "{}", self.check)
     }
@@ -93,17 +104,24 @@ pub async fn import(
     for Merged { statement, spans, .. } in merged {
         let account = statement_account(chart, &statement.account_no)?.to_string();
         let existing = import_batch::postings(db, &account, statement.currency).await?;
+        let mut unverified = HashMap::new();
+        for p in existing.iter().filter(|p| p.unverified) {
+            unverified.insert(p.transaction_id, import_batch::legs(db, p.transaction_id).await?);
+        }
         let files: Vec<usize> = spans
             .iter()
             .enumerate()
             .flat_map(|(i, &n)| std::iter::repeat(first_file + i).take(n))
             .collect();
         first_file += spans.len();
-        statements.push(plan::Statement { account, statement, files, existing });
+        statements.push(plan::Statement { account, statement, files, existing, unverified });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
-    let Plan { transactions, mut counts, openings } =
+    let Plan { transactions, mut counts, openings, replaced } =
         plan::plan(chart, &statements, &known, candidates)?;
+    for id in replaced {
+        import_batch::delete(db, id).await?;
+    }
 
     let labels = Labels::from(chart);
     let mut inserted = transactions.len();

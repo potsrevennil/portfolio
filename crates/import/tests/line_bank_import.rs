@@ -406,3 +406,59 @@ async fn an_idle_account_with_a_balance_opens_on_it() -> Result<()> {
     assert_eq!(usd, dec!(100.00));
     Ok(())
 }
+
+/// The statement that arrives after an unverified record replaces it: the
+/// line books with the record's category, on the bank's date, and neither
+/// copy is left over. A re-import then holds the line by its ref.
+#[tokio::test]
+async fn the_next_statement_verifies_an_unverified_record() -> Result<()> {
+    let f = Fixture::new()?;
+    let args = f.freeze_args()?;
+    let frozen = freeze::run(&args)?;
+    assert!(frozen.ok(), "{frozen}");
+    let url = format!("sqlite:{}", f.dir.path().join("verify.db").display());
+    load::run(&load::Args {
+        journal: args.journal.clone(),
+        database_url: url.clone(),
+        mapping: f.dir.path().join("mapping.toml"),
+    })
+    .await?;
+    let pool = db::init_db(&url).await?;
+
+    // The record says 03-05; the bank booked it 03-06. 03-10 has no record.
+    f.write(
+        "活存-444444444444/2026-03.txt",
+        &statement(
+            "20260301-20260331",
+            "$250",
+            "2026.03.06 消費 -$20 $235 範例店\n2026.03.10 轉帳 $15 $250 範例銀行\n",
+        ),
+    )?;
+    let march = vec![f.dir.path().join("活存-444444444444/2026-03.pdf")];
+    let report = f.import(&pool, Bank::LineBank, &march).await?;
+    assert!(report.check.ok(), "{report}");
+    assert_eq!((report.inserted, report.counts.replaced, report.counts.new), (2, 1, 1), "{report}");
+
+    let b = balances(&pool).await?;
+    let bal = |account: &str| {
+        b.get(&(account.to_string(), "TWD".to_string())).copied().unwrap_or_default()
+    };
+    assert_eq!(bal("Assets:LineBank"), dec!(250));
+    assert_eq!(bal("Expenses:Food"), dec!(70));
+    let tagged: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM postings WHERE tags LIKE '%unverified%'")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(tagged, 0);
+    let dates: Vec<String> = sqlx::query_scalar(
+        "SELECT t.date FROM transactions t JOIN postings p ON p.transaction_id = t.id
+         JOIN accounts a ON a.id = p.account_id WHERE a.path = 'Expenses:Food' ORDER BY t.date",
+    )
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(dates, ["2026-01-12", "2026-03-06"]);
+
+    let again = f.import(&pool, Bank::LineBank, &march).await?;
+    assert_eq!(again.inserted, 0, "{again}");
+    Ok(())
+}

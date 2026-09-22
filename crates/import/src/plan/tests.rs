@@ -44,7 +44,14 @@ fn statement(lines: &[(u32, Decimal, Decimal)]) -> BankStatement {
 }
 
 fn held(d: u32, amount: Decimal, opening: bool) -> LedgerPosting {
-    LedgerPosting { date: day(d), amount, external_ref: None, opening }
+    LedgerPosting {
+        date: day(d),
+        amount,
+        external_ref: None,
+        opening,
+        transaction_id: i64::from(d),
+        unverified: false,
+    }
 }
 
 fn run(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
@@ -53,6 +60,7 @@ fn run(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
         statement: st,
         files: vec![0; st.lines.len()],
         existing,
+        unverified: HashMap::new(),
     };
     plan(&chart(), &[s], &HashSet::new(), &[])
 }
@@ -109,4 +117,37 @@ fn a_ledger_that_disagrees_with_the_statement_is_refused() {
     let err =
         run(&st, vec![held(1, dec!(100), true), held(2, dec!(-1), false)]).expect_err("off by one");
     assert!(err.to_string().contains("nothing was imported"), "{err}");
+}
+
+/// Only a record of the line's amount, within a week of it, is replaced; one
+/// that disagrees stays and breaks the chain rather than being overwritten.
+#[test]
+fn only_an_unverified_record_of_the_same_amount_is_replaced() -> Result<()> {
+    let st = statement(&[(10, dec!(-20), dec!(80))]);
+    let record = |amount: Decimal| LedgerPosting { unverified: true, ..held(9, amount, false) };
+    let legs = |amount: Decimal| {
+        HashMap::from([(9, vec![
+            ("Assets:Bank:Savings", amount, Currency::TWD).into(),
+            ("Expenses:Food", -amount, Currency::TWD).into(),
+        ])])
+    };
+    let s = |amount| Statement {
+        account: "Assets:Bank:Savings".into(),
+        statement: &st,
+        files: vec![0],
+        existing: vec![held(1, dec!(100), true), record(amount)],
+        unverified: legs(amount),
+    };
+
+    let p = plan(&chart(), &[s(dec!(-20))], &HashSet::new(), &[])?;
+    assert_eq!((p.replaced, p.counts.replaced), (vec![9], 1));
+    let food = &p.transactions[0].1.postings[1];
+    assert_eq!(
+        (food.account.as_str(), food.amount, food.tags.clone()),
+        ("Expenses:Food", dec!(20), None)
+    );
+
+    let err = plan(&chart(), &[s(dec!(-19))], &HashSet::new(), &[]).expect_err("19 is not 20");
+    assert!(err.to_string().contains("nothing was imported"), "{err}");
+    Ok(())
 }
