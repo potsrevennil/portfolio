@@ -6,12 +6,13 @@ use std::{collections::BTreeMap, fmt, path::PathBuf};
 use anyhow::{bail, Context, Result};
 use db::{
     assertions, check,
-    import::{ensure_account, insert_deduped, InsertOutcome},
+    import::{ensure_account, insert_deduped, InsertOutcome, Transaction},
     import_batch, SqliteConnection,
 };
 use ledger::{
     accounts::Chart,
     labels::Labels,
+    model::{Source, OPENING_EQUITY},
     names::statement_account,
     statements::bank::{Bank, Merged},
 };
@@ -101,11 +102,11 @@ pub async fn import(
         statements.push(plan::Statement { account, statement, files, existing });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
-    let Plan { transactions, counts, openings } =
+    let Plan { transactions, mut counts, openings } =
         plan::plan(chart, &statements, &known, candidates)?;
 
     let labels = Labels::from(chart);
-    let inserted = transactions.len();
+    let mut inserted = transactions.len();
     let mut batches: BTreeMap<usize, i64> = BTreeMap::new();
     for (file, mut txn) in transactions {
         let batch = match batches.get(&file) {
@@ -124,6 +125,40 @@ pub async fn import(
                 txn.external_ref.unwrap_or_default()
             ),
         }
+    }
+
+    // An idle account the ledger does not hold yet opens on its statement's
+    // balance; a zero one needs no posting.
+    let mut idle_batches = 0;
+    for m in &idle {
+        let s = &m.statement;
+        let account = statement_account(chart, &s.account_no)?;
+        let held = import_batch::postings(db, account, s.currency).await?;
+        if !held.is_empty() || s.opening_balance().is_zero() {
+            continue;
+        }
+        let batch = import_batch::create(db, bank.source(), &m.paths[0]).await?;
+        idle_batches += 1;
+        let opening = Transaction {
+            date: s.opening_date(),
+            payee: Some("Opening balance".to_string()),
+            narration: Some(s.account_kind.clone()),
+            source: Source::Import,
+            external_ref: Some(s.opening_ref(account)),
+            import_batch_id: Some(batch),
+            postings: vec![
+                (&**account, s.opening_balance(), s.currency).into(),
+                (OPENING_EQUITY, -s.opening_balance(), s.currency).into(),
+            ],
+        };
+        match insert_deduped(db, &labels, &opening).await.context("inserting an opening")? {
+            InsertOutcome::Inserted(_) => {}
+            InsertOutcome::Duplicate(_) => {
+                bail!("{} holds no postings but has an opening", &**account)
+            }
+        }
+        inserted += 1;
+        counts.openings += 1;
     }
 
     // An assertion already recorded for the same closing day stands:
@@ -161,5 +196,5 @@ pub async fn import(
     }
     let check = check::gate(db).await?;
 
-    Ok(Report { bank, counts, inserted, batches: batches.len(), check })
+    Ok(Report { bank, counts, inserted, batches: batches.len() + idle_batches, check })
 }

@@ -79,8 +79,7 @@ impl Bank {
             }
             Bank::LineBank => {
                 same_day
-                    && line.description == line_bank::CANCEL
-                    && line.info.strip_prefix(line_bank::CANCEL_REMARK) == Some(&debit.info)
+                    && line_bank::cancels(&debit.info, &line.description, &line.info)
                     && debit.delta().is_sign_negative()
                     && debit.delta() == -line.delta()
             }
@@ -235,10 +234,23 @@ impl BankStatement {
     }
 
     /// Drops lines before `date` (their balance becomes the opening); returns
-    /// how many.
+    /// how many. An issued statement's periods are cut to match: the first
+    /// kept one starts on `date`, opening on the balance the dropped lines
+    /// left.
     pub fn trim_before(&mut self, date: NaiveDate) -> usize {
         let keep = self.lines.partition_point(|l| l.book_date < date);
-        self.lines.drain(..keep).count()
+        let dropped = self.lines.drain(..keep).count();
+        self.periods.retain(|p| p.end >= date);
+        let opening = self.opening_balance();
+        if let Some(first) = self.periods.first_mut().filter(|p| p.start < date) {
+            first.start = date;
+            // With no line left in it, the period moves nothing after `date`.
+            first.opening = match self.lines.first().is_some_and(|l| l.book_date <= first.end) {
+                true => opening,
+                false => first.closing,
+            };
+        }
+        dropped
     }
 
     /// The first day this statement may not hold in full.

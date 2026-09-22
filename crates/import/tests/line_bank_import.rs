@@ -58,12 +58,16 @@ const SAVINGS: &str = "\
 const SEPARATOR: &str = "\u{1}\u{2} \u{3}\u{4}";
 
 fn statement(period: &str, closing: &str, rows: &str) -> String {
+    with_usd(period, closing, rows, "0.00")
+}
+
+fn with_usd(period: &str, closing: &str, rows: &str, usd: &str) -> String {
     format!(
         "LINE Bank 連線商業銀行 對帳單\n對帳單期間:{period}\n1 / \
          2台幣存款總餘額\n{closing}\n台幣存款交易明細\n主帳戶 *******44444 {closing}\n日期 \
          交易說明 交易金額 餘額 備註\n{rows}{SEPARATOR}\n2019/10/09 ATM -40,000 $199,960,000 \
          0130017T\n $837,992\n範例頁尾 02-0000-0000\n2 / \
-         2外幣存款總餘額\n$0\n外幣存款交易明細\n美元 *******00099 0.00 \
+         2外幣存款總餘額\n$0\n外幣存款交易明細\n美元 *******00099 {usd} \
          USD\n本月無交易紀錄\n簽帳金融卡交易明細\n本月無交易紀錄\n"
     )
 }
@@ -148,14 +152,18 @@ impl Fixture {
     }
 
     fn freeze_args(&self) -> Result<freeze::FreezeArgs> {
+        self.freeze_with(vec![self.write("savings.csv", SAVINGS)?], RECORDS)
+    }
+
+    fn freeze_with(&self, cathay: Vec<PathBuf>, records: &str) -> Result<freeze::FreezeArgs> {
         Ok(freeze::FreezeArgs {
             journal: self.dir.path().join("journal.csv"),
             build: BuildArgs {
-                cathay_statements: vec![self.write("savings.csv", SAVINGS)?],
+                cathay_statements: cathay,
                 line_bank_statements: self.line_bank()?,
                 daily_income_expense: None,
                 daily_transfers: None,
-                transactions: Some(self.write("transactions.csv", RECORDS)?),
+                transactions: Some(self.write("transactions.csv", records)?),
                 backfill: false,
                 ledger_dir: self.dir.path().to_path_buf(),
             },
@@ -307,5 +315,75 @@ async fn an_empty_ledger_closes_on_every_statement() -> Result<()> {
 
     let again = f.import(&pool, Bank::LineBank, &f.line_bank()?).await?;
     assert_eq!(again.inserted, 0, "{again}");
+    Ok(())
+}
+
+/// A statement that starts before the records do: its lines before them are
+/// cut, and the month is checked from where the kept lines start.
+#[test]
+fn a_statement_older_than_the_records_is_checked_from_where_they_begin() -> Result<()> {
+    let f = Fixture::new()?;
+    let records: String = RECORDS
+        .lines()
+        .filter(|l| !l.starts_with("a:1,") && !l.starts_with("a:2,") && !l.starts_with("a:3,"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let args = f.freeze_with(Vec::new(), &records)?;
+    let frozen = freeze::run(&args)?;
+    assert!(frozen.ok(), "{frozen}");
+    let asserted = journal::read_assertions(&journal::assertions_path(&args.journal))?;
+    let january = asserted
+        .iter()
+        .find(|a| a.account == "Assets:LineBank" && a.period_end.to_string() == "2026-01-31")
+        .expect("January asserted");
+    assert_eq!(
+        (january.period_start.map(|d| d.to_string()), january.opening),
+        (Some("2026-01-10".to_string()), Some(dec!(600)))
+    );
+    Ok(())
+}
+
+/// An idle account holding money opens on it, in freeze and in import, and
+/// every month's check holds.
+#[tokio::test]
+async fn an_idle_account_with_a_balance_opens_on_it() -> Result<()> {
+    let f = Fixture::new()?;
+    f.write(
+        "活存-444444444444/2026-01.txt",
+        &with_usd("20260101-20260131", "$50", "2026.01.12 轉帳 $50 $50 範例店\n", "100.00"),
+    )?;
+    let paths = vec![f.dir.path().join("活存-444444444444/2026-01.pdf")];
+    let pool = f.db("idle.db").await?;
+    let report = f.import(&pool, Bank::LineBank, &paths).await?;
+    assert!(report.check.ok(), "{report}");
+    let b = balances(&pool).await?;
+    assert_eq!(b.get(&("Assets:LineBank".to_string(), "USD".to_string())), Some(&dec!(100.00)));
+    let again = f.import(&pool, Bank::LineBank, &paths).await?;
+    assert_eq!(again.inserted, 0, "{again}");
+
+    let args = freeze::FreezeArgs {
+        journal: f.dir.path().join("journal.csv"),
+        build: BuildArgs {
+            cathay_statements: Vec::new(),
+            line_bank_statements: paths,
+            daily_income_expense: None,
+            daily_transfers: None,
+            transactions: Some(f.write(
+                "transactions.csv",
+                RECORDS.lines().take(2).collect::<Vec<_>>().join("\n").as_str(),
+            )?),
+            backfill: false,
+            ledger_dir: f.dir.path().to_path_buf(),
+        },
+    };
+    let frozen = freeze::run(&args)?;
+    assert!(frozen.ok(), "{frozen}");
+    let usd: Decimal = journal::read(&args.journal)?
+        .postings
+        .iter()
+        .filter(|p| p.account == "Assets:LineBank" && p.currency.to_string() == "USD")
+        .map(|p| p.amount)
+        .sum();
+    assert_eq!(usd, dec!(100.00));
     Ok(())
 }

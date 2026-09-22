@@ -173,6 +173,52 @@ fn a_cancelled_transfer_pairs_with_the_attempt_it_undoes() {
     assert_eq!(s.reversals(), vec![(1, 2)]);
 }
 
+/// The cancel's 備註 is longer by 取消., so it can wrap where the transfer's
+/// did not; the wrap is joined without the space it broke at.
+#[test]
+fn a_cancel_whose_remark_wrapped_still_pairs() {
+    let text = MARCH
+        .replace(
+            "-$300 $800 阿明\n2026.03.05 取消轉帳",
+            "-$300 $800 範例 商店\n2026.03.05 取消轉帳",
+        )
+        .replace("$300 $1,100 取消.阿明", "$300 $1,100 取消.範例\n商店");
+    let doc: Document = text.parse().expect("parses");
+    let twd = doc.sections.into_iter().next().expect("TWD");
+    assert_eq!(
+        (twd.lines[1].info.as_str(), twd.lines[2].info.as_str()),
+        ("範例 商店", "取消.範例商店")
+    );
+    assert_eq!(statement(doc.start, doc.end, twd).reversals(), vec![(1, 2)]);
+}
+
+/// Lines before the records begin are cut, and the month they fall in then
+/// starts where the kept lines do, on the balance the cut ones left.
+#[test]
+fn cutting_early_lines_moves_the_month_start_with_them() {
+    let doc = march();
+    let twd = doc.sections.into_iter().next().expect("TWD");
+    let mut s = statement(doc.start, doc.end, twd);
+    assert_eq!(s.trim_before(day(3, 5)), 1);
+    assert_eq!(s.periods[0].start, day(3, 5));
+    assert_eq!((s.opening_balance(), s.periods[0].opening), (dec!(1100), dec!(1100)));
+    let a = &s.assertions("A", s.opening_date())[0];
+    assert_eq!(
+        (a.period_start, a.opening, a.closing),
+        (Some(day(3, 5)), Some(dec!(1100)), dec!(1150))
+    );
+
+    // Past every line of a month, it moves nothing after the cut.
+    let mut feb = merge(vec![month(2, dec!(0), dec!(5)), month(3, dec!(5), dec!(5))])
+        .expect("merges")
+        .remove(0)
+        .statement;
+    feb.trim_before(day(2, 10));
+    assert_eq!((feb.periods[0].start, feb.periods[0].opening), (day(2, 10), dec!(5)));
+    feb.trim_before(day(3, 1));
+    assert_eq!(feb.periods.len(), 1);
+}
+
 #[test]
 fn a_remark_names_an_account_by_its_tail() {
     assert!(remark_names_account("範例商業銀行 ***********54321", "123400054321"));

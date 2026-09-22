@@ -566,10 +566,11 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         }
     }
 
-    // A pool's records that begin before its statement does carry its balance
-    // up to it; the statement's opening is then asserted rather than booked.
+    // A pool's records that begin before its issued statements do carry its
+    // balance up to them; the statement's opening is then asserted rather than
+    // booked. A download's pool keeps the old rule: such records are unmatched.
     let mut starts: BTreeMap<(&str, Currency), NaiveDate> = BTreeMap::new();
-    for (si, s) in statements.iter().enumerate() {
+    for (si, s) in statements.iter().enumerate().filter(|(_, s)| !s.periods.is_empty()) {
         let start = starts.entry((pool_of[si].as_str(), s.currency)).or_insert(s.start());
         *start = (*start).min(s.start());
     }
@@ -734,10 +735,28 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         statement_periods.extend(asserted);
         cathay.push(Directive::Blank);
     }
+    // An idle account opens on its first statement's balance; a zero one
+    // needs no posting.
+    let mut idle_openings: Vec<(&str, Currency, Decimal, NaiveDate)> = Vec::new();
     for m in &idle {
         let s = &m.statement;
         let account: &str = statement_account(&chart, &s.account_no)?;
         used_accounts.insert(account.to_string());
+        if !s.opening_balance().is_zero() {
+            cathay.push(Directive::Transaction(model::Transaction {
+                date: s.opening_date(),
+                payee: "Opening balance".to_string(),
+                narration: s.account_kind.clone(),
+                tags: Vec::new(),
+                postings: vec![
+                    writer::Posting::new(account, s.opening_balance(), s.currency),
+                    writer::Posting::inferred(model::OPENING_EQUITY),
+                ],
+                source: model::Source::Import,
+                external_ref: Some(s.opening_ref(account)),
+            }));
+            idle_openings.push((account, s.currency, s.opening_balance(), s.start()));
+        }
         let asserted = s.assertions(account, s.opening_date());
         cathay.extend(balances_of(&asserted));
         cathay.push(Directive::Blank);
@@ -900,9 +919,12 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 .zip(&bank_accounts)
                 .enumerate()
                 .find(|(si, (s, a))| **a == account && s.currency == *currency && opens_itself(*si))
-                .map(|(_, (s, _))| {
-                    let first = s.lines.first().expect("load rejects empty statements");
-                    (s.opening_balance(), first.book_date, "its statement")
+                .map(|(_, (s, _))| (s.opening_balance(), s.start(), "its statement"))
+                .or_else(|| {
+                    idle_openings
+                        .iter()
+                        .find(|(a, c, ..)| a == account && c == currency)
+                        .map(|&(_, _, opening, from)| (opening, from, "its statement"))
                 })
         });
         if let Some((expected, from, by)) = covering {

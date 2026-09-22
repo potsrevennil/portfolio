@@ -282,3 +282,23 @@ fn freeze_reads_yearly_exports_a_foreign_account_and_corrected_records() -> anyh
     );
     Ok(())
 }
+
+/// A 外幣 record older than the account's first download line is unmatched,
+/// as before: the download still opens the account, and only an issued
+/// statement's pool lets earlier records carry its balance.
+#[test]
+fn a_record_older_than_a_download_stays_unmatched() -> anyhow::Result<()> {
+    let dir = TempDir::new()?;
+    let early = "app:9,active,2024-01-10,,expense,1,USD,外幣帳戶,,,,飲食,,,,,app,x,U9,raw,,\n";
+    let args = args(dir.path(), &format!("{TRANSACTIONS}{early}"))?;
+    let frozen = freeze::run(&args)?;
+    assert!(frozen.ok(), "{frozen}");
+
+    let written = journal::read(&args.journal)?;
+    let b = balances(&written);
+    assert_eq!(b[&("Expenses:Uncategorized".to_string(), Currency::USD)], dec!(-1));
+    assert!(written.postings.iter().any(|p| {
+        p.external_ref.as_deref() == Some("cathay-bank:opening:Assets:Cathay:FX:USD")
+    }));
+    Ok(())
+}

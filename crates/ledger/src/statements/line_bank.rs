@@ -22,9 +22,18 @@ use rust_decimal::Decimal;
 use super::bank::{Bank, BankStatement, Merged, Period, StatementLine};
 
 /// The 交易說明 of a transfer the bank called back.
-pub const CANCEL: &str = "取消轉帳";
+const CANCEL: &str = "取消轉帳";
 /// What the bank puts before the cancelled transfer's own 備註.
-pub const CANCEL_REMARK: &str = "取消.";
+const CANCEL_REMARK: &str = "取消.";
+
+/// Is the row `(description, remark)` the bank calling back the transfer
+/// with `debit_remark`? Spaces are ignored: the cancel's longer 備註 can wrap
+/// where the transfer's did not, and a wrap is joined without one.
+pub fn cancels(debit_remark: &str, description: &str, remark: &str) -> bool {
+    let bare = |s: &str| s.split_whitespace().collect::<String>();
+    description == CANCEL
+        && remark.strip_prefix(CANCEL_REMARK).is_some_and(|r| bare(r) == bare(debit_remark))
+}
 
 /// Does a 備註 name `account_no`? LINE Bank prints only an account's tail:
 /// masked in front (`***********54321`, the other bank's 16-digit form) or as
