@@ -58,6 +58,13 @@ impl fmt::Display for Report {
         if c.verified > 0 {
             writeln!(f, "  {} unverified records verified by their lines, in place", c.verified)?;
         }
+        if c.deferred > 0 {
+            writeln!(
+                f,
+                "  {} unverified records not on the statement yet, moved to the day after it",
+                c.deferred
+            )?;
+        }
         writeln!(f, "  {} lines on or before the account's opening", c.predate_opening)?;
         write!(f, "{}", self.check)
     }
@@ -105,10 +112,13 @@ pub async fn import(
         statements.push(plan::Statement { account, statement, files, existing });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
-    let Plan { transactions, mut counts, openings, verified } =
+    let Plan { transactions, mut counts, openings, verified, deferred } =
         plan::plan(chart, &statements, &known, candidates)?;
     for v in &verified {
-        import_batch::verify(db, v.transaction_id, v.date, &v.external_ref).await?;
+        import_batch::verify(db, v.transaction_id, v.date, &v.statement_ref).await?;
+    }
+    for d in &deferred {
+        import_batch::redate(db, d.transaction_id, d.date).await?;
     }
 
     let labels = Labels::from(chart);

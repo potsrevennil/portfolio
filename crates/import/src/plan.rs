@@ -35,13 +35,23 @@ pub struct Statement<'a> {
 /// records take the bank's date when they are a week or more off.
 const VERIFY_WINDOW_DAYS: i64 = 7;
 
-/// An unverified record a line verifies: it takes the line's date and ref
-/// and keeps everything else, its row, legs and review state included.
+/// An unverified record a line verifies: it takes the line's date, stands
+/// for the line's ref too, and keeps everything else, its own ref, row and
+/// review state included.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verified {
     pub transaction_id: i64,
     pub date: NaiveDate,
-    pub external_ref: String,
+    pub statement_ref: String,
+}
+
+/// An unverified record from a statement's last days that none of its lines
+/// verifies: the bank books it after the statement, so it moves to the day
+/// after, still unverified, for the next statement to verify.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deferred {
+    pub transaction_id: i64,
+    pub date: NaiveDate,
 }
 
 /// A 天天記帳 record a line may be matched to, already resolved to the
@@ -65,6 +75,8 @@ pub struct Counts {
     pub new: usize,
     /// Unverified records a line verified.
     pub verified: usize,
+    /// Unverified records the statement ends before.
+    pub deferred: usize,
     pub openings: usize,
     pub matched: usize,
     pub uncategorised: usize,
@@ -79,6 +91,7 @@ pub struct Plan {
     /// Each statement's opening date; the ledger tracks its lines after it.
     pub openings: Vec<NaiveDate>,
     pub verified: Vec<Verified>,
+    pub deferred: Vec<Deferred>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -151,9 +164,9 @@ pub fn plan(
         let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
         for p in &s.existing {
             let from_a_statement = p
-                .external_ref
-                .as_deref()
-                .is_some_and(|r| Bank::ALL.iter().any(|bank| r.starts_with(bank.ref_prefix())));
+                .refs
+                .iter()
+                .any(|r| Bank::ALL.iter().any(|bank| r.starts_with(bank.ref_prefix())));
             if !p.opening && from_a_statement {
                 *spare.entry((p.date, p.amount)).or_default() += 1;
             }
@@ -216,6 +229,26 @@ pub fn plan(
                     many.len(),
                     many.iter().map(|p| p.date.to_string()).collect::<Vec<_>>().join(", ")
                 )),
+            }
+        }
+        // A record within the window of the end may be booked on the next
+        // statement; an earlier one still breaks the chain below.
+        let settled = st.settled_through();
+        let after = settled.succ_opt().expect("a day after a statement");
+        let verifying: HashSet<i64> = line_status
+            .iter()
+            .filter_map(|s| match s {
+                Status::Verifies(id) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        for p in &unverified {
+            let pending = p.date > opening
+                && p.date <= settled
+                && (settled - p.date).num_days() < VERIFY_WINDOW_DAYS;
+            if pending && !verifying.contains(&p.transaction_id) {
+                plan.deferred.push(Deferred { transaction_id: p.transaction_id, date: after });
+                plan.counts.deferred += 1;
             }
         }
         if !ambiguous.is_empty() {
@@ -425,13 +458,19 @@ pub fn plan(
                 plan.verified.push(Verified {
                     transaction_id,
                     date: l.book_date,
-                    external_ref: refs[si][li].clone(),
+                    statement_ref: refs[si][li].clone(),
                 });
             }
         }
     }
 
-    chain(statements, &openings, &plan.transactions, &plan.verified)?;
+    let redated: HashMap<i64, NaiveDate> = plan
+        .verified
+        .iter()
+        .map(|v| (v.transaction_id, v.date))
+        .chain(plan.deferred.iter().map(|d| (d.transaction_id, d.date)))
+        .collect();
+    chain(statements, &openings, &plan.transactions, &redated)?;
     plan.openings = openings;
     Ok(plan)
 }
@@ -447,10 +486,8 @@ fn chain(
     statements: &[Statement],
     openings: &[NaiveDate],
     planned: &[(usize, Transaction)],
-    verified: &[Verified],
+    redated: &HashMap<i64, NaiveDate>,
 ) -> Result<()> {
-    let redated: HashMap<i64, NaiveDate> =
-        verified.iter().map(|v| (v.transaction_id, v.date)).collect();
     for (s, &opening) in statements.iter().zip(openings) {
         let currency = s.statement.currency;
         let mut expected: BTreeMap<NaiveDate, Decimal> = BTreeMap::new();

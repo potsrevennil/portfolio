@@ -30,7 +30,8 @@ pub async fn create(
 pub struct LedgerPosting {
     pub date: NaiveDate,
     pub amount: Decimal,
-    pub external_ref: Option<String>,
+    /// Its transaction's ref, then any further ones it stands for.
+    pub refs: Vec<String>,
     /// Its transaction also posts to the opening equity.
     pub opening: bool,
     pub transaction_id: i64,
@@ -38,11 +39,15 @@ pub struct LedgerPosting {
     pub unverified: bool,
 }
 
+/// `char(31)` in the query: no ref holds it.
+const ALIAS_SEPARATOR: char = '\u{1f}';
+
 #[derive(sqlx::FromRow)]
 struct Row {
     date: String,
     amount: String,
     external_ref: Option<String>,
+    aliases: Option<String>,
     opening: bool,
     transaction_id: i64,
     unverified: bool,
@@ -55,7 +60,11 @@ impl TryFrom<Row> for LedgerPosting {
         Ok(LedgerPosting {
             date: r.date.parse().with_context(|| format!("transaction date {:?}", r.date))?,
             amount: r.amount.parse().with_context(|| format!("posting amount {:?}", r.amount))?,
-            external_ref: r.external_ref,
+            refs: r
+                .external_ref
+                .into_iter()
+                .chain(r.aliases.iter().flat_map(|a| a.split(ALIAS_SEPARATOR)).map(String::from))
+                .collect(),
             opening: r.opening,
             transaction_id: r.transaction_id,
             unverified: r.unverified,
@@ -72,6 +81,8 @@ pub async fn postings(
 ) -> Result<Vec<LedgerPosting>> {
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT t.date, p.amount, t.external_ref, t.id AS transaction_id,
+                (SELECT group_concat(r.external_ref, char(31)) FROM transaction_refs r
+                 WHERE r.transaction_id = t.id) AS aliases,
                 EXISTS (SELECT 1 FROM postings q JOIN accounts b ON b.id = q.account_id
                         WHERE q.transaction_id = t.id AND b.path = ?) AS opening,
                 instr(',' || coalesce(p.tags, '') || ',', ',' || ? || ',') > 0 AS unverified
@@ -90,11 +101,13 @@ pub async fn postings(
     rows.into_iter().map(LedgerPosting::try_from).collect()
 }
 
-/// Refs under `prefix` from any source: a verified record keeps its own
-/// source but holds its statement line's ref.
+/// Refs under `prefix` from any source, including those a transaction also
+/// stands for.
 pub async fn refs(db: &mut SqliteConnection, prefix: &str) -> Result<HashSet<String>> {
     let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT external_ref FROM transactions WHERE substr(external_ref, 1, length(?1)) = ?1",
+        "SELECT external_ref FROM transactions WHERE substr(external_ref, 1, length(?1)) = ?1
+         UNION SELECT external_ref FROM transaction_refs
+         WHERE substr(external_ref, 1, length(?1)) = ?1",
     )
     .bind(prefix)
     .fetch_all(db)
@@ -102,22 +115,34 @@ pub async fn refs(db: &mut SqliteConnection, prefix: &str) -> Result<HashSet<Str
     Ok(rows.into_iter().collect())
 }
 
+/// Records that `transaction_id` also stands for the source record
+/// `external_ref`, so that record's importer takes it as held.
+pub async fn add_ref(
+    db: &mut SqliteConnection,
+    transaction_id: i64,
+    external_ref: &str,
+) -> Result<()> {
+    sqlx::query("INSERT INTO transaction_refs (transaction_id, external_ref) VALUES (?, ?)")
+        .bind(transaction_id)
+        .bind(external_ref)
+        .execute(db)
+        .await
+        .with_context(|| format!("adding {external_ref} to transaction {transaction_id}"))?;
+    Ok(())
+}
+
 /// Marks an unverified record as checked by a statement line: it takes the
-/// line's date and ref, and its legs lose the unverified tag. Nothing else
-/// changes, so its category and review state stand.
+/// line's date, stands for the line too, and its legs lose the unverified
+/// tag. Its own ref stays, so its source still knows it, and so do its
+/// category and review state.
 pub async fn verify(
     db: &mut SqliteConnection,
     transaction_id: i64,
     date: NaiveDate,
-    external_ref: &str,
+    statement_ref: &str,
 ) -> Result<()> {
-    sqlx::query("UPDATE transactions SET date = ?, external_ref = ? WHERE id = ?")
-        .bind(date.to_string())
-        .bind(external_ref)
-        .bind(transaction_id)
-        .execute(&mut *db)
-        .await
-        .with_context(|| format!("verifying transaction {transaction_id}"))?;
+    redate(db, transaction_id, date).await?;
+    add_ref(db, transaction_id, statement_ref).await?;
     sqlx::query(
         "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ?1 || ',', \
          ','), ','), '') WHERE transaction_id = ?2",
@@ -127,5 +152,15 @@ pub async fn verify(
     .execute(db)
     .await
     .with_context(|| format!("clearing the unverified tag of transaction {transaction_id}"))?;
+    Ok(())
+}
+
+pub async fn redate(db: &mut SqliteConnection, transaction_id: i64, date: NaiveDate) -> Result<()> {
+    sqlx::query("UPDATE transactions SET date = ? WHERE id = ?")
+        .bind(date.to_string())
+        .bind(transaction_id)
+        .execute(db)
+        .await
+        .with_context(|| format!("re-dating transaction {transaction_id}"))?;
     Ok(())
 }

@@ -9,10 +9,17 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Once};
 
 use anyhow::Result;
-use db::load;
+use chrono::NaiveDate;
+use db::{
+    import::{insert_deduped, InsertOutcome, Transaction},
+    load,
+};
 use import::bank::{import, Report};
-use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, journal, statements::bank::Bank};
-use ledger_types::assertion::AssertionSource;
+use ledger::{
+    accounts::Chart, args::Args as BuildArgs, freeze, journal, labels::Labels, model::Source,
+    statements::bank::Bank,
+};
+use ledger_types::{assertion::AssertionSource, currency::Currency};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::{Row, SqlitePool};
@@ -409,7 +416,11 @@ async fn an_idle_account_with_a_balance_opens_on_it() -> Result<()> {
 
 /// Loads a fresh freeze of the fixture into its own database.
 async fn frozen(f: &Fixture, name: &str) -> Result<SqlitePool> {
-    let args = f.freeze_args()?;
+    frozen_with(f, name, RECORDS).await
+}
+
+async fn frozen_with(f: &Fixture, name: &str, records: &str) -> Result<SqlitePool> {
+    let args = f.freeze_with(vec![f.write("savings.csv", SAVINGS)?], records)?;
     let frozen = freeze::run(&args)?;
     assert!(frozen.ok(), "{frozen}");
     let url = format!("sqlite:{}", f.dir.path().join(name).display());
@@ -423,20 +434,39 @@ async fn frozen(f: &Fixture, name: &str) -> Result<SqlitePool> {
 }
 
 async fn march(f: &Fixture, rows: &str, closing: &str) -> Result<Vec<PathBuf>> {
-    f.write("活存-444444444444/2026-03.txt", &statement("20260301-20260331", closing, rows))?;
-    Ok(vec![f.dir.path().join("活存-444444444444/2026-03.pdf")])
+    month(f, "2026-03", "20260301-20260331", rows, closing)
+}
+
+fn month(f: &Fixture, name: &str, period: &str, rows: &str, closing: &str) -> Result<Vec<PathBuf>> {
+    f.write(&format!("活存-444444444444/{name}.txt"), &statement(period, closing, rows))?;
+    Ok(vec![f.dir.path().join(format!("活存-444444444444/{name}.pdf"))])
+}
+
+async fn date_of(pool: &SqlitePool, id: i64) -> Result<String> {
+    Ok(sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?)
+}
+
+async fn unverified_count(pool: &SqlitePool) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT count(*) FROM postings WHERE tags LIKE '%unverified%'")
+        .fetch_one(pool)
+        .await?)
 }
 
 /// The statement that arrives after an unverified record verifies it in
-/// place: the same row, now on the bank's date and the line's ref, keeps its
-/// category and review state and loses the tag. A re-import holds the line.
+/// place: the same row, now on the bank's date, keeps its own ref, category
+/// and review state, stands for the line's ref too, and loses the tag. A
+/// re-import holds the line.
 #[tokio::test]
 async fn the_next_statement_verifies_an_unverified_record() -> Result<()> {
     let f = Fixture::new()?;
     let pool = frozen(&f, "verify.db").await?;
-    let id: i64 = sqlx::query_scalar("SELECT id FROM transactions WHERE reviewed = 0")
-        .fetch_one(&pool)
-        .await?;
+    let (id, own_ref): (i64, String) =
+        sqlx::query_as("SELECT id, external_ref FROM transactions WHERE reviewed = 0")
+            .fetch_one(&pool)
+            .await?;
     // As if the user had already reviewed it.
     sqlx::query("UPDATE transactions SET reviewed = 1 WHERE id = ?")
         .bind(id)
@@ -456,13 +486,31 @@ async fn the_next_statement_verifies_an_unverified_record() -> Result<()> {
             .bind(id)
             .fetch_one(&pool)
             .await?;
-    assert_eq!((date.as_str(), reviewed), ("2026-03-06", true));
-    assert!(external_ref.starts_with("line-bank:"), "{external_ref}");
-    let tagged: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM postings WHERE tags LIKE '%unverified%'")
-            .fetch_one(&pool)
+    assert_eq!((date.as_str(), external_ref, reviewed), ("2026-03-06", own_ref.clone(), true));
+    let line_refs: Vec<String> =
+        sqlx::query_scalar("SELECT external_ref FROM transaction_refs WHERE transaction_id = ?")
+            .bind(id)
+            .fetch_all(&pool)
             .await?;
-    assert_eq!(tagged, 0);
+    assert!(matches!(line_refs.as_slice(), [r] if r.starts_with("line-bank:")), "{line_refs:?}");
+    assert_eq!(unverified_count(&pool).await?, 0);
+    // Its source still knows it: a later 天天記帳 import of it is a duplicate.
+    let record = Transaction {
+        date: NaiveDate::from_ymd_opt(2026, 3, 5).expect("date"),
+        payee: None,
+        narration: None,
+        source: Source::Tiantian,
+        external_ref: Some(own_ref),
+        import_batch_id: None,
+        postings: vec![
+            ("Assets:LineBank", dec!(-20), Currency::TWD).into(),
+            ("Expenses:Food", dec!(20), Currency::TWD).into(),
+        ],
+    };
+    let mut conn = pool.acquire().await?;
+    let outcome = insert_deduped(&mut conn, &Labels::from(&f.chart), &record).await?;
+    assert!(matches!(outcome, InsertOutcome::Duplicate(_)), "{outcome:?}");
+    drop(conn);
     let b = balances(&pool).await?;
     let bal = |account: &str| {
         b.get(&(account.to_string(), "TWD".to_string())).copied().unwrap_or_default()
@@ -485,10 +533,37 @@ async fn an_ambiguous_statement_leaves_the_record_unverified() -> Result<()> {
             .await?;
     let err = f.import(&pool, Bank::LineBank, &paths).await.expect_err("two lines of 20");
     assert!(format!("{err:#}").contains("ambiguously"), "{err:#}");
-    let tagged: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM postings WHERE tags LIKE '%unverified%'")
-            .fetch_one(&pool)
-            .await?;
-    assert_eq!(tagged, 2);
+    assert_eq!(unverified_count(&pool).await?, 2);
+    Ok(())
+}
+
+/// A spend recorded on 03-29 that the bank books on 04-01: March imports on
+/// its own, the record waiting unverified on the day after it, and April's
+/// line verifies it.
+#[tokio::test]
+async fn a_record_the_bank_books_next_month_waits_for_that_statement() -> Result<()> {
+    let f = Fixture::new()?;
+    let records =
+        format!("{RECORDS}a:7,active,2026-03-29,,expense,40,TWD,LINE,,,,飲食,,,,,app,x,U7,raw,,\n");
+    let pool = frozen_with(&f, "month-end.db", &records).await?;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM transactions WHERE date = '2026-03-29'")
+        .fetch_one(&pool)
+        .await?;
+
+    let paths = march(&f, "2026.03.06 消費 -$20 $235 範例店\n", "$235").await?;
+    let report = f.import(&pool, Bank::LineBank, &paths).await?;
+    assert!(report.check.ok(), "{report}");
+    assert_eq!((report.counts.verified, report.counts.deferred), (1, 1), "{report}");
+    assert_eq!(date_of(&pool, id).await?, "2026-04-01");
+    assert_eq!(unverified_count(&pool).await?, 2);
+    let again = f.import(&pool, Bank::LineBank, &paths).await?;
+    assert_eq!((again.inserted, again.counts.deferred), (0, 0), "{again}");
+
+    let april =
+        month(&f, "2026-04", "20260401-20260430", "2026.04.01 消費 -$40 $195 範例店\n", "$195")?;
+    let report = f.import(&pool, Bank::LineBank, &april).await?;
+    assert!(report.check.ok(), "{report}");
+    assert_eq!((report.inserted, report.counts.verified), (0, 1), "{report}");
+    assert_eq!(unverified_count(&pool).await?, 0);
     Ok(())
 }

@@ -47,7 +47,7 @@ fn held(d: u32, amount: Decimal, opening: bool) -> LedgerPosting {
     LedgerPosting {
         date: day(d),
         amount,
-        external_ref: None,
+        refs: Vec::new(),
         opening,
         transaction_id: i64::from(d),
         unverified: false,
@@ -142,7 +142,7 @@ fn a_line_verifies_its_one_unverified_record_in_place() -> Result<()> {
     assert_eq!(p.verified, vec![Verified {
         transaction_id: 42,
         date: day(10),
-        external_ref: st.dedup_refs()[0].clone(),
+        statement_ref: st.dedup_refs()[0].clone(),
     }]);
     assert_eq!((p.counts.verified, p.transactions.len()), (1, 0));
     Ok(())
@@ -168,8 +168,28 @@ fn an_ambiguous_pairing_verifies_nothing() {
 /// A record whose amount disagrees verifies nothing and breaks the chain.
 #[test]
 fn an_unverified_record_of_another_amount_breaks_the_chain() {
-    let st = statement(&[(10, dec!(-20), dec!(80))]);
+    let st = statement(&[(10, dec!(-20), dec!(80)), (20, dec!(5), dec!(85))]);
     let err = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-19), 42)])
         .expect_err("19 is not 20");
+    assert!(err.to_string().contains("nothing was imported"), "{err}");
+}
+
+/// A spend recorded in the statement's last days that the bank books after
+/// it: the record waits, unverified, on the day after the statement.
+#[test]
+fn a_record_from_the_last_days_waits_for_the_next_statement() -> Result<()> {
+    let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
+    let p = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-30), 42)])?;
+    assert_eq!(p.deferred, vec![Deferred { transaction_id: 42, date: day(11) }]);
+    assert_eq!((p.counts.deferred, p.counts.new, p.counts.verified), (1, 2, 0));
+    Ok(())
+}
+
+/// One from earlier in the statement had its chance: the chain breaks.
+#[test]
+fn an_earlier_record_no_line_verifies_breaks_the_chain() {
+    let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
+    let err = with(&st, vec![held(1, dec!(100), true), unverified(2, dec!(-30), 42)])
+        .expect_err("the statement never shows 30");
     assert!(err.to_string().contains("nothing was imported"), "{err}");
 }
