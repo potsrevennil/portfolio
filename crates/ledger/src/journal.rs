@@ -27,6 +27,10 @@ use super::model::Source;
 /// account, and it marks the leg to be replaced with real positions later.
 pub const PLACEHOLDER_TAG: &str = "securities-placeholder";
 
+/// The reserved tag on a record booked onto a statement account after its last
+/// statement: nothing has checked it yet. The loader leaves it unreviewed.
+pub const UNVERIFIED_TAG: &str = "unverified";
+
 /// One posting of a transaction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Posting {

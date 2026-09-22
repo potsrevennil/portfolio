@@ -15,7 +15,7 @@ use super::{
     args::Args,
     corrected, daily,
     emit::{contra_posting, emit_daily_accounts, narration_for, resolve},
-    matching,
+    journal, matching,
     model::{self, Directive},
     names::{fallback_account, statement_account},
     statements::{
@@ -101,6 +101,14 @@ fn balances_of(asserted: &[BalanceAssertion]) -> impl Iterator<Item = Directive>
             })
         })
     })
+}
+
+/// Where a record falls against the days its pool's issued statements cover.
+#[derive(Clone, Copy, PartialEq)]
+enum Span {
+    Before,
+    Within,
+    After,
 }
 
 /// Assembles the ledger as an in-memory model: the transactions, balance
@@ -566,24 +574,31 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         }
     }
 
-    // A pool's records that begin before its issued statements do carry its
-    // balance up to them; the statement's opening is then asserted rather than
-    // booked. A download's pool keeps the old rule: such records are unmatched.
-    let mut starts: BTreeMap<(&str, Currency), NaiveDate> = BTreeMap::new();
+    // Outside the days a pool's issued statements cover, its records are the
+    // account's only evidence, so they book onto it: before the first
+    // statement they carry its balance up to it (whose opening is then
+    // asserted rather than booked); after the last they stand unverified until
+    // the next statement. A download's pool keeps the old rule: unmatched.
+    let mut spans: BTreeMap<(&str, Currency), (NaiveDate, NaiveDate)> = BTreeMap::new();
     for (si, s) in statements.iter().enumerate().filter(|(_, s)| !s.periods.is_empty()) {
-        let start = starts.entry((pool_of[si].as_str(), s.currency)).or_insert(s.start());
-        *start = (*start).min(s.start());
+        let (start, end) = (s.start(), s.settled_through());
+        let span = spans.entry((pool_of[si].as_str(), s.currency)).or_insert((start, end));
+        *span = (span.0.min(start), span.1.max(end));
     }
-    let before_statement = |pool: &str, event: &daily::AppEvent| {
-        pool != institution_app
-            && starts.get(&(pool, event.currency)).is_some_and(|start| event.date < *start)
+    let span_of = |pool: &str, event: &daily::AppEvent| {
+        let issued = spans.get(&(pool, event.currency)).filter(|_| pool != institution_app);
+        match issued {
+            Some((start, _)) if event.date < *start => Span::Before,
+            Some((_, end)) if event.date > *end => Span::After,
+            _ => Span::Within,
+        }
     };
     let carried: BTreeSet<(&str, Currency)> = pools
         .iter()
         .flat_map(|(&pool, events)| {
             events
                 .iter()
-                .filter(move |e| before_statement(pool, e))
+                .filter(move |e| span_of(pool, e) == Span::Before)
                 .map(move |e| (pool, e.currency))
         })
         .collect();
@@ -773,6 +788,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // balance is untouched.
     let mut n_unmatched_records = 0;
     let mut n_carried = 0;
+    let mut n_unverified = 0;
     // A transfer between two accounts that each have a statement is one record
     // in two pools. Emitting it from both would double its far side and repeat
     // its dedup id, so a record a statement line already took — in any pool —
@@ -799,18 +815,21 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 continue;
             }
             emitted.insert(event.record);
-            let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
+            let (target, mut tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
             used_accounts.insert(target.clone());
-            let carries = before_statement(pool, event);
-            let near: &str = match (carries, chart.account(pool)) {
-                (true, Some(own)) => &own.account,
+            let span = span_of(pool, event);
+            let near: &str = match (span, chart.account(pool)) {
+                (Span::Before | Span::After, Some(own)) => &own.account,
                 _ if event.delta.is_sign_negative() => &chart.fallback.expense,
                 _ => &chart.fallback.income,
             };
             used_accounts.insert(near.to_string());
-            let payee = match carries {
-                true => String::new(),
-                false => "未對應紀錄".to_string(),
+            if span == Span::After {
+                tags.push(journal::UNVERIFIED_TAG.to_string());
+            }
+            let payee = match span {
+                Span::Within => "未對應紀錄".to_string(),
+                Span::Before | Span::After => String::new(),
             };
             cathay.push(Directive::Transaction(model::Transaction {
                 date: event.date,
@@ -825,9 +844,10 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 external_ref: (!event.id.is_empty()).then(|| event.id.clone()),
             }));
             cathay.push(Directive::Blank);
-            match carries {
-                true => n_carried += 1,
-                false => n_unmatched_records += 1,
+            match span {
+                Span::Before => n_carried += 1,
+                Span::Within => n_unmatched_records += 1,
+                Span::After => n_unverified += 1,
             }
         }
     }
@@ -961,6 +981,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         other_accounts: n_other,
         unmatched_records: n_unmatched_records,
         carried: n_carried,
+        unverified: n_unverified,
         output: None,
         anchor,
         backfilled: n_backfill,

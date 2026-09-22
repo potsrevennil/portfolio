@@ -36,6 +36,9 @@ pub struct Summary {
     /// Records of a statement account from before its statement begins, which
     /// carry its balance up to the statement's opening.
     pub carried: usize,
+    /// Records of a statement account newer than its last statement, booked
+    /// onto it and tagged unverified.
+    pub unverified: usize,
     /// 天天記帳 names with no entry in mapping.toml.
     pub unmapped: BTreeSet<String>,
     /// `[overrides]` ids that matched no record in the exports. A correction is
@@ -103,6 +106,13 @@ impl fmt::Display for Summary {
                 f,
                 "  {} records carry a statement account's balance up to its first statement",
                 self.carried
+            )?;
+        }
+        if self.unverified > 0 {
+            writeln!(
+                f,
+                "  {} records newer than a statement account's last statement, tagged unverified",
+                self.unverified
             )?;
         }
         if !self.superseded_openings.is_empty() {

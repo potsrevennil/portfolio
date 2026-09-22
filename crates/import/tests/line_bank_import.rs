@@ -99,6 +99,7 @@ a:2,active,2025-12-01,,income,1000,TWD,國泰,,,,薪資,,,,,app,x,U2,raw,,
 a:3,active,2026-01-05,,transfer,500,TWD,國泰,LINE,500,TWD,,,,,,app,x,U3,raw,,
 a:4,active,2026-01-10,,transfer,300,TWD,LINE,現金,300,TWD,,,,,,app,x,U4,raw,,
 a:5,active,2026-01-12,,expense,50,TWD,LINE,,,,飲食,,,,,app,x,U5,raw,,
+a:6,active,2026-03-05,,expense,20,TWD,LINE,,,,飲食,,,,,app,x,U6,raw,,
 ";
 
 static FAKE_PDFTOTEXT: Once = Once::new();
@@ -253,6 +254,19 @@ fn the_freeze_checks_every_month_against_its_statement() -> Result<()> {
         ("Assets:LineBank".to_string(), dec!(500)),
     ]);
     assert!(written.postings.iter().all(|p| p.payee.as_deref() != Some("未對應紀錄")));
+
+    // Newer than the last statement: on the account, tagged unverified.
+    let march: Vec<(String, Decimal, Option<String>)> = written
+        .postings
+        .iter()
+        .filter(|p| p.date.to_string() == "2026-03-05")
+        .map(|p| (p.account.clone(), p.amount, p.tags.clone()))
+        .collect();
+    let unverified = Some(journal::UNVERIFIED_TAG.to_string());
+    assert_eq!(march, [
+        ("Expenses:Food".to_string(), dec!(20), unverified.clone()),
+        ("Assets:LineBank".to_string(), dec!(-20), unverified),
+    ]);
     Ok(())
 }
 
@@ -272,6 +286,11 @@ async fn a_frozen_ledger_holds_every_line() -> Result<()> {
     })
     .await?;
     let pool = db::init_db(&url).await?;
+    let unreviewed: Vec<String> =
+        sqlx::query_scalar("SELECT date FROM transactions WHERE reviewed = 0")
+            .fetch_all(&pool)
+            .await?;
+    assert_eq!(unreviewed, ["2026-03-05"]);
 
     let report = f.import(&pool, Bank::LineBank, &args.build.line_bank_statements).await?;
     assert_eq!(report.inserted, 0, "{report}");

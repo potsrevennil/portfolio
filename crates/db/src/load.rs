@@ -8,7 +8,8 @@
 //! `mapping.toml`) and, as a cheap tripwire, refuses a transaction whose legs
 //! do not sum to zero per currency. It is one-time: it refuses a non-empty
 //! database. It also loads the journal's balance assertions and commits only if
-//! [`check`] passes. Frozen history is loaded as reviewed.
+//! [`check`] passes. Frozen history is loaded as reviewed, except records
+//! tagged [`journal::UNVERIFIED_TAG`].
 //!
 //! ```text
 //! cargo run -- load-journal --journal ledger/journal.csv --database-url sqlite:ledger-app.db
@@ -148,6 +149,9 @@ pub async fn run(args: &Args) -> Result<Report> {
         }
 
         let header = legs[0];
+        let unverified = legs.iter().any(|l| {
+            l.tags.as_deref().is_some_and(|t| t.split(',').any(|t| t == journal::UNVERIFIED_TAG))
+        });
         let txn_id = insert_transaction(
             &mut tx,
             header.date,
@@ -155,6 +159,7 @@ pub async fn run(args: &Args) -> Result<Report> {
             Some(&header.narration),
             header.source,
             header.external_ref.as_deref(),
+            !unverified,
         )
         .await
         .context("inserting transaction")?;
@@ -192,16 +197,18 @@ async fn insert_transaction(
     narration: Option<&str>,
     source: Source,
     external_ref: Option<&str>,
+    reviewed: bool,
 ) -> Result<i64> {
     Ok(sqlx::query(
         "INSERT INTO transactions (date, payee, narration, source, external_ref, reviewed) VALUES \
-         (?, ?, ?, ?, ?, 1)",
+         (?, ?, ?, ?, ?, ?)",
     )
     .bind(date.to_string())
     .bind(payee)
     .bind(narration)
     .bind(source.to_string())
     .bind(external_ref)
+    .bind(reviewed)
     .execute(tx)
     .await?
     .last_insert_rowid())
