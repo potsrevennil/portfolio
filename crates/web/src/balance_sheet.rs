@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use leptos::{prelude::*, web_sys::HtmlDetailsElement};
 use leptos_meta::Title;
 
-use crate::model::{BalanceSheet, Converted, Money, Node, Section, Unpriced};
+use crate::model::{BalanceSheet, Converted, JournalQuery, Money, Node, Section, Unpriced};
 
 /// Where the open groups are remembered across visits, per browser.
 const OPEN_KEY: &str = "balance-sheet-open";
@@ -126,7 +126,9 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     let row = || {
         view! {
             <span class="marker" aria-hidden="true"></span>
-            <span class="name">{n.label.clone()}</span>
+            <a class="name" href=format!("/journal{}", JournalQuery::account(&n.path))>
+                {n.label.clone()}
+            </a>
             <Figures total=n.total.clone() native=n.native.clone() />
         }
     };
