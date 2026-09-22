@@ -14,8 +14,8 @@ use super::{
     accounts::{self, AccountType},
     args::Args,
     corrected, daily,
-    emit::{contra_posting, emit_daily_accounts, narration_for, resolve},
-    journal, matching,
+    emit::{contra_posting, emit_daily_accounts, narration_for, record_on, resolve},
+    matching,
     model::{self, Directive},
     names::{fallback_account, statement_account},
     statements::{
@@ -815,8 +815,6 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 continue;
             }
             emitted.insert(event.record);
-            let (target, mut tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
-            used_accounts.insert(target.clone());
             let span = span_of(pool, event);
             let near: &str = match (span, chart.account(pool)) {
                 (Span::Before | Span::After, Some(own)) => &own.account,
@@ -824,25 +822,21 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 _ => &chart.fallback.income,
             };
             used_accounts.insert(near.to_string());
-            if span == Span::After {
-                tags.push(journal::UNVERIFIED_TAG.to_string());
-            }
             let payee = match span {
                 Span::Within => "未對應紀錄".to_string(),
                 Span::Before | Span::After => String::new(),
             };
-            cathay.push(Directive::Transaction(model::Transaction {
-                date: event.date,
+            let txn = record_on(
+                &chart,
+                event,
+                near,
                 payee,
-                narration: narration_for(&chart, event.correction_id(), &event.memo).to_string(),
-                tags,
-                postings: vec![
-                    contra_posting(target, event),
-                    writer::Posting::new(near, event.delta, event.currency),
-                ],
-                source: model::Source::Tiantian,
-                external_ref: (!event.id.is_empty()).then(|| event.id.clone()),
-            }));
+                span == Span::After,
+                &mut unmapped,
+                &mut used_overrides,
+            );
+            used_accounts.insert(txn.postings[0].account.clone());
+            cathay.push(Directive::Transaction(txn));
             cathay.push(Directive::Blank);
             match span {
                 Span::Before => n_carried += 1,

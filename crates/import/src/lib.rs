@@ -4,4 +4,5 @@
 pub mod bank;
 pub mod broker;
 pub mod matcher;
+pub mod pairing;
 pub mod plan;
