@@ -9,7 +9,6 @@ chrono        = { workspace = true, features = ["clock"] }
 clap          = { workspace = true }
 console       = { workspace = true }
 csv           = { workspace = true }
-db            = { workspace = true }
 dialoguer     = { workspace = true }
 gxhash        = { workspace = true }
 ledger-types  = { workspace = true, features = ["clap"] }
@@ -18,7 +17,6 @@ prices        = { workspace = true }
 regex         = { workspace = true }
 rust_decimal  = { workspace = true }
 serde         = { workspace = true }
-sqlx          = { workspace = true }
 strum         = { workspace = true }
 strum_macros  = { workspace = true }
 toml          = { workspace = true }

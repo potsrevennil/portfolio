@@ -74,7 +74,7 @@ pub async fn run(args: &Args) -> Result<Report> {
     let journal = journal::read(&args.journal)?;
     let assertions = journal::read_assertions(&journal::assertions_path(&args.journal))?;
     let labels = Labels::load(&args.mapping)?;
-    let pool = db::init_db(&args.database_url).await?;
+    let pool = crate::init_db(&args.database_url).await?;
     guard_empty(&pool).await?;
 
     let mut tx = pool.begin().await?;

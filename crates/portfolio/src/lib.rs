@@ -11,4 +11,4 @@ pub mod securities;
 pub mod split;
 
 pub use portfolio::{Order, Portfolio, SortBy};
-pub use split::service::{Splits, StockSplits};
+pub use split::store::{SplitStore, StockSplits};

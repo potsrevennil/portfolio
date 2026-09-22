@@ -2,13 +2,12 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use portfolio::{SplitStore, StockSplits};
 use rust_decimal::{
     prelude::{FromPrimitive, ToPrimitive},
     Decimal,
 };
 use sqlx::{query_as, SqlitePool};
-
-use crate::split::service::StockSplits;
 
 #[derive(sqlx::FromRow, Debug)]
 struct StockSplitRow {
@@ -18,14 +17,16 @@ struct StockSplitRow {
 }
 
 #[derive(Clone)]
-pub struct SplitStore {
+pub struct StockSplitStore {
     pool: SqlitePool,
 }
 
-impl SplitStore {
-    pub fn new(pool: SqlitePool) -> Self { SplitStore { pool } }
+impl StockSplitStore {
+    pub fn new(pool: SqlitePool) -> Self { StockSplitStore { pool } }
+}
 
-    pub async fn save_splits(&self, splits: &StockSplits) -> Result<()> {
+impl SplitStore for StockSplitStore {
+    async fn save_splits(&self, splits: &StockSplits) -> Result<()> {
         if splits.is_empty() {
             return Ok(());
         }
@@ -72,11 +73,7 @@ impl SplitStore {
         Ok(())
     }
 
-    pub async fn get_splits(
-        &self,
-        start_date: NaiveDate,
-        end_date: NaiveDate,
-    ) -> Result<StockSplits> {
+    async fn get_splits(&self, start_date: NaiveDate, end_date: NaiveDate) -> Result<StockSplits> {
         let records = query_as!(
             StockSplitRow,
             "SELECT symbol, date, ratio FROM stock_splits WHERE date >= ? AND date <= ? ORDER BY \

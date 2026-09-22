@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
+use db::{quotes::StockPriceStore, splits::StockSplitStore};
 use portfolio::{calculate, record};
 use prices::PriceService;
 
@@ -30,7 +31,7 @@ enum Command {
     /// Freeze reconciled history to a journal CSV (one-time / audit-time)
     Freeze(ledger::freeze::FreezeArgs),
     /// Load a frozen journal CSV into the SQLite core tables
-    LoadJournal(store::load::Args),
+    LoadJournal(db::load::Args),
     /// Check every balance assertion against the postings; fails on any
     /// mismatch
     Check(Database),
@@ -86,12 +87,12 @@ impl Cli {
                 }
             }
             Some(Command::LoadJournal(args)) => {
-                print!("{}", store::load::run(args).await?);
+                print!("{}", db::load::run(args).await?);
                 Ok(())
             }
             Some(Command::Check(args)) => {
                 let pool = db::open_db(&args.database_url).await?;
-                let report = store::check::check(&mut *pool.acquire().await?).await?;
+                let report = db::check::check(&mut *pool.acquire().await?).await?;
                 print!("{report}");
                 match (report.ok(), report.figures()) {
                     (true, _) => Ok(()),
@@ -105,7 +106,7 @@ impl Cli {
             }
             Some(Command::ExportHledger(args)) => {
                 let pool = db::open_db(&args.database.database_url).await?;
-                let journal = store::hledger::export(&mut *pool.acquire().await?).await?;
+                let journal = db::hledger::export(&mut *pool.acquire().await?).await?;
                 std::fs::write(&args.output, journal)?;
                 println!("wrote {}", args.output.display());
                 Ok(())
@@ -115,13 +116,19 @@ impl Cli {
                 Ok(())
             }
             Some(Command::Rates(args)) => {
-                let pool = db::init_db("sqlite:sqlite.db").await?;
-                let written = ledger::rates::fetch(args, &PriceService::new(pool)).await?;
+                let (prices, _) = tracker_stores().await?;
+                let written = ledger::rates::fetch(args, &prices).await?;
                 println!("wrote {written} price directives");
                 Ok(())
             }
-            Some(Command::Init(args)) => calculate::init(args).await,
-            None => calculate::run(&self.calculate_args).await,
+            Some(Command::Init(args)) => calculate::init(args, tracker_stores()).await,
+            None => calculate::run(&self.calculate_args, tracker_stores()).await,
         }
     }
+}
+
+/// The stock tracker's database, which caches quotes and splits.
+async fn tracker_stores() -> Result<(PriceService<StockPriceStore>, StockSplitStore)> {
+    let pool = db::init_db("sqlite:sqlite.db").await?;
+    Ok((PriceService::new(StockPriceStore::new(pool.clone())), StockSplitStore::new(pool)))
 }

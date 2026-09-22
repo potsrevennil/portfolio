@@ -1,7 +1,17 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, str::FromStr};
 
 use anyhow::{Context, Result};
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    SqlitePool,
+};
+
+/// Opens a database as it is: never creates one, never migrates it. A
+/// mistyped path fails instead of serving an empty ledger.
+pub async fn connect(url: &str) -> Result<SqlitePool> {
+    let options = SqliteConnectOptions::from_str(url)?.create_if_missing(false);
+    SqlitePool::connect_with(options).await.with_context(|| format!("opening {url}"))
+}
 
 /// Opens a database that must already exist: a read-only command pointed at a
 /// typo would otherwise create an empty one and report it as healthy.

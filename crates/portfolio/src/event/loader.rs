@@ -21,7 +21,7 @@ pub enum DataSource {
 pub async fn load(
     sources: Vec<DataSource>,
     output_file: Option<String>,
-    split_store: &SplitStore,
+    split_store: &impl SplitStore,
     securities: &Securities,
 ) -> Result<HashMap<Broker, (BTreeMap<NaiveDate, Event>, HashMap<String, Security>)>> {
     let mut broker_data: HashMap<Broker, (BTreeMap<NaiveDate, Event>, HashMap<String, Security>)> =

@@ -14,7 +14,7 @@ const OPEN_KEY: &str = "balance-sheet-open";
 pub async fn load_balance_sheet() -> Result<BalanceSheet, ServerFnError> {
     use ledger_types::currency::Currency;
 
-    let pool = expect_context::<sqlx::SqlitePool>();
+    let pool = expect_context::<db::SqlitePool>();
     let at_cost = expect_context::<ledger::valuation::AtCost>();
     let today = chrono::Local::now().date_naive();
     crate::sheet::load(&pool, today, Currency::TWD, &at_cost)

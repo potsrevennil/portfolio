@@ -1,9 +1,9 @@
+use db::import::{ImportStore, InsertOutcome, Posting, Transaction};
 use ledger::{labels::Labels, model::Source};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::SqlitePool;
-use store::import::{ImportStore, InsertOutcome, Posting, Transaction};
 
 async fn fixture() -> (tempfile::TempDir, SqlitePool) {
     let dir = tempfile::tempdir().unwrap();

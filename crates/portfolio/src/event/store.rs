@@ -5,12 +5,12 @@ use chrono::NaiveDate;
 
 use crate::{
     portfolio::portfolio::Event,
-    split::{service::StockSplits, store::SplitStore},
+    split::store::{SplitStore, StockSplits},
 };
 
 pub async fn store_splits(
     events: &BTreeMap<NaiveDate, Event>,
-    split_store: &SplitStore,
+    split_store: &impl SplitStore,
 ) -> Result<()> {
     // Extract all splits from events and save them
     let mut all_splits: StockSplits = BTreeMap::new();
@@ -23,7 +23,7 @@ pub async fn store_splits(
     Ok(())
 }
 
-pub async fn load_splits(split_store: &SplitStore) -> Result<StockSplits> {
+pub async fn load_splits(split_store: &impl SplitStore) -> Result<StockSplits> {
     let start_date = NaiveDate::from_ymd_opt(1900, 1, 1).unwrap();
     let end_date = NaiveDate::from_ymd_opt(2100, 12, 31).unwrap();
     split_store.get_splits(start_date, end_date).await

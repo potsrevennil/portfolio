@@ -20,7 +20,6 @@ import     = { workspace = true }
 ledger     = { workspace = true }
 portfolio  = { workspace = true }
 prices     = { workspace = true }
-store      = { workspace = true }
 tokio      = { workspace = true }
 
 [dev-dependencies]

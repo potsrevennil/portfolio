@@ -4,4 +4,4 @@ pub mod store;
 
 pub use service::PriceService;
 pub use source::{PriceError, StockPrice, YFinanceSource};
-pub use store::StockPriceStore;
+pub use store::PriceStore;

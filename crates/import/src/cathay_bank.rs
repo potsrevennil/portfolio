@@ -8,17 +8,16 @@
 use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
+use db::{
+    assertions, check,
+    import::{ensure_account, insert_deduped, InsertOutcome},
+    import_batch, SqliteConnection,
+};
 use ledger::{
     accounts::Chart,
     labels::Labels,
     names::statement_account,
     statements::cathay::{self, Merged},
-};
-use sqlx::SqliteConnection;
-use store::{
-    assertions, check,
-    import::{ensure_account, insert_deduped, InsertOutcome},
-    import_batch,
 };
 
 use super::plan::{self, Candidate, Plan};

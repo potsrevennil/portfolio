@@ -49,4 +49,3 @@ ledger       = { path = "crates/ledger" }
 ledger-types = { path = "crates/ledger-types" }
 portfolio    = { path = "crates/portfolio" }
 prices       = { path = "crates/prices" }
-store        = { path = "crates/store" }

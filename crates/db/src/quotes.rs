@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use prices::{PriceStore, StockPrice};
 use sqlx::{QueryBuilder, Sqlite};
-
-use super::source::{PriceError, StockPrice};
 
 #[derive(sqlx::FromRow, Debug)]
 struct StockPriceRow {
@@ -19,7 +18,6 @@ struct PriceCheckRow {
     fetched_through: NaiveDate,
 }
 
-// --- Layer 2: Local Price PriceStore ---
 #[derive(Clone)]
 pub struct StockPriceStore {
     pool: sqlx::SqlitePool,
@@ -27,11 +25,10 @@ pub struct StockPriceStore {
 
 impl StockPriceStore {
     pub fn new(pool: sqlx::SqlitePool) -> Self { StockPriceStore { pool } }
+}
 
-    pub async fn save_stock_prices(
-        &self,
-        prices_map: &HashMap<String, Vec<StockPrice>>,
-    ) -> Result<(), PriceError> {
+impl PriceStore for StockPriceStore {
+    async fn save_stock_prices(&self, prices_map: &HashMap<String, Vec<StockPrice>>) -> Result<()> {
         if prices_map.is_empty() {
             return Ok(());
         }
@@ -63,12 +60,7 @@ impl StockPriceStore {
         Ok(())
     }
 
-    /// The date each symbol was last fetched through, for symbols that have a
-    /// record. A symbol not in the map has never been fetched.
-    pub async fn get_fetched_through(
-        &self,
-        symbols: &[&str],
-    ) -> Result<HashMap<String, NaiveDate>, PriceError> {
+    async fn get_fetched_through(&self, symbols: &[&str]) -> Result<HashMap<String, NaiveDate>> {
         let mut fetched_through = HashMap::new();
         const BATCH_SIZE: usize = 500;
 
@@ -92,12 +84,7 @@ impl StockPriceStore {
         Ok(fetched_through)
     }
 
-    /// Record that these symbols have been fetched through `date`.
-    pub async fn mark_fetched_through(
-        &self,
-        symbols: &[&str],
-        date: NaiveDate,
-    ) -> Result<(), PriceError> {
+    async fn mark_fetched_through(&self, symbols: &[&str], date: NaiveDate) -> Result<()> {
         if symbols.is_empty() {
             return Ok(());
         }
@@ -116,25 +103,12 @@ impl StockPriceStore {
         Ok(())
     }
 
-    pub async fn get_latest_date(&self, symbol: &str) -> Result<Option<NaiveDate>, PriceError> {
-        let record = sqlx::query!(
-            r#"
-            SELECT MAX(date) as "max_date: NaiveDate" FROM stock_prices WHERE symbol = ?
-            "#,
-            symbol
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(record.and_then(|r| r.max_date))
-    }
-
-    pub async fn get_stock_prices_in_range(
+    async fn get_stock_prices_in_range(
         &self,
         symbols: &[&str],
         start_date: NaiveDate,
         end_date: NaiveDate,
-    ) -> Result<HashMap<String, Vec<StockPrice>>, PriceError> {
+    ) -> Result<HashMap<String, Vec<StockPrice>>> {
         let mut prices_map = HashMap::new();
 
         // SQLite has a limit of 999 host parameters. Each symbol uses 1 parameter.

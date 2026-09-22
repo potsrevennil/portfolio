@@ -4,11 +4,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use db::load;
 use ledger::{args::Args as BuildArgs, build, freeze, journal};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use store::load;
 use tempfile::TempDir;
 
 const MAPPING: &str = r#"

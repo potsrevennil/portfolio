@@ -1,7 +1,6 @@
-//! Creates and migrates the database the sqlx query macros in `prices`,
-//! `portfolio` and `store` check against. It lives at the workspace root: in a
-//! workspace the macros resolve a relative `DATABASE_URL` from there, while
-//! this script runs in `crates/db`.
+//! Creates and migrates the database this crate's sqlx query macros check
+//! against. It lives at the workspace root: in a workspace the macros resolve
+//! a relative `DATABASE_URL` from there, while this script runs in `crates/db`.
 
 use std::{fs, path::PathBuf};
 

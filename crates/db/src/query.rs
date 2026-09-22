@@ -30,7 +30,7 @@ pub use ledger::accounts::in_subtree;
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use portfolio::portfolio::{holding::Holding, statement::Statement, Portfolio};
-use prices::{source::YFinanceSource, StockPrice, StockPriceStore};
+use prices::{source::YFinanceSource, PriceStore, StockPrice};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
@@ -481,7 +481,7 @@ pub async fn load_fx_prices(
             let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
             // A date far enough back to pick up every recorded quote.
             let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid epoch date");
-            StockPriceStore::new(pool.clone())
+            crate::quotes::StockPriceStore::new(pool.clone())
                 .get_stock_prices_in_range(&refs, epoch, end)
                 .await
                 .context("loading FX rates from stock_prices")

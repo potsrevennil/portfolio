@@ -9,7 +9,7 @@
 //! 3. Else the ASCII leaf.
 //!
 //! This is the label a tree shows. Outside a tree, a label two accounts share
-//! needs its parent's in front; see `store::chart::standalone_labels`.
+//! needs its parent's in front; see `db::chart::standalone_labels`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},

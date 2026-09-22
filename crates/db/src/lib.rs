@@ -1,10 +1,20 @@
-//! All SQLite access. One file per feature so parallel tasks merge cleanly.
+//! All SQLite access: the schema, its migrations and every query. Other crates
+//! hold no SQL; where their logic needs storage they declare a trait
+//! (`prices::PriceStore`, `portfolio::SplitStore`) and this crate implements
+//! it.
 
 pub mod assertions;
 pub mod chart;
 pub mod check;
+pub mod connect;
 pub mod hledger;
 pub mod import;
 pub mod import_batch;
 pub mod load;
 pub mod query;
+pub mod quotes;
+pub mod splits;
+
+pub use connect::{connect, init_db, open_db};
+// The handles callers pass around, so only this crate depends on sqlx.
+pub use sqlx::{SqliteConnection, SqlitePool};

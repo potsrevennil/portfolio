@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use prices::{StockPrice, StockPriceStore};
-use tokio;
+use db::quotes::StockPriceStore;
+use prices::{PriceStore, StockPrice};
 
-#[path = "../common/mod.rs"]
+#[path = "common/mod.rs"]
 mod common;
 use common::create_temp_db;
 

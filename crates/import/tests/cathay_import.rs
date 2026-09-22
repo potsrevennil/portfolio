@@ -4,6 +4,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
+use db::load;
 use import::{
     cathay_bank::{import, Report},
     plan::Candidate,
@@ -12,7 +13,6 @@ use ledger::{accounts::Chart, args::Args as BuildArgs, freeze};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::{Row, SqlitePool};
-use store::load;
 use tempfile::TempDir;
 
 const MAPPING: &str = r#"
