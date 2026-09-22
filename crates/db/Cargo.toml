@@ -1,0 +1,20 @@
+[package]
+name              = "db"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+log    = { workspace = true }
+sqlx   = { workspace = true }
+
+# The build step creates and migrates the database the sqlx macros in the
+# crates above check their queries against.
+[build-dependencies]
+anyhow = { workspace = true }
+sqlx   = { workspace = true }
+tokio  = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio    = { workspace = true }

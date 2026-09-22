@@ -519,6 +519,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "csv",
+ "db",
+ "env_logger",
+ "import",
+ "ledger",
+ "portfolio",
+ "prices",
+ "store",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "codee"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -819,6 +838,17 @@ name = "data-encoding"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
+
+[[package]]
+name = "db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "der"
@@ -1631,6 +1661,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "import"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "csv",
+ "db",
+ "ledger",
+ "ledger-types",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "sqlx",
+ "store",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1735,6 +1785,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 dependencies = [
  "spin",
+]
+
+[[package]]
+name = "ledger"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "csv",
+ "ledger-types",
+ "log",
+ "prices",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "strum",
+ "strum_macros",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "ledger-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "rust_decimal",
+ "serde",
+ "strum",
+ "strum_macros",
 ]
 
 [[package]]
@@ -2480,37 +2562,21 @@ dependencies = [
  "clap",
  "console",
  "csv",
+ "db",
  "dialoguer",
- "env_logger",
- "futures",
  "gxhash",
+ "ledger-types",
  "log",
- "portfolio",
- "portfolio-types",
+ "prices",
  "regex",
  "rust_decimal",
- "rust_decimal_macros",
  "serde",
- "serde_json",
  "sqlx",
  "strum",
  "strum_macros",
  "tempfile",
- "thiserror 1.0.69",
- "tokio",
  "toml 0.8.23",
  "unicode-width 0.1.14",
- "yfinance-rs",
-]
-
-[[package]]
-name = "portfolio-types"
-version = "0.1.0"
-dependencies = [
- "clap",
- "serde",
- "strum",
- "strum_macros",
 ]
 
 [[package]]
@@ -2545,6 +2611,24 @@ checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "prices"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "db",
+ "futures",
+ "ledger-types",
+ "log",
+ "rust_decimal",
+ "sqlx",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "yfinance-rs",
 ]
 
 [[package]]
@@ -3748,6 +3832,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
 
 [[package]]
+name = "store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "csv",
+ "db",
+ "ledger",
+ "ledger-types",
+ "log",
+ "portfolio",
+ "prices",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "sqlx",
+ "strum",
+ "strum_macros",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "stringprep"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4647,18 +4756,21 @@ dependencies = [
  "axum",
  "chrono",
  "console_error_panic_hook",
+ "db",
  "http-body-util",
+ "ledger",
+ "ledger-types",
  "leptos",
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
- "portfolio",
- "portfolio-types",
+ "prices",
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
  "serde_json",
  "sqlx",
+ "store",
  "tempfile",
  "tokio",
  "tower",

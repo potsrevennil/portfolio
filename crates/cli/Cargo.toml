@@ -1,0 +1,28 @@
+[package]
+name              = "cli"
+version.workspace = true
+edition.workspace = true
+
+# The command keeps its name: `portfolio freeze …`, `portfolio load-journal …`.
+[[bin]]
+name = "portfolio"
+path = "src/main.rs"
+# Its docs would overwrite the portfolio library's, which share the name.
+doc = false
+
+[dependencies]
+anyhow     = { workspace = true }
+clap       = { workspace = true }
+csv        = { workspace = true }
+db         = { workspace = true }
+env_logger = { workspace = true }
+import     = { workspace = true }
+ledger     = { workspace = true }
+portfolio  = { workspace = true }
+prices     = { workspace = true }
+store      = { workspace = true }
+tokio      = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+toml     = { workspace = true }

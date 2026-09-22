@@ -1,0 +1,18 @@
+[package]
+name              = "ledger-types"
+version.workspace = true
+edition.workspace = true
+
+# Compiles to wasm too: nothing here may pull in SQLite, the network or the
+# filesystem.
+[dependencies]
+chrono       = { workspace = true }
+clap         = { workspace = true, optional = true }
+rust_decimal = { workspace = true }
+serde        = { workspace = true }
+strum        = { workspace = true }
+strum_macros = { workspace = true }
+
+[features]
+# The CLI parses currencies from arguments; the browser build has no CLI.
+clap = ["dep:clap"]

@@ -51,14 +51,14 @@ jobs:
       # drift. It covers every `repo: local` hook in .pre-commit-config.yaml.
       - shell: nix develop -c bash -e {0}
         run: scripts/format --check
-      # The script is listed alongside migrations/ so a change to the check
+      # The script is listed alongside the migrations so a change to the check
       # itself (e.g. a new seed row) is still exercised before it lands.
       - uses: dorny/paths-filter@v4
         id: changes
         with:
           filters: |
             migrations:
-              - migrations/**
+              - crates/db/migrations/**
               - scripts/check-migrations
       # Round-trips the sqlx migrations (apply, seed, revert, re-apply) so a down
       # migration with the wrong drop order fails here, not in a real rollback.
@@ -98,9 +98,9 @@ jobs:
         with:
           cache-on-failure: true
           cache-all-crates: true
-      # No SQLX_OFFLINE: build.rs creates sqlite.db (gitignored, so absent in a
-      # fresh checkout) and runs ./migrations against it before the crate
-      # compiles, which gives the one sqlx::query! macro a live schema to check
+      # No SQLX_OFFLINE: crates/db/build.rs creates sqlite.db (gitignored, so absent
+      # in a fresh checkout) and runs the migrations against it before the crates
+      # compile, which gives the sqlx::query! macros a live schema to check
       # against. That is strictly more checking than offline mode reading
       # .sqlx/, and it means a stale .sqlx/ cache shows up as a failure here
       # instead of passing quietly.

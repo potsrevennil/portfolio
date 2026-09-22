@@ -22,7 +22,7 @@ set -o nounset
 set -o pipefail
 
 ROOT="$(realpath "$(dirname "$0")"/../)"
-MIGRATIONS="$ROOT/migrations"
+MIGRATIONS="$ROOT/crates/db/migrations"
 
 if tput setaf 1 >/dev/null 2>&1; then
   GREEN="$(tput setaf 2)"
