@@ -31,8 +31,6 @@ impl Money {
 
     /// Dust that rounded to zero is not negative.
     pub fn is_negative(&self) -> bool { self.amount < Decimal::ZERO }
-
-    pub fn is_zero(&self) -> bool { self.amount.is_zero() }
 }
 
 impl fmt::Display for Money {
@@ -98,22 +96,16 @@ pub struct Node {
     /// when it holds any currency other than the base: the figure its
     /// statement shows.
     pub native: Vec<Money>,
-    /// A cost, not a valuation: shown, but left out of every total above it.
-    pub at_cost: bool,
-    /// The at-cost holdings below it that `total` leaves out.
-    pub excluded: Option<Converted>,
     pub children: Vec<Node>,
 }
 
-/// 資產 or 負債.
+/// 資產, 負債, or the holdings carried at cost.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
     /// The root path, identifying the section's fold state; never shown.
     pub path: String,
     pub label: String,
     pub total: Converted,
-    /// The at-cost holdings this section's total leaves out.
-    pub excluded: Option<Converted>,
     pub nodes: Vec<Node>,
 }
 
@@ -123,8 +115,9 @@ pub struct BalanceSheet {
     pub base: Currency,
     pub sections: Vec<Section>,
     pub net_worth: Converted,
-    /// The at-cost holdings net worth leaves out.
-    pub excluded: Option<Converted>,
+    /// 以成本衡量之投資: what was paid for holdings with no market price, one
+    /// row per holding, outside every total. `None` when there are none.
+    pub at_cost: Option<Section>,
 }
 
 #[cfg(test)]

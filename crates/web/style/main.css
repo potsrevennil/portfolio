@@ -123,6 +123,16 @@ main {
   white-space: nowrap;
 }
 
+/* A long section heading wraps rather than run into its figure. */
+.row.section .name {
+  flex: 0 1 auto;
+  white-space: normal;
+}
+
+.row.section .figures {
+  flex: 1 0 auto;
+}
+
 .marker {
   flex: none;
   width: 1rem;
@@ -166,19 +176,16 @@ details.group[open] > summary .marker::before {
 }
 
 .row.section,
+/* The headline, above the sections it sums. */
 .row.net {
   font-weight: 700;
   font-size: 1.3rem;
+  border-bottom: 2px solid var(--line);
 }
 
 details.group > summary.row.section {
   margin-top: 0.6rem;
   border-top: 1px solid var(--line);
-}
-
-.row.net {
-  margin-top: 0.6rem;
-  border-top: 2px solid var(--line);
 }
 
 .figures {
@@ -200,7 +207,6 @@ details.group > summary.row.section {
 }
 
 .native,
-.at-cost,
 .unpriced {
   color: var(--muted);
   font-size: 0.85rem;
@@ -249,6 +255,21 @@ details.group > summary.row.section {
   padding: 0.8rem;
   border: 1px solid var(--line);
   border-radius: 0.4rem;
+}
+
+/* Holdings at cost sit below net worth, set apart: no total includes them. */
+.cost-section {
+  margin-top: 1.5rem;
+}
+
+/* Below net worth and in no total, so a step smaller than 資產 and 負債. */
+.cost-section summary.row.section {
+  font-size: 1.1rem;
+}
+
+.tiles.aside {
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
 }
 
 .tile .name {

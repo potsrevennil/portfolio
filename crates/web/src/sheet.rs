@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use chrono::NaiveDate;
 use db::{
+    chart,
     query::{self, AccountBalance, AccountType, LedgerData},
     SqlitePool,
 };
@@ -19,6 +20,9 @@ use crate::model::{BalanceSheet, Converted, Money, Node, Section, Unpriced};
 
 /// Section headings when the chart has no label for the root.
 const SECTIONS: [(&str, &str); 2] = [("Assets", "資產"), ("Liabilities", "負債")];
+
+/// The at-cost section: named as Taiwanese statements name the line item.
+const AT_COST: (&str, &str) = ("at-cost", "以成本衡量之投資");
 
 pub async fn load(
     pool: &SqlitePool,
@@ -40,8 +44,6 @@ struct Tree {
     sums: BTreeMap<Currency, Decimal>,
     /// The account's own postings, without its descendants'.
     own: BTreeMap<Currency, Decimal>,
-    /// At-cost holdings below it, which `sums` leaves out.
-    cost: BTreeMap<Currency, Decimal>,
     children: BTreeMap<String, Tree>,
 }
 
@@ -79,28 +81,23 @@ pub fn build(
     let shown = balances.iter().filter(|b| {
         matches!(b.account_type, AccountType::Asset | AccountType::Liability) && !b.amount.is_zero()
     });
-    // A holding carried at cost belongs to no total above its own row, so the
-    // sums stop at the at-cost account and the section reports it apart.
+    // A holding carried at cost has no market value, so it stays out of the
+    // tree and its totals, and is listed on its own, by account.
     let mut cost: BTreeMap<&str, BTreeMap<Currency, Decimal>> = BTreeMap::new();
     for b in shown {
         let Some(root) = b.path.split(':').next() else { continue };
         let Some(mut node) = roots.get_mut(root) else { continue };
-        let counted = query::in_net_worth(b, at_cost);
-        match counted {
-            true => *node.sums.entry(b.currency).or_default() += b.amount,
-            false => *cost.entry(root).or_default().entry(b.currency).or_default() += b.amount,
+        match query::in_net_worth(b, at_cost) {
+            false => *cost.entry(&b.path).or_default().entry(b.currency).or_default() += b.amount,
+            true => {
+                *node.sums.entry(b.currency).or_default() += b.amount;
+                for depth in 2..=b.path.split(':').count() {
+                    node = node.children.entry(node_path(&b.path, depth).to_string()).or_default();
+                    *node.sums.entry(b.currency).or_default() += b.amount;
+                }
+                *node.own.entry(b.currency).or_default() += b.amount;
+            }
         }
-        let depths = b.path.split(':').count();
-        let from = (1..=depths).find(|d| at_cost.covers(node_path(&b.path, *d)));
-        for depth in 2..=depths {
-            node = node.children.entry(node_path(&b.path, depth).to_string()).or_default();
-            let sums = match counted || from.is_some_and(|first| depth >= first) {
-                true => &mut node.sums,
-                false => &mut node.cost,
-            };
-            *sums.entry(b.currency).or_default() += b.amount;
-        }
-        *node.own.entry(b.currency).or_default() += b.amount;
     }
 
     fn nodes(
@@ -108,7 +105,6 @@ pub fn build(
         label: &dyn Fn(&str) -> String,
         convert: &dyn Fn(&BTreeMap<Currency, Decimal>) -> Converted,
         foreign: &dyn Fn(&BTreeMap<Currency, Decimal>) -> bool,
-        at_cost: &AtCost,
         base: Currency,
     ) -> Vec<Node> {
         children
@@ -120,16 +116,13 @@ pub fn build(
                     true => amounts(&tree.own, base),
                     false => Vec::new(),
                 },
-                at_cost: at_cost.covers(&path),
-                excluded: left_out(convert(&tree.cost)),
-                children: nodes(tree.children, label, convert, foreign, at_cost, base),
+                children: nodes(tree.children, label, convert, foreign, base),
                 path,
             })
             .collect()
     }
 
     let mut net = BTreeMap::<Currency, Decimal>::new();
-    let mut net_cost = BTreeMap::<Currency, Decimal>::new();
     let sections = SECTIONS
         .iter()
         .map(|(root, fallback)| {
@@ -137,17 +130,12 @@ pub fn build(
             for (c, v) in &tree.sums {
                 *net.entry(*c).or_default() += v;
             }
-            let excluded = cost.remove(root).unwrap_or_default();
-            for (c, v) in &excluded {
-                *net_cost.entry(*c).or_default() += v;
-            }
             let own = label(root);
             Section {
                 path: root.to_string(),
                 label: if own == *root { fallback.to_string() } else { own },
                 total: convert(&tree.sums),
-                excluded: left_out(convert(&excluded)),
-                nodes: nodes(tree.children, &label, &convert, &foreign, at_cost, base),
+                nodes: nodes(tree.children, &label, &convert, &foreign, base),
             }
         })
         .collect();
@@ -157,14 +145,55 @@ pub fn build(
         base,
         sections,
         net_worth: convert(&net),
-        excluded: left_out(convert(&net_cost)),
+        at_cost: at_cost_section(&cost, labels, &convert, &foreign, base),
     }
 }
 
-/// Holdings at cost that cancel out leave nothing to mention.
-fn left_out(converted: Converted) -> Option<Converted> {
-    let nothing = converted.money.is_zero() && converted.unpriced.0.is_empty();
-    (!nothing).then_some(converted)
+/// One row per holding, straight under the heading, as a statement's notes
+/// list each investee. The heading is the context, so a holding keeps its
+/// own label; only two holdings sharing one take their parents' in front.
+fn at_cost_section(
+    cost: &BTreeMap<&str, BTreeMap<Currency, Decimal>>,
+    labels: &BTreeMap<&str, &str>,
+    convert: &dyn Fn(&BTreeMap<Currency, Decimal>) -> Converted,
+    foreign: &dyn Fn(&BTreeMap<Currency, Decimal>) -> bool,
+    base: Currency,
+) -> Option<Section> {
+    let standalone = chart::standalone_labels(labels);
+    let own = |path: &str| labels.get(path).copied().unwrap_or(path).to_string();
+    let mut uses = BTreeMap::<String, usize>::new();
+    for path in cost.keys() {
+        *uses.entry(own(path)).or_default() += 1;
+    }
+    let mut total = BTreeMap::<Currency, Decimal>::new();
+    let nodes: Vec<Node> = cost
+        .iter()
+        .map(|(path, sums)| {
+            for (c, v) in sums {
+                *total.entry(*c).or_default() += v;
+            }
+            Node {
+                path: path.to_string(),
+                label: match uses[&own(path)] {
+                    1 => own(path),
+                    _ => standalone.get(*path).cloned().unwrap_or_else(|| own(path)),
+                },
+                total: convert(sums),
+                native: match foreign(sums) {
+                    true => amounts(sums, base),
+                    false => Vec::new(),
+                },
+                children: Vec::new(),
+            }
+        })
+        .collect();
+    let (path, label) = AT_COST;
+    (!nodes.is_empty()).then(|| Section {
+        path: path.to_string(),
+        label: label.to_string(),
+        total: convert(&total),
+        nodes,
+    })
 }
 
 /// The first `depth` segments of `path`.

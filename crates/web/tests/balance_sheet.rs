@@ -2,6 +2,8 @@
 //! journal loaded by the real load-journal (so labels come from mapping.toml),
 //! served by the real router. All values are invented.
 
+use std::collections::BTreeMap;
+
 use axum::{body::Body, http::Request};
 use chrono::NaiveDate;
 use db::{
@@ -236,46 +238,48 @@ async fn groups_fold_in_chart_order() {
     ] {
         rest = &rest[position(rest, label) + label.len()..];
     }
-    // 銀行, 分帳, 甲公司, 乙公司 and 未上市持股 fold, and so do the two sections;
-    // leaves do not. Sections are rendered open, groups folded.
+    // 銀行, 分帳, 甲公司 and 乙公司 fold, and so do the three sections (資產,
+    // 負債, 以成本衡量之投資); leaves do not. Sections open, groups folded.
     assert_eq!(html.matches("<details").count(), 7, "{html}");
-    assert_eq!(html.matches("<details open").count(), 2, "{html}");
+    assert_eq!(html.matches("<details open").count(), 3, "{html}");
 }
 
 #[tokio::test]
 async fn every_row_is_one_figure_in_twd() {
     let (_dir, pool) = ledger().await;
-    let text = visible(&render(&pool).await);
+    let page = visible(&render(&pool).await);
+    // Net worth heads the page, above the sections it sums; the tree follows.
+    let net = position(&page, "淨資產");
+    let tree = net + "淨資產".len() + position(&page[net + "淨資產".len()..], "資產");
+    assert_eq!(page[net..tree].trim(), "淨資產 8,512 TWD （未換算：5,000.00 JPY）");
+    let text = &page[tree..];
     // 資產: 912.34 cash + 7,000 savings + 3,000 (100 USD) + 100 splits; JPY has
     // no rate, so it is named rather than taken at 1:1, and the at-cost holding
     // and the 2025 deposit are left out.
-    let assets = &text[position(&text, "資產")..position(&text, "銀行")];
-    assert_eq!(assets.trim(), "資產 11,012 TWD （未換算：5,000.00 JPY） 另有成本 40,000 TWD");
+    let assets = &text[position(text, "資產")..position(text, "銀行")];
+    assert_eq!(assets.trim(), "資產 11,012 TWD （未換算：5,000.00 JPY）");
     // A leaf holding foreign money keeps its own balance, the statement's figure.
-    let fx = &text[position(&text, "外幣")..position(&text, "活存")];
+    let fx = &text[position(text, "外幣")..position(text, "活存")];
     assert_eq!(fx.trim(), "外幣 2,700 TWD （未換算：5,000.00 JPY） 5,000.00 JPY · 90.00 USD");
     // A group's own foreign money shows too, apart from its sub-accounts'.
-    let bank = &text[position(&text, "銀行")..position(&text, "外幣")];
+    let bank = &text[position(text, "銀行")..position(text, "外幣")];
     assert_eq!(bank.trim(), "銀行 10,000 TWD （未換算：5,000.00 JPY） 10.00 USD");
-    let savings = &text[position(&text, "活存")..position(&text, "現金")];
+    let savings = &text[position(text, "活存")..position(text, "現金")];
     assert_eq!(savings.trim(), "活存 7,000 TWD");
     // TWD is quoted whole, as Fava prints it; the cents are still in the ledger.
-    let cash = &text[position(&text, "現金")..position(&text, "分帳")];
+    let cash = &text[position(text, "現金")..position(text, "分帳")];
     assert_eq!(cash.trim(), "現金 912 TWD");
-    let split = &text[position(&text, "分帳")..position(&text, "甲公司")];
+    let split = &text[position(text, "分帳")..position(text, "甲公司")];
     assert_eq!(split.trim(), "分帳 100 TWD");
-    let alpha = &text[position(&text, "甲公司")..position(&text, "乙公司")];
+    let alpha = &text[position(text, "甲公司")..position(text, "乙公司")];
     assert_eq!(alpha.trim(), "甲公司 300 TWD 分帳 300 TWD");
-    // A group above an at-cost holding says what its total leaves out.
-    let unlisted = &text[position(&text, "未上市持股")..position(&text, "負債")];
-    assert_eq!(
-        unlisted.trim(),
-        "未上市持股 0 TWD 另有成本 40,000 TWD 丙公司股 40,000 TWD 成本，未計入總額"
-    );
-    let liabilities = &text[position(&text, "負債")..position(&text, "信用卡")];
+    // A holding at cost is not in the tree, so no group above it shows.
+    assert!(!text.contains("未上市持股"), "{text}");
+    let liabilities = &text[position(text, "負債")..position(text, "信用卡")];
     assert_eq!(liabilities.trim(), "負債 -2,500 TWD");
-    let net = &text[position(&text, "淨資產")..];
-    assert_eq!(net.trim(), "淨資產 8,512 TWD （未換算：5,000.00 JPY） 另有成本 40,000 TWD");
+    // Last, apart: each holding straight under the heading.
+    let cost = &text[position(text, "以成本衡量之投資")..];
+    assert_eq!(cost.trim(), "以成本衡量之投資 40,000 TWD 丙公司股 40,000 TWD");
 }
 
 /// Only one site serves at a time. Leptos keeps process-wide state, and
@@ -355,7 +359,7 @@ fn a_missing_mapping_lists_no_at_cost_holdings_but_a_broken_one_stops_the_server
 }
 
 #[test]
-fn at_cost_holdings_that_cancel_out_leave_no_note() {
+fn at_cost_holdings_are_listed_apart_from_every_total() {
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let balance = |path: &str, amount: &str| db::query::AccountBalance {
         account_id: 0,
@@ -376,12 +380,43 @@ fn at_cost_holdings_that_cancel_out_leave_no_note() {
         "[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\", \"Assets:Unlisted:Delta\"]\n",
     )
     .unwrap();
-    let sheet =
-        web::sheet::build(&Default::default(), &balances, as_of, Currency::TWD, &at_cost, |_| {
-            Some(Decimal::ONE)
-        });
-    assert_eq!(sheet.excluded, None);
-    assert_eq!(sheet.sections[0].excluded, None);
-    let unlisted = sheet.sections[0].nodes.iter().find(|n| n.path == "Assets:Unlisted").unwrap();
-    assert_eq!(unlisted.excluded, None);
+    // 丙 is also a split account's label, which the tree tells apart by its
+    // parent; under the heading the holding keeps its own.
+    let labels = BTreeMap::from([
+        ("Assets:Split", "分帳"),
+        ("Assets:Split:Gamma", "丙"),
+        ("Assets:Unlisted", "未上市持股"),
+        ("Assets:Unlisted:Gamma", "丙"),
+        ("Assets:Unlisted:Delta", "丁"),
+    ]);
+    let sheet = web::sheet::build(&labels, &balances, as_of, Currency::TWD, &at_cost, |_| {
+        Some(Decimal::ONE)
+    });
+    let assets = &sheet.sections[0];
+    assert_eq!(assets.total.money.amount, Decimal::from(100));
+    assert!(assets.nodes.iter().all(|n| n.path == "Assets:Cash"), "{:?}", assets.nodes);
+    assert_eq!(sheet.net_worth.money.amount, Decimal::from(100));
+    // Listed by holding, even when they cancel out.
+    let cost = sheet.at_cost.expect("the holdings at cost are listed");
+    let listed: Vec<&str> = cost.nodes.iter().map(|n| n.path.as_str()).collect();
+    assert_eq!(listed, ["Assets:Unlisted:Delta", "Assets:Unlisted:Gamma"]);
+    let named: Vec<&str> = cost.nodes.iter().map(|n| n.label.as_str()).collect();
+    assert_eq!(named, ["丁", "丙"]);
+    assert_eq!(cost.total.money.amount, Decimal::ZERO);
+}
+
+#[tokio::test]
+async fn the_summary_shows_holdings_at_cost_apart_from_net_worth() {
+    let (_dir, pool) = ledger().await;
+    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
+    let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
+    let sheet = web::sheet::load(&pool, as_of, Currency::TWD, &at_cost).await.unwrap();
+    let html = Owner::new().with(|| view! { <web::summary::SummaryView sheet /> }.to_html());
+    let text = visible(&html);
+    // Net worth carries no note, and the 資產 tile follows it directly.
+    assert!(text.contains("淨資產 8,512 TWD （未換算：5,000.00 JPY） 資產 11,012 TWD"), "{text}");
+    // After the tiles net worth sums, in a row of its own.
+    assert!(position(&text, "負債") < position(&text, "以成本衡量之投資"), "{text}");
+    assert!(text.trim_end().ends_with("以成本衡量之投資 40,000 TWD"), "{text}");
+    assert!(html.contains(r#"class="tiles aside""#), "{html}");
 }
