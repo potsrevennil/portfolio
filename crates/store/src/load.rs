@@ -1,18 +1,17 @@
 //! The **journal loader**: the app's only historical-load path.
 //!
-//! It reads a trusted [`journal`](ledger::journal) — already reconciled and
-//! verified by the [freeze tool](ledger::freeze) — and writes it into the
-//! SQLite core schema. Deliberately dumb: no reconciliation, no chart, no
-//! Beancount. It derives the chart of accounts from the paths the journal
-//! mentions and their ancestors (type from the root, label from `mapping.toml`,
-//! see [`labels`](ledger::labels)) and, as a cheap tripwire, refuses a
-//! transaction whose legs do not sum to zero per currency. It is one-time: it
-//! refuses a non-empty database. It also loads the journal's balance assertions
-//! and commits only if [`check`](crate::check) passes. Frozen history is
-//! loaded as reviewed.
+//! It reads a trusted [`journal`] — already reconciled and verified by the
+//! [freeze tool](ledger::freeze) — and writes it into the SQLite core schema.
+//! Deliberately dumb: no reconciliation, no chart, no Beancount. It derives the
+//! chart of accounts from the paths the journal mentions and their ancestors
+//! (type from the root, label via [`labels`](ledger::labels) from
+//! `mapping.toml`) and, as a cheap tripwire, refuses a transaction whose legs
+//! do not sum to zero per currency. It is one-time: it refuses a non-empty
+//! database. It also loads the journal's balance assertions and commits only if
+//! [`check`] passes. Frozen history is loaded as reviewed.
 //!
 //! ```text
-//! cargo run -- journal-load --journal ledger/journal.csv --database-url sqlite:ledger-app.db
+//! cargo run -- load-journal --journal ledger/journal.csv --database-url sqlite:ledger-app.db
 //! ```
 
 use std::{
@@ -182,7 +181,7 @@ pub async fn run(args: &Args) -> Result<Report> {
     let check = check::gate(&mut tx).await?;
 
     tx.commit().await?;
-    log::info!("journal-load: committed");
+    log::info!("load-journal: committed");
     Ok(Report { accounts: ids.len(), transactions: groups.len(), postings: posting_count, check })
 }
 

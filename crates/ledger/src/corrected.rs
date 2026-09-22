@@ -1,5 +1,5 @@
 //! Parser for `corrected/transactions.csv`, yielding the same
-//! [`daily::Entry`] records as the native 天天記帳 exports. Only
+//! [`Entry`] records as the native 天天記帳 exports. Only
 //! `status = active` rows count; `posted_date` is ignored.
 
 use std::path::Path;

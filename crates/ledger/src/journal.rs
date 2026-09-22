@@ -90,7 +90,7 @@ pub fn write(path: impl AsRef<Path>, journal: &Journal) -> Result<()> {
     Ok(())
 }
 
-/// Reads the journal CSV back — the inverse of [`write`], used by the loader
+/// Reads the journal CSV back — the inverse of [`write()`], used by the loader
 /// and by the freeze tool's own verification. Columns are matched by header
 /// name.
 pub fn read(path: impl AsRef<Path>) -> Result<Journal> {

@@ -611,7 +611,7 @@ fn rate_as_of(
     }
 }
 
-/// [`rate_as_of`] as an option: a page that shows several currencies names the
+/// `rate_as_of` as an option: a page that shows several currencies names the
 /// unpriced ones instead of failing whole.
 pub fn rate(
     from: Currency,

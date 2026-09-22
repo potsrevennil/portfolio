@@ -35,7 +35,7 @@ pub struct Summary {
     pub unmatched_records: usize,
     /// 天天記帳 names with no entry in mapping.toml.
     pub unmapped: BTreeSet<String>,
-    /// [overrides] ids that matched no record in the exports. A correction is
+    /// `[overrides]` ids that matched no record in the exports. A correction is
     /// keyed by a 36-character UUID, so a mistyped one silently corrects
     /// nothing; this is the only thing that would say so.
     pub stale_overrides: BTreeSet<String>,
