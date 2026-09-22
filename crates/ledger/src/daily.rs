@@ -154,7 +154,7 @@ pub fn view(entries: &[Entry], subject: &str) -> Vec<AppEvent> {
 /// `AppEvent` above describes one account's view of a movement, which is what
 /// matching against a bank statement needs. This is the whole record, for
 /// accounts that have no statement and must be taken from the app as written.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Entry {
     /// 收支: a category on the other side.
     Flow {

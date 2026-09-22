@@ -11,6 +11,7 @@ pub mod corrected;
 pub mod daily;
 pub mod emit;
 pub mod freeze;
+pub mod interim;
 pub mod journal;
 pub mod labels;
 pub mod matching;

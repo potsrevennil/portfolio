@@ -35,7 +35,7 @@ enum Command {
     LoadJournal(db::load::Args),
     /// Check every balance assertion against the postings; fails on any
     /// mismatch
-    Check(Database),
+    Check(Check),
     /// Export the SQLite ledger as an hledger journal (audit with `hledger
     /// check`)
     ExportHledger(ExportHledger),
@@ -48,6 +48,12 @@ enum Command {
     /// Import broker statements into the broker sub-ledger (scratch databases
     /// until the Cutover)
     ImportBroker(import::broker::Args),
+    /// Import 天天記帳 records newer than the frozen history into SQLite
+    /// (scratch databases until the Cutover)
+    ImportTiantian(import::tiantian::Args),
+    /// Record a balance you counted (cash) as an assertion the check holds the
+    /// ledger to
+    Count(import::counted::Args),
     /// Fetch daily exchange rates so the ledger's currencies can be compared
     Rates(ledger::rates::Args),
 }
@@ -56,6 +62,16 @@ enum Command {
 struct Database {
     #[arg(long, default_value = "sqlite:ledger-app.db")]
     database_url: String,
+}
+
+#[derive(Parser, Debug)]
+struct Check {
+    #[command(flatten)]
+    database: Database,
+
+    /// Its `[counted]` roots name the accounts to list when never counted.
+    #[arg(long, default_value = "ledger/mapping.toml")]
+    mapping: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -98,8 +114,15 @@ impl Cli {
                 Ok(())
             }
             Some(Command::Check(args)) => {
-                let pool = db::open_db(&args.database_url).await?;
-                let report = db::check::check(&mut *pool.acquire().await?).await?;
+                let pool = db::open_db(&args.database.database_url).await?;
+                let mut conn = pool.acquire().await?;
+                let report = if args.mapping.exists() {
+                    let chart = ledger::accounts::Chart::load(&args.mapping)?;
+                    db::check::with_counts(&mut conn, &chart).await?
+                } else {
+                    println!("no {}: counted accounts not listed", args.mapping.display());
+                    db::check::check(&mut conn).await?
+                };
                 print!("{report}");
                 match (report.ok(), report.figures()) {
                     (true, _) => Ok(()),
@@ -128,6 +151,14 @@ impl Cli {
             }
             Some(Command::ImportBroker(args)) => {
                 print!("{}", import::broker::run(args).await?);
+                Ok(())
+            }
+            Some(Command::ImportTiantian(args)) => {
+                print!("{}", import::tiantian::run(args).await?);
+                Ok(())
+            }
+            Some(Command::Count(args)) => {
+                print!("{}", import::counted::run(args).await?);
                 Ok(())
             }
             Some(Command::Rates(args)) => {

@@ -229,6 +229,15 @@ pub struct SplitAccounts {
     pub roots: Vec<Account>,
 }
 
+/// Accounts no institution reports on (cash, prepaid passes): only a balance
+/// the user counts checks them.
+#[derive(Debug, Default, Deserialize)]
+pub struct Counted {
+    /// Every account at or under one of these is counted.
+    #[serde(default)]
+    pub roots: Vec<Account>,
+}
+
 /// Rejects the section's old name. `Chart` ignores unknown sections, so a
 /// leftover `[counterparty]` would otherwise be dropped silently: the
 /// exemption would switch off and the freeze would fail on a negative split
@@ -311,6 +320,9 @@ pub struct Chart {
     /// `SplitAccounts`.
     #[serde(default)]
     pub split_accounts: SplitAccounts,
+    /// Subtrees only a counted balance checks. See `Counted`.
+    #[serde(default)]
+    pub counted: Counted,
     /// Display labels by path. See [`Labels`](super::labels::Labels).
     #[serde(default)]
     pub display: BTreeMap<String, String>,
@@ -404,6 +416,11 @@ impl Chart {
             })
             .flat_map(|t| t.tag.names().iter().map(|s| super::writer::tag_name(s)))
             .collect()
+    }
+
+    /// True for an account at or under a `[counted]` root.
+    pub fn is_counted(&self, account: &str) -> bool {
+        self.counted.roots.iter().any(|root| in_subtree(account, root.as_ref()))
     }
 
     /// True for an account at or under a split-account root, where a negative
