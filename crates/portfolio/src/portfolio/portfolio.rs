@@ -50,6 +50,7 @@ pub enum Broker {
     InteractiveBrokers,
     Cathay,
     Pionex,
+    Firstrade,
 }
 
 impl Broker {
@@ -58,6 +59,7 @@ impl Broker {
             Broker::Cathay => Currency::TWD,
             Broker::InteractiveBrokers => Currency::USD,
             Broker::Pionex => Currency::USD,
+            Broker::Firstrade => Currency::USD,
         }
     }
 }
