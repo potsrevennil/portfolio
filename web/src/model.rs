@@ -1,39 +1,44 @@
-//! What the server sends a page: display-ready, so the wasm client needs no
-//! ledger types.
+//! What the server sends a page: display-ready figures. The one ledger type
+//! it shares with the wasm client is `Currency`, from `portfolio-types`.
 
 use std::fmt;
 
+use portfolio_types::Currency;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 
-/// An amount and what it is in. `decimals` is how many the currency is quoted
-/// to — TWD whole, the rest to two — and applies to the rendering only; the
-/// amount itself stays exact.
+/// An amount as the page shows it: already rounded, so the client only
+/// formats it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Money {
     pub amount: Decimal,
-    pub currency: String,
-    pub decimals: u32,
+    pub currency: Currency,
 }
 
 impl Money {
-    pub fn is_negative(&self) -> bool { self.rounded().is_sign_negative() && !self.is_zero() }
-
-    pub fn is_zero(&self) -> bool { self.rounded().is_zero() }
-
+    /// The base currency is quoted whole, as Fava prints TWD; the rest to two.
     /// Half away from zero, as Fava rounds an account's own balance. A total
     /// is rounded once, from the exact sum; Fava instead adds up figures it has
     /// already rounded, so a group of halves can differ from it by one unit.
-    fn rounded(&self) -> Decimal {
-        self.amount.round_dp_with_strategy(self.decimals, RoundingStrategy::MidpointAwayFromZero)
+    pub fn new(amount: Decimal, currency: Currency, base: Currency) -> Self {
+        let decimals = if currency == base { 0 } else { 2 };
+        let mut amount =
+            amount.round_dp_with_strategy(decimals, RoundingStrategy::MidpointAwayFromZero);
+        // Padded too, so 12.5 USD prints as 12.50.
+        amount.rescale(decimals);
+        Money { amount, currency }
     }
+
+    /// Dust that rounded to zero is not negative.
+    pub fn is_negative(&self) -> bool { self.amount < Decimal::ZERO }
+
+    pub fn is_zero(&self) -> bool { self.amount.is_zero() }
 }
 
 impl fmt::Display for Money {
     /// Grouped thousands, as Fava prints them.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let rounded = self.rounded().normalize();
-        let text = rounded.abs().to_string();
+        let text = self.amount.abs().to_string();
         let (int, frac) = match text.split_once('.') {
             Some((int, frac)) => (int, Some(frac)),
             None => (text.as_str(), None),
@@ -115,7 +120,7 @@ pub struct Section {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceSheet {
     pub as_of: String,
-    pub base: String,
+    pub base: Currency,
     pub sections: Vec<Section>,
     pub net_worth: Converted,
     /// The at-cost holdings net worth leaves out.
@@ -128,21 +133,21 @@ mod tests {
 
     use super::*;
 
-    fn money(amount: Decimal, currency: &str, decimals: u32) -> Money {
-        Money { amount, currency: currency.into(), decimals }
+    fn money(amount: Decimal, currency: Currency) -> Money {
+        Money::new(amount, currency, Currency::TWD)
     }
 
     #[test]
     fn amounts_print_like_fava() {
-        assert_eq!(money(dec!(1234567.891), "USD", 2).to_string(), "1,234,567.89 USD");
-        assert_eq!(money(dec!(12.50), "USD", 2).to_string(), "12.5 USD");
-        assert_eq!(money(dec!(-1000), "TWD", 0).to_string(), "-1,000 TWD");
-        // The base currency is quoted whole; the stored amount keeps its cents.
-        assert_eq!(money(dec!(295.26), "TWD", 0).to_string(), "295 TWD");
-        assert_eq!(money(dec!(838.5), "TWD", 0).to_string(), "839 TWD");
-        assert_eq!(money(dec!(-14670.5), "TWD", 0).to_string(), "-14,671 TWD");
+        assert_eq!(money(dec!(1234567.891), Currency::USD).to_string(), "1,234,567.89 USD");
+        assert_eq!(money(dec!(12.50), Currency::USD).to_string(), "12.50 USD");
+        assert_eq!(money(dec!(-1000), Currency::TWD).to_string(), "-1,000 TWD");
+        // The base currency is quoted whole; the ledger keeps its cents.
+        assert_eq!(money(dec!(295.26), Currency::TWD).to_string(), "295 TWD");
+        assert_eq!(money(dec!(838.5), Currency::TWD).to_string(), "839 TWD");
+        assert_eq!(money(dec!(-14670.5), Currency::TWD).to_string(), "-14,671 TWD");
         // Rounding to nothing is not a negative amount.
-        let dust = money(dec!(-0.001), "TWD", 0);
+        let dust = money(dec!(-0.001), Currency::TWD);
         assert_eq!(dust.to_string(), "0 TWD");
         assert!(!dust.is_negative());
     }
@@ -150,7 +155,8 @@ mod tests {
     #[test]
     fn unpriced_amounts_render_only_when_there_are_some() {
         assert_eq!(Unpriced::default().to_string(), "");
-        let unpriced = Unpriced(vec![money(dec!(5000), "JPY", 2), money(dec!(-2), "VND", 2)]);
-        assert_eq!(unpriced.to_string(), "（未換算：5,000 JPY、-2 VND）");
+        let unpriced =
+            Unpriced(vec![money(dec!(5000), Currency::JPY), money(dec!(-2), Currency::VND)]);
+        assert_eq!(unpriced.to_string(), "（未換算：5,000.00 JPY、-2.00 VND）");
     }
 }

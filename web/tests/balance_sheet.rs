@@ -251,13 +251,13 @@ async fn every_row_is_one_figure_in_twd() {
     // no rate, so it is named rather than taken at 1:1, and the at-cost holding
     // and the 2025 deposit are left out.
     let assets = &text[position(&text, "資產")..position(&text, "銀行")];
-    assert_eq!(assets.trim(), "資產 11,012 TWD （未換算：5,000 JPY） 另有成本 40,000 TWD");
+    assert_eq!(assets.trim(), "資產 11,012 TWD （未換算：5,000.00 JPY） 另有成本 40,000 TWD");
     // A leaf holding foreign money keeps its own balance, the statement's figure.
     let fx = &text[position(&text, "外幣")..position(&text, "活存")];
-    assert_eq!(fx.trim(), "外幣 2,700 TWD （未換算：5,000 JPY） 5,000 JPY · 90 USD");
+    assert_eq!(fx.trim(), "外幣 2,700 TWD （未換算：5,000.00 JPY） 5,000.00 JPY · 90.00 USD");
     // A group's own foreign money shows too, apart from its sub-accounts'.
     let bank = &text[position(&text, "銀行")..position(&text, "外幣")];
-    assert_eq!(bank.trim(), "銀行 10,000 TWD （未換算：5,000 JPY） 10 USD");
+    assert_eq!(bank.trim(), "銀行 10,000 TWD （未換算：5,000.00 JPY） 10.00 USD");
     let savings = &text[position(&text, "活存")..position(&text, "現金")];
     assert_eq!(savings.trim(), "活存 7,000 TWD");
     // TWD is quoted whole, as Fava prints it; the cents are still in the ledger.
@@ -276,7 +276,7 @@ async fn every_row_is_one_figure_in_twd() {
     let liabilities = &text[position(&text, "負債")..position(&text, "信用卡")];
     assert_eq!(liabilities.trim(), "負債 -2,500 TWD");
     let net = &text[position(&text, "淨資產")..];
-    assert_eq!(net.trim(), "淨資產 8,512 TWD （未換算：5,000 JPY） 另有成本 40,000 TWD");
+    assert_eq!(net.trim(), "淨資產 8,512 TWD （未換算：5,000.00 JPY） 另有成本 40,000 TWD");
 }
 
 /// Only one site serves at a time. Leptos keeps process-wide state, and

@@ -4,24 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = [".", "web"]
+members = [".", "types", "web"]
 
-[lib]
-name = "portfolio"
-path = "src/lib.rs"
-
-[dependencies]
+[workspace.dependencies]
+# One version per dependency, shared by every member.
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5.47", features = ["derive"] }
-console = "0.15.8"
-csv = "1.3.1"
-dialoguer = "0.11.0"
-env_logger = "0.10"
-futures = "0.3.31"
-gxhash = "3.5.0"
-log = "0.4"
-regex = "1.10.0"
+portfolio = { path = "." }
+portfolio-types = { path = "types" }
 rust_decimal = { version = "1.38", features = ["serde-str"] }
 rust_decimal_macros = "1.38"
 serde = { version = "1.0.225", features = ["derive"] }
@@ -35,24 +26,45 @@ sqlx = { version = "0.8.6", features = [
 ] }
 strum = "0.26"
 strum_macros = "0.26"
-thiserror = "1.0"
-tokio = { version = "1", features = ["full"] }
-toml = "0.8"
-unicode-width = "0.1.11"
-yfinance-rs = "0.3.0"
-
-[build-dependencies]
-anyhow = "1.0"
-sqlx = { version = "0.8.6", features = [
-  "runtime-tokio-rustls",
-  "sqlite",
-  "macros",
-  "chrono",
-  "bigdecimal",
-] }
 tempfile = "3.10.0"
 tokio = { version = "1", features = ["full"] }
 
+[lib]
+name = "portfolio"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow              = { workspace = true }
+chrono              = { workspace = true }
+clap                = { workspace = true }
+console             = "0.15.8"
+csv                 = "1.3.1"
+dialoguer           = "0.11.0"
+env_logger          = "0.10"
+futures             = "0.3.31"
+gxhash              = "3.5.0"
+log                 = "0.4"
+portfolio-types     = { workspace = true, features = ["clap"] }
+regex               = "1.10.0"
+rust_decimal        = { workspace = true }
+rust_decimal_macros = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }
+sqlx                = { workspace = true }
+strum               = { workspace = true }
+strum_macros        = { workspace = true }
+thiserror           = "1.0"
+tokio               = { workspace = true }
+toml                = "0.8"
+unicode-width       = "0.1.11"
+yfinance-rs         = "0.3.0"
+
+[build-dependencies]
+anyhow   = { workspace = true }
+sqlx     = { workspace = true }
+tempfile = { workspace = true }
+tokio    = { workspace = true }
+
 [dev-dependencies]
-portfolio = { path = "." }
-tempfile  = "3.10.0"
+portfolio = { workspace = true }
+tempfile  = { workspace = true }
