@@ -4,10 +4,12 @@
 //! it.
 
 pub mod assertions;
+pub mod broker;
 pub mod chart;
 pub mod check;
 pub mod connect;
 pub mod hledger;
+pub mod holdings;
 pub mod import;
 pub mod import_batch;
 pub mod load;
