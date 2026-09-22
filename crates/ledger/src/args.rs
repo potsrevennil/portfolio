@@ -9,6 +9,10 @@ pub struct Args {
     #[arg(long, num_args = 1..)]
     pub cathay_statements: Vec<PathBuf>,
 
+    /// LINE Bank monthly statement PDFs, in `<kind>-<account>/` folders
+    #[arg(long, num_args = 1..)]
+    pub line_bank_statements: Vec<PathBuf>,
+
     /// 天天記帳 收支 export (income/expense)
     #[arg(long, conflicts_with = "transactions")]
     pub daily_income_expense: Option<PathBuf>,

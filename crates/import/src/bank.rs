@@ -1,9 +1,5 @@
-//! Imports Cathay bank downloads (活存, 投資, koko, 外幣) straight into SQLite.
-//!
-//! ```text
-//! cargo run -- import-cathay-bank --database-url sqlite:scratch.db \
-//!   --statements raw/cathay-bank/*/*.csv
-//! ```
+//! What every bank import does once its statements are parsed: plan against
+//! the ledger, insert, record the statements' figures, and gate.
 
 use std::{collections::BTreeMap, fmt, path::PathBuf};
 
@@ -17,12 +13,10 @@ use ledger::{
     accounts::Chart,
     labels::Labels,
     names::statement_account,
-    statements::cathay::{self, Merged},
+    statements::bank::{Bank, Merged},
 };
 
 use super::plan::{self, Candidate, Plan};
-
-pub const SOURCE: &str = "cathay-bank";
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -41,6 +35,7 @@ pub struct Args {
 
 #[derive(Debug)]
 pub struct Report {
+    pub bank: Bank,
     pub counts: plan::Counts,
     pub inserted: usize,
     pub batches: usize,
@@ -50,7 +45,7 @@ pub struct Report {
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let c = &self.counts;
-        writeln!(f, "imported Cathay bank statements:")?;
+        writeln!(f, "imported {} statements:", self.bank)?;
         writeln!(f, "  {} transactions inserted from {} files", self.inserted, self.batches)?;
         writeln!(f, "  {} openings created", c.openings)?;
         writeln!(
@@ -64,28 +59,37 @@ impl fmt::Display for Report {
     }
 }
 
-pub async fn run(args: &Args) -> Result<Report> {
+pub async fn run(bank: Bank, args: &Args) -> Result<Report> {
     let chart = Chart::load(args.ledger_dir.join("mapping.toml"))?;
+    let merged = bank.load_merged(&args.statements)?;
     let pool = db::init_db(&args.database_url).await?;
     let mut tx = pool.begin().await?;
-    let report = import(&mut tx, &chart, &args.statements, &[]).await?;
+    let report = import(&mut tx, &chart, bank, &merged, &[]).await?;
     tx.commit().await?;
     Ok(report)
 }
 
-/// Imports into the caller's transaction and gates it; commit only on `Ok`.
+/// Imports `bank`'s statements into the caller's transaction and gates it;
+/// commit only on `Ok`.
 pub async fn import(
     db: &mut SqliteConnection,
     chart: &Chart,
-    paths: &[PathBuf],
+    bank: Bank,
+    merged: &[Merged],
     candidates: &[Candidate],
 ) -> Result<Report> {
-    let merged = cathay::load_merged(paths)?;
+    if let Some(other) = merged.iter().find(|m| m.statement.bank != bank) {
+        bail!("{} is a {} statement, not {bank}", other.paths[0].display(), other.statement.bank);
+    }
+    // An issued statement with no rows (an idle currency) only vouches for its
+    // balance.
+    let (merged, idle): (Vec<&Merged>, Vec<&Merged>) =
+        merged.iter().partition(|m| !m.statement.lines.is_empty());
     let files: Vec<&PathBuf> = merged.iter().flat_map(|m| &m.paths).collect();
 
     let mut statements = Vec::with_capacity(merged.len());
     let mut first_file = 0;
-    for Merged { statement, spans, .. } in &merged {
+    for Merged { statement, spans, .. } in merged {
         let account = statement_account(chart, &statement.account_no)?.to_string();
         let existing = import_batch::postings(db, &account, statement.currency).await?;
         let files: Vec<usize> = spans
@@ -96,7 +100,7 @@ pub async fn import(
         first_file += spans.len();
         statements.push(plan::Statement { account, statement, files, existing });
     }
-    let known = import_batch::refs(db, cathay::REF_PREFIX).await?;
+    let known = import_batch::refs(db, bank.ref_prefix()).await?;
     let Plan { transactions, counts, openings } =
         plan::plan(chart, &statements, &known, candidates)?;
 
@@ -107,7 +111,7 @@ pub async fn import(
         let batch = match batches.get(&file) {
             Some(id) => *id,
             None => {
-                let id = import_batch::create(db, SOURCE, files[file]).await?;
+                let id = import_batch::create(db, bank.source(), files[file]).await?;
                 batches.insert(file, id);
                 id
             }
@@ -126,8 +130,15 @@ pub async fn import(
     // a later download states a wider period for that day, which is the same
     // claim, and the balance chain above has already compared every day.
     let recorded = assertions::load(db).await?;
+    let mut figures = Vec::new();
     for (s, opening) in statements.iter().zip(openings) {
-        let Some(assertion) = s.statement.assertion(&s.account, opening) else { continue };
+        figures.extend(s.statement.assertions(&s.account, opening));
+    }
+    for m in idle {
+        let account = statement_account(chart, &m.statement.account_no)?;
+        figures.extend(m.statement.assertions(account, m.statement.opening_date()));
+    }
+    for assertion in figures {
         let same_day = recorded.iter().find(|r| {
             (&r.account, r.currency, r.source, r.period_end)
                 == (&assertion.account, assertion.currency, assertion.source, assertion.period_end)
@@ -143,12 +154,12 @@ pub async fn import(
             Some(_) => continue,
             // assertions::insert resolves the account by path.
             None => {
-                ensure_account(db, &labels, &s.account).await?;
+                ensure_account(db, &labels, &assertion.account).await?;
                 assertions::insert(db, &assertion).await?
             }
         }
     }
     let check = check::gate(db).await?;
 
-    Ok(Report { counts, inserted, batches: batches.len(), check })
+    Ok(Report { bank, counts, inserted, batches: batches.len(), check })
 }

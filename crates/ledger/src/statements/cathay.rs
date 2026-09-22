@@ -8,194 +8,16 @@
 //! is what lets the ledger assert a figure the transactions must agree with.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
-use ledger_types::{
-    assertion::{AssertionSource, BalanceAssertion},
-    currency::Currency,
-};
+use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
-/// Namespaces this bank's `external_ref`s: every importer shares one dedup
-/// scope (`transactions.source = 'import'`).
-pub const REF_PREFIX: &str = "cathay-bank:";
-
-/// The `external_ref` of an account's opening, so a second one is a duplicate.
-pub fn opening_ref(account: &str, currency: Currency) -> String {
-    format!("{REF_PREFIX}opening:{account}:{currency}")
-}
-
-#[derive(Debug, PartialEq)]
-pub struct StatementLine {
-    pub book_date: NaiveDate,
-    pub description: String,
-    pub withdrawal: Decimal,
-    pub deposit: Decimal,
-    pub balance: Decimal,
-    pub info: String,
-    pub memo: String,
-}
-
-impl StatementLine {
-    /// Signed effect on the account. `withdrawal` can be negative on 錯誤更正
-    /// (error-correction) rows, which reverse an earlier debit.
-    pub fn delta(&self) -> Decimal { self.deposit - self.withdrawal }
-}
-
-#[derive(Debug)]
-pub struct BankStatement {
-    pub account_no: String,
-    pub account_kind: String,
-    pub currency: Currency,
-    /// End of the period the export covers, from the `(自 … 至 …)` header.
-    pub period_end: Option<NaiveDate>,
-    /// Oldest first.
-    pub lines: Vec<StatementLine>,
-}
-
-impl BankStatement {
-    /// Balance before the first line, reconstructed from the oldest row.
-    pub fn opening_balance(&self) -> Decimal {
-        self.lines.first().map(|l| l.balance - l.delta()).unwrap_or_default()
-    }
-
-    pub fn closing_balance(&self) -> Decimal {
-        self.lines.last().map(|l| l.balance).unwrap_or_default()
-    }
-
-    /// Dedup key per line, shared by the freeze bake and importers.
-    ///
-    /// Not the line index: statements get re-split per year, which shifts
-    /// indices. Same-day out-and-back sequences (−X, +X, −X) repeat the running
-    /// balance, so repeats of an identical key get `:2`, `:3`. The suffix is
-    /// counted from the first line of the day this statement holds, so a
-    /// statement starting mid-day numbers them differently; the importer's
-    /// balance-chain check is what catches that.
-    pub fn dedup_refs(&self) -> Vec<String> {
-        let mut seen: HashMap<String, usize> = HashMap::new();
-        self.lines
-            .iter()
-            .map(|l| {
-                let base = format!(
-                    "{REF_PREFIX}{}:{}:{}:{}",
-                    self.account_no,
-                    l.book_date,
-                    l.delta(),
-                    l.balance
-                );
-                let n = seen.entry(base.clone()).or_default();
-                *n += 1;
-                if *n == 1 {
-                    base
-                } else {
-                    format!("{base}:{n}")
-                }
-            })
-            .collect()
-    }
-
-    /// Debits the bank itself undid, as `(debit, reversal)` line indices.
-    ///
-    /// A 錯誤更正 row carries a negative withdrawal that cancels an earlier
-    /// debit to the same counterparty on the same book date. Neither row is a
-    /// movement anyone recorded, so each pair nets to nothing rather than
-    /// landing in both uncategorised buckets. A reversal with no such debit is
-    /// left unpaired and falls through like any other line.
-    pub fn reversals(&self) -> Vec<(usize, usize)> {
-        let mut used = vec![false; self.lines.len()];
-        let mut pairs = Vec::new();
-        for (ri, reversal) in self.lines.iter().enumerate() {
-            if !reversal.withdrawal.is_sign_negative() {
-                continue;
-            }
-            let debit = (0..ri).rev().find(|&di| {
-                let d = &self.lines[di];
-                !used[di]
-                    && d.book_date == reversal.book_date
-                    && d.info == reversal.info
-                    && d.withdrawal == -reversal.withdrawal
-            });
-            if let Some(di) = debit {
-                used[di] = true;
-                used[ri] = true;
-                pairs.push((di, ri));
-            }
-        }
-        pairs
-    }
-
-    /// Drops lines before `date` (their balance becomes the opening); returns
-    /// how many.
-    pub fn trim_before(&mut self, date: NaiveDate) -> usize {
-        let keep = self.lines.partition_point(|l| l.book_date < date);
-        self.lines.drain(..keep).count()
-    }
-
-    /// Date to assert the closing balance on. Beancount asserts at the start of
-    /// the day, so this must fall after the final transaction.
-    pub fn assert_date(&self) -> NaiveDate {
-        let after_last = self
-            .lines
-            .last()
-            .map(|l| l.book_date.succ_opt().unwrap_or(l.book_date))
-            .unwrap_or_default();
-        match self.period_end {
-            Some(end) if end >= after_last => end,
-            _ => after_last,
-        }
-    }
-
-    /// The last day this download holds in full. A TWD export may have been
-    /// made partway through the end of its stated range, so the day before.
-    /// A 外幣 export states no range; its last line's balance is taken as
-    /// current (the user's call until downloads carry a date), so a second
-    /// download made later that same day is refused as contradicting it.
-    pub fn settled_through(&self) -> NaiveDate {
-        let last = self.lines.last().expect("load rejects empty statements").book_date;
-        match self.period_end {
-            Some(end) => end.pred_opt().expect("a day before a range end"),
-            None => last,
-        }
-    }
-
-    /// The statement's figures for `account`, over the lines dated after
-    /// `after` (the ones before are in the account's opening), closing on
-    /// [`Self::settled_through`]. `None` when no line is. Asserting a day the
-    /// download may not hold in full would refuse the next one that does.
-    pub fn assertion(&self, account: &str, after: NaiveDate) -> Option<BalanceAssertion> {
-        let from = self.lines.partition_point(|l| l.book_date <= after);
-        let first = self.lines.get(from)?;
-        let before = |i: usize| self.lines[i].balance - self.lines[i].delta();
-        let end = self.settled_through();
-        // Read off the line after `end` where there is one, so its figures
-        // stay checked too: a statement that stops adding up there still fails.
-        let closing = match self.lines.partition_point(|l| l.book_date <= end) {
-            n if n < self.lines.len() => before(n),
-            n => self.lines[n - 1].balance,
-        };
-        let opening = before(from);
-        let (period_start, opening, period_end, closing) = if end >= first.book_date {
-            (Some(first.book_date), Some(opening), end, closing)
-        } else {
-            // No tracked day is settled: vouch only for the balance the first
-            // one started from.
-            (None, None, first.book_date.pred_opt().expect("a day before a line"), opening)
-        };
-        Some(BalanceAssertion {
-            source: AssertionSource::Statement,
-            account: account.to_string(),
-            currency: self.currency,
-            period_start,
-            opening,
-            period_end,
-            closing,
-        })
-    }
-}
+use super::bank::{Bank, BankStatement, Merged, StatementLine};
 
 /// `−` (U+2212) is the export's placeholder for an absent value. A real
 /// negative uses an ASCII hyphen, so only the bare placeholder maps to zero.
@@ -365,14 +187,15 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
     // The export is newest-first.
     lines.reverse();
 
-    Ok(BankStatement { account_no, account_kind, currency, period_end, lines })
-}
-
-pub struct Merged {
-    pub statement: BankStatement,
-    pub paths: Vec<PathBuf>,
-    /// How many of `statement.lines` each of `paths` contributed, in order.
-    pub spans: Vec<usize>,
+    Ok(BankStatement {
+        bank: Bank::Cathay,
+        account_no,
+        account_kind,
+        currency,
+        period_end,
+        periods: Vec::new(),
+        lines,
+    })
 }
 
 /// Joins the exports of each account and currency into one statement. They
@@ -488,10 +311,12 @@ mod tests {
 
     fn statement(lines: Vec<StatementLine>) -> BankStatement {
         BankStatement {
+            bank: Bank::Cathay,
             account_no: "123456789012".to_string(),
             account_kind: "活存".to_string(),
             currency: Currency::TWD,
             period_end: None,
+            periods: Vec::new(),
             lines,
         }
     }
@@ -835,7 +660,7 @@ mod tests {
         let lines = [("2024/03/01", 100, 100), ("2024/03/05", 10, 110), ("2024/03/05", 5, 115)];
         let before = day(1).pred_opt().unwrap();
         let closes = |period_end: Option<&str>| {
-            let a = statement_of(period_end, &lines).assertion("A", before).unwrap();
+            let a = statement_of(period_end, &lines).download_assertion("A", before).unwrap();
             assert_eq!((a.period_start, a.opening), (Some(day(1)), Some(dec!(0))));
             (a.period_end, a.closing)
         };
@@ -855,9 +680,9 @@ mod tests {
     fn a_single_unsettled_day_asserts_only_its_opening() {
         let lines = [("2024/03/05", 10, 110), ("2024/03/05", 5, 115)];
         let s = statement_of(Some("2024/03/05"), &lines);
-        let a = s.assertion("A", day(1)).unwrap();
+        let a = s.download_assertion("A", day(1)).unwrap();
         assert_eq!((a.period_start, a.opening), (None, None));
         assert_eq!((a.period_end, a.closing), (day(4), dec!(100)));
-        assert!(s.assertion("A", day(5)).is_none());
+        assert!(s.download_assertion("A", day(5)).is_none());
     }
 }

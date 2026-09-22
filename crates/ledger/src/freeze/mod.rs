@@ -16,6 +16,7 @@
 //! ```text
 //! cargo run -- freeze --journal ledger/journal.csv \
 //!   --cathay-statements raw/cathay-bank/*/*.csv \
+//!   --line-bank-statements raw/line-bank/*/*.pdf \
 //!   --transactions corrected/transactions.csv
 //! ```
 

@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use db::load;
-use import::cathay_bank::{import, Report};
-use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, statements::cathay};
+use import::bank::{import, Report};
+use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, statements::bank::Bank};
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
@@ -49,7 +49,8 @@ fn statements(records: &Path) -> Result<Vec<PathBuf>> {
 async fn import_all(pool: &SqlitePool, records: &Path) -> Result<Report> {
     let chart = Chart::load(records.join("ledger/mapping.toml"))?;
     let mut tx = pool.begin().await?;
-    let report = import(&mut tx, &chart, &statements(records)?, &[]).await?;
+    let merged = Bank::Cathay.load_merged(&statements(records)?)?;
+    let report = import(&mut tx, &chart, Bank::Cathay, &merged, &[]).await?;
     tx.commit().await?;
     Ok(report)
 }
@@ -67,6 +68,7 @@ async fn importing_every_download_into_the_frozen_ledger_adds_nothing() -> Resul
         journal: journal.clone(),
         build: BuildArgs {
             cathay_statements: statements(&records)?,
+            line_bank_statements: Vec::new(),
             daily_income_expense: None,
             daily_transfers: None,
             transactions: Some(records.join("corrected/transactions.csv")),
@@ -107,7 +109,7 @@ async fn importing_every_download_into_an_empty_ledger_closes_every_statement() 
     assert!(report.check.ok(), "{report}");
 
     let chart = Chart::load(records.join("ledger/mapping.toml"))?;
-    let merged = cathay::load_merged(&statements(&records)?)?;
+    let merged = Bank::Cathay.load_merged(&statements(&records)?)?;
     for m in &merged {
         let s = &m.statement;
         let account = &chart.institution.accounts[&s.account_no];

@@ -14,7 +14,7 @@ use ledger::{
     accounts::Chart,
     model::{Source, CONVERSIONS, OPENING_EQUITY},
     names::fallback_account,
-    statements::cathay::{self, info_names_account, BankStatement},
+    statements::bank::{Bank, BankStatement},
 };
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
@@ -98,19 +98,18 @@ pub fn plan(
     let mut status: Vec<Vec<Status>> = Vec::with_capacity(statements.len());
     for (si, s) in statements.iter().enumerate() {
         let st = s.statement;
-        let first = st.lines.first().expect("load rejects empty statements");
         let mut opening_dates: Vec<NaiveDate> =
             s.existing.iter().filter(|p| p.opening).map(|p| p.date).collect();
         opening_dates.dedup();
-        let opening = match (opening_dates.as_slice(), s.existing.is_empty()) {
-            ([], true) => {
-                let date = first.book_date.pred_opt().unwrap_or(first.book_date);
+        let opening = match (opening_dates.as_slice(), s.existing.first()) {
+            ([], None) => {
+                let date = st.opening_date();
                 plan.transactions.push((s.files[0], Transaction {
                     date,
                     payee: Some("Opening balance".to_string()),
                     narration: Some(st.account_kind.clone()),
                     source: Source::Import,
-                    external_ref: Some(cathay::opening_ref(&s.account, st.currency)),
+                    external_ref: Some(st.opening_ref(&s.account)),
                     import_batch_id: None,
                     postings: vec![
                         (&s.account, st.opening_balance(), st.currency).into(),
@@ -120,11 +119,9 @@ pub fn plan(
                 plan.counts.openings += 1;
                 date
             }
-            ([], false) => bail!(
-                "{} {} has postings but no opening; its balance can't be chained",
-                s.account,
-                st.currency
-            ),
+            // Records carry the account from its first posting; the balance
+            // chain below proves they reach the statement's balances.
+            ([], Some(earliest)) => earliest.date.pred_opt().expect("a day before a posting"),
             ([date], _) => *date,
             _ => bail!("{} {} has more than one opening", s.account, st.currency),
         };
@@ -135,9 +132,11 @@ pub fn plan(
         // line takes back its own posting first.
         let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
         for p in &s.existing {
-            if !p.opening
-                && p.external_ref.as_deref().is_some_and(|r| r.starts_with(cathay::REF_PREFIX))
-            {
+            let from_a_statement = p
+                .external_ref
+                .as_deref()
+                .is_some_and(|r| Bank::ALL.iter().any(|bank| r.starts_with(bank.ref_prefix())));
+            if !p.opening && from_a_statement {
                 *spare.entry((p.date, p.amount)).or_default() += 1;
             }
         }
@@ -192,15 +191,16 @@ pub fn plan(
     let line = |(si, li): (usize, usize)| &statements[si].statement.lines[li];
     let own_no = |si: usize| statements[si].statement.account_no.as_str();
     let is_internal = |at: (usize, usize)| {
+        let st = statements[at.0].statement;
         chart
             .institution
             .accounts
             .keys()
-            .any(|no| no != own_no(at.0) && info_names_account(&line(at).info, no))
+            .any(|no| no != own_no(at.0) && st.names_account(&line(at).info, no))
     };
     let names = |at: (usize, usize), si: usize| {
-        info_names_account(&line(at).info, own_no(si))
-            || info_names_account(&line(at).memo, own_no(si))
+        let st = statements[at.0].statement;
+        st.names_account(&line(at).info, own_no(si)) || st.names_account(&line(at).memo, own_no(si))
     };
 
     let mut shape: HashMap<(usize, usize), Shape> = HashMap::new();

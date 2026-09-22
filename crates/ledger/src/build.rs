@@ -18,7 +18,10 @@ use super::{
     matching,
     model::{self, Directive},
     names::{fallback_account, statement_account},
-    statements,
+    statements::{
+        self,
+        bank::{BankStatement, StatementLine},
+    },
     summary::Summary,
     writer,
 };
@@ -85,6 +88,21 @@ fn opening(
     }
 }
 
+/// Beancount balances stating what `asserted` does, each checked at the start
+/// of the day after its figure.
+fn balances_of(asserted: &[BalanceAssertion]) -> impl Iterator<Item = Directive> + '_ {
+    asserted.iter().flat_map(|a| {
+        a.points().map(|(day, amount)| {
+            Directive::Balance(model::Balance {
+                date: day.succ_opt().expect("a day after a statement figure"),
+                account: a.account.clone(),
+                amount,
+                currency: a.currency,
+            })
+        })
+    })
+}
+
 /// Assembles the ledger as an in-memory model: the transactions, balance
 /// assertions and opens the reconciliation produces, with each transaction's
 /// source and dedup id attached. [`build`] renders this to the generated
@@ -127,6 +145,11 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     }
 
     let mut merged = statements::cathay::load_merged(&opts.cathay_statements)?;
+    merged.extend(statements::line_bank::load_merged(&opts.line_bank_statements)?);
+    // An issued statement with no rows (an idle currency) only vouches for its
+    // balance.
+    let (mut merged, idle): (Vec<_>, Vec<_>) =
+        merged.into_iter().partition(|m| !m.statement.lines.is_empty());
 
     // Lines before the records begin have nothing to match; fold them into
     // the opening balance.
@@ -148,12 +171,12 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // A per-account `.find()` (the derived-opening backfill below) must reach
     // the chronologically first statement for an account.
     merged.sort_by(|a, b| {
-        let key = |s: &statements::cathay::BankStatement| {
+        let key = |s: &BankStatement| {
             (s.lines.first().map(|l| l.book_date), s.account_no.clone(), s.currency)
         };
         key(&a.statement).cmp(&key(&b.statement))
     });
-    let (statements, statement_paths): (Vec<statements::cathay::BankStatement>, Vec<_>) =
+    let (statements, statement_paths): (Vec<BankStatement>, Vec<_>) =
         merged.into_iter().map(|m| (m.statement, m.paths)).unzip();
 
     // 天天記帳 lumps the TWD Cathay accounts into one app account, so they share
@@ -178,14 +201,17 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         }
     }
 
-    // Internal 活存 <-> 投資 transfers are settled against the clearing account and
-    // withheld from matching, since 天天記帳 never recorded them.
-    let is_internal = |si: usize, li: usize| -> bool {
-        let info = &statements[si].lines[li].info;
-        statements.iter().enumerate().any(|(other, s)| {
-            other != si && statements::cathay::info_names_account(info, &s.account_no)
-        })
+    // Internal transfers (活存 <-> 投資, or to another bank with a statement
+    // for that day) are settled against the clearing account and withheld from
+    // matching: the other statement holds the far side.
+    let names_other = |si: usize, li: usize, sj: usize| {
+        let line = &statements[si].lines[li];
+        sj != si
+            && statements[sj].covers(line.book_date)
+            && statements[si].names_account(&line.info, &statements[sj].account_no)
     };
+    let is_internal =
+        |si: usize, li: usize| (0..statements.len()).any(|sj| names_other(si, li, sj));
 
     // Both statements record the same internal movement, so pair the halves and
     // emit one transaction from the sending side. Nothing has to be recorded by
@@ -221,17 +247,16 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // Currency conversions: same day, opposite directions, each naming the
     // other (the TWD side only in 備註). The app's transfer record is reserved
     // on both sides so the matcher can't spend it on another line.
-    let names = |line: &statements::cathay::StatementLine,
-                 s: &statements::cathay::BankStatement| {
-        statements::cathay::info_names_account(&line.info, &s.account_no)
-            || statements::cathay::info_names_account(&line.memo, &s.account_no)
+    let names = |near: &BankStatement, line: &StatementLine, far: &BankStatement| {
+        near.names_account(&line.info, &far.account_no)
+            || near.names_account(&line.memo, &far.account_no)
     };
     // The app's transfer record for one side of a conversion: same amounts
     // both ways, the other pool as contra, not yet reserved.
     let conversion_record = |near_si: usize,
-                             near: &statements::cathay::StatementLine,
+                             near: &StatementLine,
                              far_si: usize,
-                             far: &statements::cathay::StatementLine,
+                             far: &StatementLine,
                              taken: Option<&HashSet<usize>>|
      -> Option<usize> {
         let events = pools.get(pool_of[near_si].as_str()).unwrap_or(&no_events);
@@ -266,8 +291,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                     && !paired.contains(&(sj, lj))
                     && other.book_date == line.book_date
                     && other.delta().is_sign_positive()
-                    && names(line, &statements[sj])
-                    && names(other, &statements[si])
+                    && names(&statements[si], line, &statements[sj])
+                    && names(&statements[sj], other, &statements[si])
             })
             .collect();
         // Amounts in two currencies can't be compared directly, so the app's
@@ -294,6 +319,37 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             if let Some(ei) = conversion_record(near_si, near, far_si, far, Some(taken)) {
                 taken.insert(ei);
             }
+        }
+    }
+
+    // A transfer to an account in another pool (another bank) is one app
+    // record seen from both pools. Each line reserves its own pool's view of
+    // it, as a conversion does, so it is neither matched again nor emitted as
+    // unmatched: the statements already hold both sides.
+    for &(si, li) in &flat {
+        let other_pool = (0..statements.len()).find(|&sj| {
+            names_other(si, li, sj)
+                && pool_of[sj] != pool_of[si]
+                && statements[sj].currency == statements[si].currency
+        });
+        let Some(sj) = other_pool else { continue };
+        let line = &statements[si].lines[li];
+        let events = pools.get(pool_of[si].as_str()).unwrap_or(&no_events);
+        let taken = reserved.entry(pool_of[si].as_str()).or_default();
+        let record = events
+            .iter()
+            .enumerate()
+            .filter(|(ei, e)| {
+                !taken.contains(ei)
+                    && e.delta == line.delta()
+                    && e.currency == statements[si].currency
+                    && matches!(&e.contra, daily::Contra::Account(n) if *n == pool_of[sj])
+                    && (e.date - line.book_date).num_days().abs() <= matching::MAX_TOLERANCE
+            })
+            .min_by_key(|(_, e)| (e.date - line.book_date).num_days().abs())
+            .map(|(ei, _)| ei);
+        if let Some(ei) = record {
+            taken.insert(ei);
         }
     }
 
@@ -510,6 +566,29 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         }
     }
 
+    // A pool's records that begin before its statement does carry its balance
+    // up to it; the statement's opening is then asserted rather than booked.
+    let mut starts: BTreeMap<(&str, Currency), NaiveDate> = BTreeMap::new();
+    for (si, s) in statements.iter().enumerate() {
+        let start = starts.entry((pool_of[si].as_str(), s.currency)).or_insert(s.start());
+        *start = (*start).min(s.start());
+    }
+    let before_statement = |pool: &str, event: &daily::AppEvent| {
+        pool != institution_app
+            && starts.get(&(pool, event.currency)).is_some_and(|start| event.date < *start)
+    };
+    let carried: BTreeSet<(&str, Currency)> = pools
+        .iter()
+        .flat_map(|(&pool, events)| {
+            events
+                .iter()
+                .filter(move |e| before_statement(pool, e))
+                .map(move |e| (pool, e.currency))
+        })
+        .collect();
+    let opens_itself =
+        |si: usize| !carried.contains(&(pool_of[si].as_str(), statements[si].currency));
+
     for (si, statement) in statements.iter().enumerate() {
         let account: &str = statement_account(&chart, &statement.account_no)?;
         let currency = statement.currency;
@@ -525,11 +604,11 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             statement.lines.len(),
             paths.join(", ")
         )));
-        if !derived_openings.contains_key(account) {
+        if !derived_openings.contains_key(account) && opens_itself(si) {
             // Dated the day before, so the assertion below still checks something:
             // Beancount asserts at the start of the day.
             cathay.push(Directive::Transaction(model::Transaction {
-                date: first.book_date.pred_opt().unwrap_or(first.book_date),
+                date: statement.opening_date(),
                 payee: "Opening balance".to_string(),
                 narration: statement.account_kind.clone(),
                 tags: Vec::new(),
@@ -538,17 +617,20 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                     writer::Posting::inferred(model::OPENING_EQUITY),
                 ],
                 source: model::Source::Import,
-                external_ref: Some(statements::cathay::opening_ref(account, currency)),
+                external_ref: Some(statement.opening_ref(account)),
             }));
             cathay.push(Directive::Blank);
         }
-        cathay.push(Directive::Balance(model::Balance {
-            date: first.book_date,
-            account: account.to_string(),
-            amount: statement.opening_balance(),
-            currency,
-        }));
-        cathay.push(Directive::Blank);
+        let issued = !statement.periods.is_empty();
+        if !issued {
+            cathay.push(Directive::Balance(model::Balance {
+                date: first.book_date,
+                account: account.to_string(),
+                amount: statement.opening_balance(),
+                currency,
+            }));
+            cathay.push(Directive::Blank);
+        }
 
         let refs = statement.dedup_refs();
         for (li, line) in statement.lines.iter().enumerate() {
@@ -639,17 +721,27 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             cathay.push(Directive::Blank);
         }
 
-        cathay.push(Directive::Balance(model::Balance {
-            date: statement.assert_date(),
-            account: account.to_string(),
-            amount: statement.closing_balance(),
-            currency,
-        }));
-        let before_first = first.book_date.pred_opt().expect("a day before a line");
-        statement_periods.push(
-            statement.assertion(account, before_first).expect("load rejects empty statements"),
-        );
+        let asserted = statement.assertions(account, statement.opening_date());
+        match issued {
+            true => cathay.extend(balances_of(&asserted)),
+            false => cathay.push(Directive::Balance(model::Balance {
+                date: statement.assert_date(),
+                account: account.to_string(),
+                amount: statement.closing_balance(),
+                currency,
+            })),
+        }
+        statement_periods.extend(asserted);
         cathay.push(Directive::Blank);
+    }
+    for m in &idle {
+        let s = &m.statement;
+        let account: &str = statement_account(&chart, &s.account_no)?;
+        used_accounts.insert(account.to_string());
+        let asserted = s.assertions(account, s.opening_date());
+        cathay.extend(balances_of(&asserted));
+        cathay.push(Directive::Blank);
+        statement_periods.extend(asserted);
     }
 
     // 天天記帳 records touching 國泰 that no statement line matched.
@@ -661,6 +753,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // two cancel: the far account gets its posting and Cathay's asserted
     // balance is untouched.
     let mut n_unmatched_records = 0;
+    let mut n_carried = 0;
     // A transfer between two accounts that each have a statement is one record
     // in two pools. Emitting it from both would double its far side and repeat
     // its dedup id, so a record a statement line already took — in any pool —
@@ -689,15 +782,20 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             emitted.insert(event.record);
             let (target, tags) = resolve(&chart, event, "", &mut unmapped, &mut used_overrides);
             used_accounts.insert(target.clone());
-            let near: &str = if event.delta.is_sign_negative() {
-                &chart.fallback.expense
-            } else {
-                &chart.fallback.income
+            let carries = before_statement(pool, event);
+            let near: &str = match (carries, chart.account(pool)) {
+                (true, Some(own)) => &own.account,
+                _ if event.delta.is_sign_negative() => &chart.fallback.expense,
+                _ => &chart.fallback.income,
             };
             used_accounts.insert(near.to_string());
+            let payee = match carries {
+                true => String::new(),
+                false => "未對應紀錄".to_string(),
+            };
             cathay.push(Directive::Transaction(model::Transaction {
                 date: event.date,
-                payee: "未對應紀錄".to_string(),
+                payee,
                 narration: narration_for(&chart, event.correction_id(), &event.memo).to_string(),
                 tags,
                 postings: vec![
@@ -708,7 +806,10 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 external_ref: (!event.id.is_empty()).then(|| event.id.clone()),
             }));
             cathay.push(Directive::Blank);
-            n_unmatched_records += 1;
+            match carries {
+                true => n_carried += 1,
+                false => n_unmatched_records += 1,
+            }
         }
     }
 
@@ -797,8 +898,9 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
             statements
                 .iter()
                 .zip(&bank_accounts)
-                .find(|(s, a)| **a == account && s.currency == *currency)
-                .map(|(s, _)| {
+                .enumerate()
+                .find(|(si, (s, a))| **a == account && s.currency == *currency && opens_itself(*si))
+                .map(|(_, (s, _))| {
                     let first = s.lines.first().expect("load rejects empty statements");
                     (s.opening_balance(), first.book_date, "its statement")
                 })
@@ -836,6 +938,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         superseded_openings,
         other_accounts: n_other,
         unmatched_records: n_unmatched_records,
+        carried: n_carried,
         output: None,
         anchor,
         backfilled: n_backfill,

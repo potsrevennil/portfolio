@@ -23,11 +23,14 @@ settlement             = "Assets:Bank:Investment"        # where securities sett
 settlement_app_account = "證券"                            # app account that means settlement
 clearing               = "Assets:Bank:Transfer-Clearing" # internal transfers still in flight
 
-# Statement account number → ledger account.
+# Statement account number → ledger account, for every bank with statements.
+# A second bank's account gets its own pool of app records when [accounts] maps
+# one app account to exactly its ledger account.
 [institution.accounts]
 "123456789012" = "Assets:Bank:Savings"
 "210987654321" = "Assets:Bank:Investment"
 "345678901234" = "Assets:Bank:FX"         # foreign-currency account, one per currency
+"456789012345" = "Assets:LineBank"        # LINE Bank; its statements' folder names it
 
 # Where a statement line goes when no app record explains it. The statement
 # alone tells us only the direction, so that is all the default can use.
@@ -66,11 +69,12 @@ expense = "Expenses:Uncategorized"
 "現金" = "Assets:Cash"
 "銀行" = "Assets:Bank"
 # Mapped to exactly a statement's account: matched against that statement only.
-"外幣"  = "Assets:Bank:FX"
-"信用卡" = { account = "Liabilities:Card", tags = ["card"] }
-"應收款" = "Assets:Split:Others"
-"證券"  = "Assets:Securities"
-"起鼓"  = "Equity:Opening-Balances"                         # opening balances
+"外幣"   = "Assets:Bank:FX"
+"LINE" = "Assets:LineBank"
+"信用卡"  = { account = "Liabilities:Card", tags = ["card"] }
+"應收款"  = "Assets:Split:Others"
+"證券"   = "Assets:Securities"
+"起鼓"   = "Equity:Opening-Balances"                         # opening balances
 
 # Accounts whose balance is what was paid, not what it is worth: an unlisted
 # holding has no market price, so adding it to a total would read as a
@@ -115,6 +119,7 @@ roots = ["Assets:Split"]
 "Assets"                  = "資產"
 "Assets:Bank"             = "銀行"
 "Assets:Cash"             = "現金"
+"Assets:LineBank"         = "LINE Bank"
 "Equity"                  = "權益"
 "Equity:Opening-Balances" = "期初餘額"
 "Expenses"                = "支出"

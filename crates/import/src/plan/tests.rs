@@ -1,4 +1,4 @@
-use ledger::statements::cathay::StatementLine;
+use ledger::statements::bank::StatementLine;
 use rust_decimal_macros::dec;
 
 use super::*;
@@ -22,10 +22,12 @@ fn day(d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(2026, 6, d).expect("date")
 
 fn statement(lines: &[(u32, Decimal, Decimal)]) -> BankStatement {
     BankStatement {
+        bank: Bank::Cathay,
         account_no: "111111111111".into(),
         account_kind: "活存".into(),
         currency: Currency::TWD,
         period_end: None,
+        periods: Vec::new(),
         lines: lines
             .iter()
             .map(|&(d, delta, balance)| StatementLine {
@@ -77,11 +79,18 @@ fn lines_through_the_opening_date_are_skipped() -> Result<()> {
     Ok(())
 }
 
+/// With no opening, records carry the account from its first posting; they
+/// must reach the statement's balance.
 #[test]
-fn postings_without_an_opening_cannot_be_chained() {
+fn records_without_an_opening_chain_from_their_first_posting() -> Result<()> {
     let st = statement(&[(3, dec!(5), dec!(105))]);
-    let err = run(&st, vec![held(1, dec!(100), false)]).expect_err("no opening");
-    assert!(err.to_string().contains("no opening"), "{err}");
+    let p = run(&st, vec![held(1, dec!(100), false)])?;
+    let before_first_posting = day(1).pred_opt().expect("date");
+    assert_eq!((p.openings, p.counts.new, p.counts.openings), (vec![before_first_posting], 1, 0));
+
+    let err = run(&st, vec![held(1, dec!(90), false)]).expect_err("records reach 90, not 100");
+    assert!(err.to_string().contains("nothing was imported"), "{err}");
+    Ok(())
 }
 
 #[test]
