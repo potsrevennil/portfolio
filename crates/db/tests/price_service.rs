@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use prices::{PriceService, StockPrice, StockPriceStore};
+use db::quotes::StockPriceStore;
+use prices::{PriceService, PriceStore, StockPrice};
 
-#[path = "../common/mod.rs"]
+#[path = "common/mod.rs"]
 mod common;
 use common::create_temp_db;
 
@@ -17,7 +18,7 @@ fn day(y: i32, m: u32, d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, d).u
 async fn get_prices_fetches_the_missing_tail() -> anyhow::Result<()> {
     let (pool, _db_file) = create_temp_db().await?;
     let price_store = StockPriceStore::new(pool.clone());
-    let price_service = PriceService::new(pool.clone());
+    let price_service = PriceService::new(price_store.clone());
 
     let mut cached = HashMap::new();
     cached.insert("AAPL".to_string(), vec![

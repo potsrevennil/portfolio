@@ -4,12 +4,25 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-anyhow = { workspace = true }
-log    = { workspace = true }
-sqlx   = { workspace = true }
+anyhow              = { workspace = true }
+chrono              = { workspace = true }
+clap                = { workspace = true }
+csv                 = { workspace = true }
+ledger              = { workspace = true }
+ledger-types        = { workspace = true }
+log                 = { workspace = true }
+portfolio           = { workspace = true }
+prices              = { workspace = true }
+rust_decimal        = { workspace = true }
+rust_decimal_macros = { workspace = true }
+serde               = { workspace = true }
+sqlx                = { workspace = true }
+strum               = { workspace = true }
+strum_macros        = { workspace = true }
+toml                = { workspace = true }
 
-# The build step creates and migrates the database the sqlx macros in the
-# crates above check their queries against.
+# The build step creates and migrates the database the sqlx macros check
+# their queries against.
 [build-dependencies]
 anyhow = { workspace = true }
 sqlx   = { workspace = true }

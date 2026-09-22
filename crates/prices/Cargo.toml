@@ -6,15 +6,9 @@ edition.workspace = true
 [dependencies]
 anyhow       = { workspace = true }
 chrono       = { workspace = true }
-db           = { workspace = true }
 futures      = { workspace = true }
 ledger-types = { workspace = true }
 log          = { workspace = true }
 rust_decimal = { workspace = true }
-sqlx         = { workspace = true }
 thiserror    = { workspace = true }
 yfinance-rs  = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
-tokio    = { workspace = true }

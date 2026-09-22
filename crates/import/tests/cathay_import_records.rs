@@ -5,11 +5,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use db::load;
 use import::cathay_bank::{import, Report};
 use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, statements::cathay};
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
-use store::load;
 use tempfile::TempDir;
 
 fn records_dir() -> Option<PathBuf> {

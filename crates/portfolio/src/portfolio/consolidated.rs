@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Result;
 use chrono::NaiveDate;
-use prices::{source::YFinanceSource, PriceService, StockPrice};
+use prices::{source::YFinanceSource, PriceService, PriceStore, StockPrice};
 use rust_decimal::Decimal;
 
 use crate::{
@@ -80,7 +80,7 @@ impl ConsolidatedPortfolio {
         reporting_currency: Currency,
         start_date: NaiveDate,
         end_date: NaiveDate,
-        price_service: &PriceService,
+        price_service: &PriceService<impl PriceStore>,
     ) -> Result<HashMap<String, Vec<StockPrice>>> {
         let mut all_symbols = HashSet::new();
         let mut currency_pairs = HashSet::new();

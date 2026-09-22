@@ -4,6 +4,10 @@
 
 use axum::{body::Body, http::Request};
 use chrono::NaiveDate;
+use db::{
+    assertions::{AssertionSource, BalanceAssertion},
+    load,
+};
 use http_body_util::BodyExt;
 use ledger::{
     journal::{self, Journal, Posting},
@@ -15,10 +19,6 @@ use leptos::prelude::*;
 use prices::YFinanceSource;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
-use store::{
-    assertions::{AssertionSource, BalanceAssertion},
-    load,
-};
 use tempfile::TempDir;
 use tower::ServiceExt;
 use web::{balance_sheet::SheetView, server};
@@ -336,8 +336,8 @@ async fn the_landing_page_summarises() {
 #[tokio::test]
 async fn shared_labels_stand_alone_with_their_parents() {
     let (_dir, pool) = ledger().await;
-    let data = store::query::LedgerData::load(&pool).await.unwrap();
-    let labels = store::chart::standalone_labels(&data.labels());
+    let data = db::query::LedgerData::load(&pool).await.unwrap();
+    let labels = db::chart::standalone_labels(&data.labels());
     assert_eq!(labels["Assets:Split:Alpha:Tab"], "甲公司分帳");
     assert_eq!(labels["Assets:Split:Beta:Tab"], "乙公司分帳");
     assert_eq!(labels["Assets:Cash"], "現金");
@@ -357,11 +357,11 @@ fn a_missing_mapping_lists_no_at_cost_holdings_but_a_broken_one_stops_the_server
 #[test]
 fn at_cost_holdings_that_cancel_out_leave_no_note() {
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
-    let balance = |path: &str, amount: &str| store::query::AccountBalance {
+    let balance = |path: &str, amount: &str| db::query::AccountBalance {
         account_id: 0,
         path: path.into(),
         label: String::new(),
-        account_type: store::query::AccountType::Asset,
+        account_type: db::query::AccountType::Asset,
         closed: false,
         currency: Currency::TWD,
         amount: amount.parse().unwrap(),

@@ -4,10 +4,12 @@
 //! points differ in where the transactions come from — `init` rebuilds the
 //! transaction file from broker reports first — and share everything after.
 
+use std::future::Future;
+
 use anyhow::Result;
 use chrono::{Duration, Months, NaiveDate, Utc};
 use clap::{builder::PossibleValue, Parser};
-use prices::PriceService;
+use prices::{PriceService, PriceStore};
 
 use crate::{
     event::{self, loader::DataSource},
@@ -118,31 +120,37 @@ struct SharedArgs {
 }
 
 /// Rebuild the transaction file from the broker reports, then report on it.
-pub async fn init(init: &Init) -> Result<()> {
+pub async fn init<P: PriceStore, S: SplitStore>(
+    init: &Init,
+    stores: impl Future<Output = Result<(PriceService<P>, S)>>,
+) -> Result<()> {
     let sources = vec![
         DataSource::Ib(init.ib_files.clone()),
         DataSource::Cathay(init.cathay_files.clone()),
         DataSource::Generic(init.transactions_files.clone()),
     ];
-    report(sources, Some(init.output_file.clone()), &init.args).await
+    report(sources, Some(init.output_file.clone()), &init.args, stores).await
 }
 
 /// Report on the transaction file as it already stands.
-pub async fn run(args: &Args) -> Result<()> {
+pub async fn run<P: PriceStore, S: SplitStore>(
+    args: &Args,
+    stores: impl Future<Output = Result<(PriceService<P>, S)>>,
+) -> Result<()> {
     let sources = vec![DataSource::Generic(args.transactions_files.clone())];
-    report(sources, None, &args.args).await
+    report(sources, None, &args.args, stores).await
 }
 
-async fn report(
+/// `stores` is awaited only once the config has loaded, so a missing
+/// `securities.toml` fails before any database is created.
+async fn report<P: PriceStore, S: SplitStore>(
     sources: Vec<DataSource>,
     output_file: Option<String>,
     args: &SharedArgs,
+    stores: impl Future<Output = Result<(PriceService<P>, S)>>,
 ) -> Result<()> {
     let securities = Securities::load(Securities::PATH)?;
-    let pool = db::init_db("sqlite:sqlite.db").await?;
-    let price_service = PriceService::new(pool.clone());
-    let split_store = SplitStore::new(pool);
-
+    let (price_service, split_store) = stores.await?;
     let broker_data = event::load(sources, output_file, &split_store, &securities).await?;
     let mut portfolios = ConsolidatedPortfolio::from(
         broker_data.into_iter().map(|(b, (es, ss))| (b, Portfolio::new(b, es, ss))).collect(),

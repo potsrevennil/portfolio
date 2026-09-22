@@ -1,4 +1,4 @@
-//! Tests for the read-only reporting engine (`store::query`).
+//! Tests for the read-only reporting engine (`db::query`).
 //!
 //! Two kinds of fixture, on purpose:
 //!
@@ -15,6 +15,13 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::NaiveDate;
+use db::{
+    load,
+    query::{
+        self, account_balances, holdings_report, net_worth_over_time, periodic_report, AccountType,
+        Grain,
+    },
+};
 use ledger::{args::Args as BuildArgs, freeze, valuation::AtCost};
 use portfolio::portfolio::{
     AssetClass, Broker, Currency, Event, Portfolio, Security, Transaction, TransactionKind,
@@ -23,13 +30,6 @@ use prices::StockPrice;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::SqlitePool;
-use store::{
-    load,
-    query::{
-        self, account_balances, holdings_report, net_worth_over_time, periodic_report, AccountType,
-        Grain,
-    },
-};
 use tempfile::TempDir;
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {

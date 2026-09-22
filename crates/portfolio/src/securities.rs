@@ -8,7 +8,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::split::service::StockSplits;
+use crate::split::store::StockSplits;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Securities {

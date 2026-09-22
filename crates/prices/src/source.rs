@@ -10,8 +10,6 @@ use yfinance_rs::{core::conversions, Ticker, YfClient, YfError};
 pub enum PriceError {
     #[error("Yahoo Finance error: {0}")]
     YFinance(#[from] YfError),
-    #[error("SQLx error: {0}")]
-    Sqlx(#[from] sqlx::Error),
     #[error("Other error: {0}")]
     Other(String),
     #[error(transparent)]

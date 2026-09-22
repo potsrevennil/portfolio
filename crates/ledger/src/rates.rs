@@ -13,7 +13,7 @@ use std::{collections::BTreeSet, fmt::Write as _, path::Path};
 use anyhow::{Context, Result};
 use chrono::{Datelike, NaiveDate, Utc};
 use ledger_types::currency::Currency;
-use prices::PriceService;
+use prices::{PriceService, PriceStore};
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -64,7 +64,7 @@ fn scan(dir: &Path) -> Result<(BTreeSet<Currency>, NaiveDate)> {
     Ok((currencies, start))
 }
 
-pub async fn fetch(args: &Args, service: &PriceService) -> Result<usize> {
+pub async fn fetch(args: &Args, service: &PriceService<impl PriceStore>) -> Result<usize> {
     let dir = Path::new(&args.ledger_dir).join("generated");
     let (mut currencies, start) = scan(&dir)?;
     currencies.remove(&args.base);

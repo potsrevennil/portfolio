@@ -1,5 +1,5 @@
 //! A balance someone outside the ledger vouches for: a statement's closing,
-//! 天天記帳's own balance, or a counted one. Freeze writes them, the store
+//! 天天記帳's own balance, or a counted one. Freeze writes them, the database
 //! keeps them, and `check` holds the ledger to them.
 
 use std::fmt;

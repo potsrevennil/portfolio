@@ -297,7 +297,7 @@ pub struct Report {
 }
 
 impl Report {
-    /// Mirrors `store::check`: a journal no balance assertion vouches for is
+    /// Mirrors `db::check`: a journal no balance assertion vouches for is
     /// not a verified journal, whatever else reconciles.
     pub fn ok(&self) -> bool {
         self.mismatches.is_empty() && self.negatives.is_empty() && self.figures_checked > 0

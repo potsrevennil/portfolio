@@ -6,21 +6,18 @@ use futures::future::try_join_all;
 
 use super::{
     source::{PriceError, StockPrice, YFinanceSource},
-    store::StockPriceStore,
+    store::PriceStore,
 };
 
 /// Manages stock price data, acting as an intermediary between the application
 /// and data storage/fetching mechanisms.
-pub struct PriceService {
-    store: StockPriceStore,
+pub struct PriceService<S> {
+    store: S,
     source: YFinanceSource,
 }
 
-impl PriceService {
-    /// Creates a new `PriceService` instance.
-    pub fn new(pool: sqlx::SqlitePool) -> Self {
-        Self { store: StockPriceStore::new(pool), source: YFinanceSource::new() }
-    }
+impl<S: PriceStore> PriceService<S> {
+    pub fn new(store: S) -> Self { Self { store, source: YFinanceSource::new() } }
 
     /// Retrieves stock prices for specified symbols within a given date range.
     ///

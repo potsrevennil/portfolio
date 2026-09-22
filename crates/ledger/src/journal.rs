@@ -1,6 +1,6 @@
 //! The **journal**: a flat CSV that is the single source of truth of reconciled
 //! history. The freeze tool ([`super::freeze`]) writes it once
-//! reconciliation passes and the loader (`store::load`) reads it into SQLite;
+//! reconciliation passes and the loader (`db::load`) reads it into SQLite;
 //! it stays deliberately dumb — no Beancount, no chart, no reconciliation — so
 //! that load path carries none of that complexity. It is financial data, so it
 //! is gitignored.

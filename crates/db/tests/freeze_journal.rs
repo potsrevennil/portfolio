@@ -7,16 +7,16 @@
 //! no gitignored CSV is committed.
 
 use chrono::NaiveDate;
+use db::{
+    self,
+    assertions::{self, AssertionSource, BalanceAssertion},
+    load,
+};
 use ledger::{args::Args as BuildArgs, freeze, journal, model};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::Row;
-use store::{
-    self,
-    assertions::{self, AssertionSource, BalanceAssertion},
-    load,
-};
 use tempfile::TempDir;
 
 const MAPPING: &str = r#"
@@ -593,7 +593,7 @@ async fn the_hledger_export_passes_hledger_check_and_catches_drift() -> anyhow::
     })
     .await?;
 
-    let exported = store::hledger::export(&mut *pool.acquire().await?).await?;
+    let exported = db::hledger::export(&mut *pool.acquire().await?).await?;
     assert!(exported.contains("=* 4900 TWD"), "statement closing not exported:\n{exported}");
     assert!(exported.contains("commodity USD"), "undeclared commodity:\n{exported}");
     std::fs::write(&path, &exported)?;
@@ -607,7 +607,7 @@ async fn the_hledger_export_passes_hledger_check_and_catches_drift() -> anyhow::
     sqlx::query("UPDATE balance_assertion SET closing = '4901' WHERE source = 'statement'")
         .execute(&pool)
         .await?;
-    std::fs::write(&path, store::hledger::export(&mut *pool.acquire().await?).await?)?;
+    std::fs::write(&path, db::hledger::export(&mut *pool.acquire().await?).await?)?;
     let out = hledger_check(&path);
     assert!(!out.status.success(), "hledger accepted a wrong balance assertion");
     assert!(String::from_utf8_lossy(&out.stderr).contains("Balance assertion failed"));

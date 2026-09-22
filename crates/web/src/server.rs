@@ -1,13 +1,13 @@
 //! The axum server: Leptos routes and server functions over one SQLite pool.
 
-use std::{path::Path, str::FromStr};
+use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use axum::Router;
+use db::SqlitePool;
 use ledger::valuation::AtCost;
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
-use sqlx::{sqlite::SqliteConnectOptions, SqlitePool};
 
 use crate::app::{shell, App};
 
@@ -18,12 +18,6 @@ const DEFAULT_DATABASE_URL: &str = "sqlite:ledger-app.db";
 /// The chart config, for the reporting rules that are not in the database.
 /// `LEDGER_MAPPING` overrides it.
 const DEFAULT_MAPPING: &str = "ledger/mapping.toml";
-
-pub async fn open(url: &str) -> Result<SqlitePool> {
-    // Never create: a mistyped path should fail, not serve an empty ledger.
-    let options = SqliteConnectOptions::from_str(url)?.create_if_missing(false);
-    SqlitePool::connect_with(options).await.with_context(|| format!("opening {url}"))
-}
 
 pub fn router(options: LeptosOptions, pool: SqlitePool, at_cost: AtCost) -> Router {
     let routes = generate_route_list(App);
@@ -43,7 +37,7 @@ pub fn router(options: LeptosOptions, pool: SqlitePool, at_cost: AtCost) -> Rout
 pub async fn run() -> Result<()> {
     let options = get_configuration(None)?.leptos_options;
     let url = std::env::var("LEDGER_DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.into());
-    let pool = open(&url).await?;
+    let pool = db::connect(&url).await?;
     let mapping = std::env::var("LEDGER_MAPPING").unwrap_or_else(|_| DEFAULT_MAPPING.into());
     let at_cost = at_cost(Path::new(&mapping))?;
     let addr = options.site_addr;

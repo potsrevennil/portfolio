@@ -1,32 +1,20 @@
-use std::{fs, path::Path};
+//! All SQLite access: the schema, its migrations and every query. Other crates
+//! hold no SQL; where their logic needs storage they declare a trait
+//! (`prices::PriceStore`, `portfolio::SplitStore`) and this crate implements
+//! it.
 
-use anyhow::{Context, Result};
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+pub mod assertions;
+pub mod chart;
+pub mod check;
+pub mod connect;
+pub mod hledger;
+pub mod import;
+pub mod import_batch;
+pub mod load;
+pub mod query;
+pub mod quotes;
+pub mod splits;
 
-/// Opens a database that must already exist: a read-only command pointed at a
-/// typo would otherwise create an empty one and report it as healthy.
-pub async fn open_db(db_url: &str) -> Result<SqlitePool> {
-    let path = db_url.trim_start_matches("sqlite:");
-    if Path::new(path).exists() {
-        init_db(db_url).await
-    } else {
-        anyhow::bail!("no database at {path}")
-    }
-}
-
-pub async fn init_db(db_url: &str) -> Result<SqlitePool> {
-    let db_file_path = db_url.trim_start_matches("sqlite:");
-
-    // Create the database file if it doesn't exist
-    if !Path::new(db_file_path).exists() {
-        log::info!("Creating database file: {db_file_path}");
-        fs::File::create(db_file_path)?;
-    }
-
-    let pool = SqlitePoolOptions::new().max_connections(5).connect(db_url).await?;
-
-    // Run migrations using sqlx::migrate! macro
-    sqlx::migrate!("./migrations").run(&pool).await.context("Failed to run migrations")?;
-
-    Ok(pool)
-}
+pub use connect::{connect, init_db, open_db};
+// The handles callers pass around, so only this crate depends on sqlx.
+pub use sqlx::{SqliteConnection, SqlitePool};
