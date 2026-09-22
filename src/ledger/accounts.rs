@@ -4,7 +4,7 @@
 //! account name needs an explicit ASCII counterpart. See `ledger/mapping.toml`.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt, fs,
     ops::Deref,
     path::Path,
@@ -305,6 +305,9 @@ pub struct Chart {
     /// `SplitAccounts`.
     #[serde(default)]
     pub split_accounts: SplitAccounts,
+    /// Display labels by path. See [`Labels`](super::labels::Labels).
+    #[serde(default)]
+    pub display: BTreeMap<String, String>,
     /// The old name of `split_accounts`, refused. See
     /// `renamed_to_split_accounts`.
     #[serde(default, rename = "counterparty", deserialize_with = "renamed_to_split_accounts")]

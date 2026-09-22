@@ -14,7 +14,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::{
     currency::Currency,
-    ledger::{load::schema_type, model::Source},
+    ledger::{labels::Labels, load::schema_type, model::Source},
 };
 
 /// A transaction not yet stored, with its legs.
@@ -68,13 +68,14 @@ impl InsertOutcome {
     }
 }
 
-#[derive(Clone)]
 pub struct ImportStore {
     pool: SqlitePool,
+    /// Names the accounts an insert creates.
+    labels: Labels,
 }
 
 impl ImportStore {
-    pub fn new(pool: SqlitePool) -> Self { ImportStore { pool } }
+    pub fn new(pool: SqlitePool, labels: Labels) -> Self { ImportStore { pool, labels } }
 
     pub fn pool(&self) -> &SqlitePool { &self.pool }
 
@@ -86,7 +87,7 @@ impl ImportStore {
     /// than a unique-index error.
     pub async fn insert_deduped(&self, txn: &Transaction) -> Result<InsertOutcome> {
         let mut db = self.pool.begin().await?;
-        let outcome = insert_deduped(&mut db, txn).await?;
+        let outcome = insert_deduped(&mut db, &self.labels, txn).await?;
         db.commit().await?;
         Ok(outcome)
     }
@@ -94,7 +95,11 @@ impl ImportStore {
 
 /// [`ImportStore::insert_deduped`] inside the caller's transaction, so a whole
 /// import commits or rolls back as one.
-pub async fn insert_deduped(db: &mut SqliteConnection, txn: &Transaction) -> Result<InsertOutcome> {
+pub async fn insert_deduped(
+    db: &mut SqliteConnection,
+    labels: &Labels,
+    txn: &Transaction,
+) -> Result<InsertOutcome> {
     validate_balanced(&txn.postings)?;
 
     let source = txn.source.to_string();
@@ -118,7 +123,7 @@ pub async fn insert_deduped(db: &mut SqliteConnection, txn: &Transaction) -> Res
     match inserted {
         Some(txn_id) => {
             for p in &txn.postings {
-                let account_id = ensure_account(db, &p.account).await?;
+                let account_id = ensure_account(db, labels, &p.account).await?;
                 let amount = p.amount.to_string();
                 let currency = p.currency.to_string();
                 sqlx::query!(
@@ -150,31 +155,37 @@ pub async fn insert_deduped(db: &mut SqliteConnection, txn: &Transaction) -> Res
     }
 }
 
-/// The account's id, creating it (label = leaf, as load-journal does) if new.
-pub async fn ensure_account(db: &mut SqliteConnection, path: &str) -> Result<i64> {
-    let found: Option<i64> = sqlx::query_scalar("SELECT id FROM accounts WHERE path = ?")
-        .bind(path)
-        .fetch_optional(&mut *db)
-        .await?;
-    match found {
-        Some(id) => Ok(id),
-        None => {
-            let label = path.rsplit(':').next().unwrap_or(path);
-            let id = sqlx::query("INSERT INTO accounts (path, label, type) VALUES (?, ?, ?)")
-                .bind(path)
-                .bind(label)
-                .bind(schema_type(path)?.to_string())
-                .execute(&mut *db)
-                .await
-                .with_context(|| format!("creating account {path}"))?
-                .last_insert_rowid();
-            sqlx::query("INSERT INTO account_events (account_id, event) VALUES (?, 'created')")
-                .bind(id)
-                .execute(&mut *db)
-                .await?;
-            Ok(id)
-        }
+/// The account's id, creating it and any missing ancestor with the label
+/// load-journal would give it, so the tree never shows an ASCII name.
+pub async fn ensure_account(db: &mut SqliteConnection, labels: &Labels, path: &str) -> Result<i64> {
+    let mut id = None;
+    let ancestors = path.match_indices(':').map(|(i, _)| &path[..i]);
+    for path in ancestors.chain([path]) {
+        let found: Option<i64> = sqlx::query_scalar("SELECT id FROM accounts WHERE path = ?")
+            .bind(path)
+            .fetch_optional(&mut *db)
+            .await?;
+        id = match found {
+            Some(id) => Some(id),
+            None => {
+                let created =
+                    sqlx::query("INSERT INTO accounts (path, label, type) VALUES (?, ?, ?)")
+                        .bind(path)
+                        .bind(labels.label(path))
+                        .bind(schema_type(path)?.to_string())
+                        .execute(&mut *db)
+                        .await
+                        .with_context(|| format!("creating account {path}"))?
+                        .last_insert_rowid();
+                sqlx::query("INSERT INTO account_events (account_id, event) VALUES (?, 'created')")
+                    .bind(created)
+                    .execute(&mut *db)
+                    .await?;
+                Some(created)
+            }
+        };
     }
+    id.context("empty account path")
 }
 
 /// Summed with `rust_decimal`, not SQL `SUM`, which would CAST to REAL.

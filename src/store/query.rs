@@ -13,7 +13,8 @@
 //! therefore the plain signed sum of its postings; net worth is
 //! `assets + liabilities` (liabilities already carry their own negative sign),
 //! and equity — including the cross-currency `Equity:Conversions` plug the bake
-//! inserts in place of an `@@` price — is deliberately excluded.
+//! inserts in place of an `@@` price — is deliberately excluded. So are
+//! holdings carried at cost ([`AtCost`]); [`in_net_worth`] is the one rule.
 //!
 //! Amounts are stored as exact `TEXT` decimals; they are summed here with
 //! `rust_decimal`, never with SQL `SUM` over a lossy `CAST` to `REAL`.
@@ -32,6 +33,7 @@ use strum_macros::{Display, EnumIter, EnumString};
 
 use crate::{
     currency::Currency,
+    ledger::valuation::AtCost,
     portfolio::{holding::Holding, statement::Statement, Portfolio},
     prices::{source::YFinanceSource, StockPrice, StockPriceStore},
 };
@@ -293,6 +295,12 @@ impl LedgerData {
         Ok(Self { accounts, postings })
     }
 
+    /// Every account's label by path, including the group levels with no
+    /// postings of their own.
+    pub fn labels(&self) -> BTreeMap<&str, &str> {
+        self.accounts.values().map(|a| (a.path.as_str(), a.label.as_str())).collect()
+    }
+
     /// The newest posting on each account and currency.
     pub fn last_posting_dates(&self) -> BTreeMap<(i64, Currency), NaiveDate> {
         let mut latest: BTreeMap<(i64, Currency), NaiveDate> = BTreeMap::new();
@@ -337,18 +345,18 @@ impl LedgerData {
         out
     }
 
-    /// Net worth as of a date: asset and liability balances converted into
-    /// `base` at the rate in effect on that date. Equity, income and expense
-    /// accounts are excluded, so the `Equity:Conversions` plug never counts.
+    /// Net worth as of a date: the balances [`in_net_worth`] counts, converted
+    /// into `base` at the rate in effect on that date.
     pub fn net_worth_as_of(
         &self,
         base: Currency,
+        at_cost: &AtCost,
         as_of: NaiveDate,
         prices: &PriceTable,
     ) -> Result<NetWorthPoint> {
         let mut assets = Decimal::ZERO;
         let mut liabilities = Decimal::ZERO;
-        for b in self.balances_as_of(as_of) {
+        for b in self.balances_as_of(as_of).into_iter().filter(|b| in_net_worth(b, at_cost)) {
             // Only the arms that count are converted, so a currency seen solely
             // on an excluded account needs no rate.
             let convert = || convert_as_of(b.amount, b.currency, base, as_of, prices);
@@ -426,6 +434,7 @@ pub async fn account_balances(pool: &SqlitePool, as_of: NaiveDate) -> Result<Vec
 pub async fn net_worth_over_time(
     pool: &SqlitePool,
     base: Currency,
+    at_cost: &AtCost,
     start: NaiveDate,
     end: NaiveDate,
     grain: Grain,
@@ -434,7 +443,7 @@ pub async fn net_worth_over_time(
     let prices = load_fx_prices(pool, &data.currencies(), base, end).await?;
     let points = generate_periods(start, end, grain)
         .into_iter()
-        .map(|(_, period_end)| data.net_worth_as_of(base, period_end.min(end), &prices))
+        .map(|(_, period_end)| data.net_worth_as_of(base, at_cost, period_end.min(end), &prices))
         .collect::<Result<_>>()?;
     Ok(NetWorthSeries { base, grain, points })
 }
@@ -456,7 +465,7 @@ pub async fn periodic_report(
 /// Loads the FX pairs needed to quote every ledger currency in `base` from the
 /// shared `stock_prices` table, up to `end`. Both directions of each pair are
 /// fetched so an inverse rate can stand in when only one side was recorded.
-async fn load_fx_prices(
+pub async fn load_fx_prices(
     pool: &SqlitePool,
     currencies: &BTreeSet<Currency>,
     base: Currency,
@@ -604,6 +613,17 @@ fn rate_as_of(
     }
 }
 
+/// [`rate_as_of`] as an option: a page that shows several currencies names the
+/// unpriced ones instead of failing whole.
+pub fn rate(
+    from: Currency,
+    to: Currency,
+    as_of: NaiveDate,
+    prices: &PriceTable,
+) -> Option<Decimal> {
+    rate_as_of(from, to, as_of, prices).ok()
+}
+
 /// The recorded rate for one ticker as of a date: the last quote dated on or
 /// before `as_of`, or the earliest quote if the date precedes all of them.
 fn ticker_rate(
@@ -623,6 +643,13 @@ fn ticker_rate(
             }
         })
         .and_then(|quote| Decimal::from_f64(quote.close_price))
+}
+
+/// True when a balance adds to net worth: an asset or liability not carried
+/// at cost. Equity is out, so the `Equity:Conversions` plug never counts.
+pub fn in_net_worth(b: &AccountBalance, at_cost: &AtCost) -> bool {
+    matches!(b.account_type, AccountType::Asset | AccountType::Liability)
+        && !at_cost.covers(&b.path)
 }
 
 /// True when `path` is `root` or lies under it — the subtree a Beancount

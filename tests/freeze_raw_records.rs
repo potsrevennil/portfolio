@@ -39,6 +39,7 @@ roots = ["Assets:Split"]
 "美金"     = "Assets:USD-Wallet"
 "現金"     = "Assets:Cash"
 "阿明"     = "Assets:Split:Ming"
+"券商"     = "Assets:Broker"
 "起鼓"     = "Equity:Opening-Balances"
 
 [display]

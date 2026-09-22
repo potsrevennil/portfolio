@@ -44,6 +44,7 @@ expense = "Expenses:Uncategorized"
 "現金"     = "Assets:Cash"
 "美金"     = "Assets:USD-Wallet"
 "卡"       = "Liabilities:Card"
+"券商"     = "Assets:Broker"
 "起鼓"     = "Equity:Opening-Balances"
 
 [overrides]
@@ -491,6 +492,7 @@ a:1,active,2024-07-01,,transfer,15,USD,外幣帳戶,國泰,500,TWD,,,,,,app,f,U-
     let load_args = load::Args {
         journal: args.journal.clone(),
         database_url: format!("sqlite:{}", dir.path().join("ledger-app.db").display()),
+        mapping: args.build.ledger_dir.join("mapping.toml"),
     };
     load::run(&load_args).await?;
     Ok(())

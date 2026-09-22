@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::NaiveDate;
 use portfolio::{
     db,
-    ledger::{args::Args as BuildArgs, freeze, load},
+    ledger::{args::Args as BuildArgs, freeze, load, valuation::AtCost},
     portfolio::portfolio::{
         AssetClass, Broker, Currency, Event, Portfolio, Security, Transaction, TransactionKind,
     },
@@ -208,10 +208,16 @@ async fn net_worth_converts_currencies_and_excludes_equity() {
     seed_multicurrency(&pool).await;
 
     // Monthly over Jan–Feb: a point at each month end, in TWD.
-    let series =
-        net_worth_over_time(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 2, 28), Grain::Month)
-            .await
-            .unwrap();
+    let series = net_worth_over_time(
+        &pool,
+        Currency::TWD,
+        &AtCost::default(),
+        d(2026, 1, 1),
+        d(2026, 2, 28),
+        Grain::Month,
+    )
+    .await
+    .unwrap();
     assert_eq!(series.base, Currency::TWD);
     assert_eq!(series.points.len(), 2);
 
@@ -590,7 +596,11 @@ async fn freeze_and_load() -> (TempDir, SqlitePool) {
     assert_eq!(frozen.conversions, 2, "cross-currency plug not inserted:\n{frozen}");
 
     let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    let load_args = load::Args { journal: root.join("journal.csv"), database_url: url.clone() };
+    let load_args = load::Args {
+        journal: root.join("journal.csv"),
+        database_url: url.clone(),
+        mapping: root.join("mapping.toml"),
+    };
     load::run(&load_args).await.expect("load");
     let pool = db::init_db(&url).await.expect("open loaded db");
     (dir, pool)
@@ -633,7 +643,10 @@ async fn reports_over_frozen_history_exclude_the_conversions_plug() {
         .map(|b| b.amount * rate(b))
         .sum();
 
-    let series = net_worth_over_time(&pool, Currency::TWD, as_of, as_of, Grain::Day).await.unwrap();
+    let series =
+        net_worth_over_time(&pool, Currency::TWD, &AtCost::default(), as_of, as_of, Grain::Day)
+            .await
+            .unwrap();
     let point = &series.points[0];
     assert_eq!(point.assets, expected_assets);
     assert_eq!(point.liabilities, expected_liabilities);
@@ -675,9 +688,10 @@ async fn periodic_totals_over_frozen_history_reconcile_with_balances() {
 async fn net_worth_without_an_fx_rate_is_an_error_not_one_to_one() {
     let (_dir, pool) = freeze_and_load().await;
     let as_of = d(2024, 12, 31);
-    let err = net_worth_over_time(&pool, Currency::TWD, as_of, as_of, Grain::Day)
-        .await
-        .expect_err("a USD balance with no USD→TWD quote must not convert at 1");
+    let err =
+        net_worth_over_time(&pool, Currency::TWD, &AtCost::default(), as_of, as_of, Grain::Day)
+            .await
+            .expect_err("a USD balance with no USD→TWD quote must not convert at 1");
     assert!(format!("{err:#}").contains("USD"), "error should name the currency: {err:#}");
 }
 
@@ -694,9 +708,13 @@ async fn net_worth_ignores_a_currency_that_only_touches_flow_accounts() {
     add_txn(&pool, "2026-01-06", "trip", &[(travel, "500", "JPY"), (salary, "-500", "JPY")]).await;
 
     let as_of = d(2026, 1, 31);
-    let series = net_worth_over_time(&pool, Currency::TWD, as_of, as_of, Grain::Day).await.expect(
-        "a JPY flow leg with no quote must not fail a report that excludes income and expense",
-    );
+    let series =
+        net_worth_over_time(&pool, Currency::TWD, &AtCost::default(), as_of, as_of, Grain::Day)
+            .await
+            .expect(
+                "a JPY flow leg with no quote must not fail a report that excludes income and \
+                 expense",
+            );
     assert_eq!(series.points[0].net, dec!(1000));
 
     // The same JPY leg does need a rate once it is inside the reported figure.
@@ -704,4 +722,31 @@ async fn net_worth_ignores_a_currency_that_only_touches_flow_accounts() {
         .await
         .expect_err("an expense report must not count 500 JPY as 500 TWD");
     assert!(format!("{err:#}").contains("JPY"), "{err:#}");
+}
+
+/// A holding carried at cost is no valuation, so no net-worth figure counts
+/// it: the balance sheet uses the same rule.
+#[tokio::test]
+async fn net_worth_leaves_out_holdings_carried_at_cost() {
+    let (_dir, pool) = fresh_db().await;
+    let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
+    let unlisted = add_account(&pool, "Assets:Unlisted:Alpha", "Alpha", "asset").await;
+    let opening = add_account(&pool, "Equity:Opening-Balances", "Opening", "equity").await;
+    add_txn(&pool, "2026-01-05", "open", &[(cash, "1000", "TWD"), (opening, "-1000", "TWD")]).await;
+    add_txn(&pool, "2026-01-06", "buy", &[(unlisted, "400", "TWD"), (cash, "-400", "TWD")]).await;
+
+    let as_of = d(2026, 1, 31);
+    let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\"]\n").unwrap();
+    let net = |at_cost: AtCost| {
+        let pool = pool.clone();
+        async move {
+            net_worth_over_time(&pool, Currency::TWD, &at_cost, as_of, as_of, Grain::Day)
+                .await
+                .unwrap()
+                .points[0]
+                .net
+        }
+    };
+    assert_eq!(net(AtCost::default()).await, dec!(1000));
+    assert_eq!(net(at_cost).await, dec!(600));
 }

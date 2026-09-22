@@ -19,6 +19,9 @@ clearing               = "Assets:Cathay:Clearing"
 [fallback]
 income  = "Income:Uncategorized"
 expense = "Expenses:Uncategorized"
+
+[accounts]
+"券商" = "Assets:Broker"
 "#;
 
 /// A savings statement whose last running balance is `closing`; 4900 is what
@@ -68,6 +71,8 @@ fn freeze_then_load_journal_from_the_command_line() -> anyhow::Result<()> {
         "journal.csv",
         "--database-url",
         "sqlite:app.db",
+        "--mapping",
+        "mapping.toml",
     ])?;
     let stdout = String::from_utf8_lossy(&loaded.stdout);
     assert!(

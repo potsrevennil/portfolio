@@ -93,3 +93,22 @@ You can customize the output with the following options:
 ```sh
 cargo run -- --sort-by name --order +
 ```
+### Browse the Ledger (web UI)
+
+`web/` is the ledger's own UI (Leptos, rendered on the server and hydrated in
+the browser). It reads the SQLite ledger that `load-journal` writes; account
+labels come from `ledger/mapping.toml` at load time. Inside `nix develop`:
+
+```sh
+cargo run -- load-journal --journal ledger/journal.csv --database-url sqlite:ledger-app.db
+cargo leptos watch      # or: cargo leptos build --release
+```
+
+Then open <http://127.0.0.1:3000>. `LEDGER_DATABASE_URL` points it at another
+database (default `sqlite:ledger-app.db`), and `LEDGER_MAPPING` at another chart
+config (default `ledger/mapping.toml`).
+
+A release build names its files after their content, so run the binary with
+`LEPTOS_HASH_FILES=true`; it reads `hash.txt` from its own directory, where
+`cargo leptos build --release` leaves it. Amounts are converted to TWD with the
+rates in the database's `stock_prices` table (`cargo run -- rates`).

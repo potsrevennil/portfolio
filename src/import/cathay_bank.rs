@@ -15,6 +15,7 @@ use crate::{
     db,
     ledger::{
         accounts::Chart,
+        labels::Labels,
         names::statement_account,
         statements::cathay::{self, Merged},
     },
@@ -103,6 +104,7 @@ pub async fn import(
     let Plan { transactions, counts, openings } =
         plan::plan(chart, &statements, &known, candidates)?;
 
+    let labels = Labels::from(chart);
     let inserted = transactions.len();
     let mut batches: BTreeMap<usize, i64> = BTreeMap::new();
     for (file, mut txn) in transactions {
@@ -115,7 +117,7 @@ pub async fn import(
             }
         };
         txn.import_batch_id = Some(batch);
-        match insert_deduped(db, &txn).await.context("inserting import")? {
+        match insert_deduped(db, &labels, &txn).await.context("inserting import")? {
             InsertOutcome::Inserted(_) => {}
             InsertOutcome::Duplicate(_) => bail!(
                 "{} was planned as new but is already held",
@@ -145,7 +147,7 @@ pub async fn import(
             Some(_) => continue,
             // assertions::insert resolves the account by path.
             None => {
-                ensure_account(db, &s.account).await?;
+                ensure_account(db, &labels, &s.account).await?;
                 assertions::insert(db, &assertion).await?
             }
         }

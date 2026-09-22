@@ -77,7 +77,12 @@ async fn importing_every_download_into_the_frozen_ledger_adds_nothing() -> Resul
     })?;
     anyhow::ensure!(frozen.ok(), "freeze failed:\n{frozen}");
     let url = format!("sqlite:{}", scratch.path().join("frozen.db").display());
-    load::run(&load::Args { journal, database_url: url.clone() }).await?;
+    load::run(&load::Args {
+        journal,
+        database_url: url.clone(),
+        mapping: records.join("ledger/mapping.toml"),
+    })
+    .await?;
     let pool = portfolio::init_db(&url).await?;
 
     let report = import_all(&pool, &records).await?;

@@ -46,7 +46,7 @@ expense = "Expenses:Uncategorized"
 "現金" = "Assets:Cash"
 "美金" = "Assets:USD-Wallet"
 "國泰" = "Assets:Cathay"
-"券商" = "Assets:Securities:ETF"
+"券商" = "Assets:Broker:Holdings"
 "起鼓" = "Equity:Opening-Balances"
 "#;
 
@@ -103,6 +103,7 @@ fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
     let load = load::Args {
         journal: root.join("journal.csv"),
         database_url: format!("sqlite:{}", root.join("ledger-app.db").display()),
+        mapping: root.join("mapping.toml"),
     };
     (dir, freeze, load)
 }
@@ -173,12 +174,16 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     // posting tag).
     let note: Option<String> = sqlx::query(
         "SELECT e.note FROM account_events e JOIN accounts a ON a.id = e.account_id WHERE a.path \
-         = 'Assets:Securities:ETF' AND e.event = 'created'",
+         = 'Assets:Broker:Holdings' AND e.event = 'created'",
     )
     .fetch_one(&pool)
     .await?
     .get(0);
-    assert!(note.unwrap_or_default().contains("backfilled"), "placeholder note missing");
+    assert!(
+        note.unwrap_or_default().contains("backfilled"),
+        "the placeholder subtree is read from the chart, so a securities account named anything \
+         else must still be tagged"
+    );
 
     // Every account has exactly one 'created' event.
     let accounts: i64 = sqlx::query("SELECT COUNT(*) FROM accounts").fetch_one(&pool).await?.get(0);
@@ -211,6 +216,23 @@ async fn freeze_then_load_reproduces_the_reconciled_history() -> anyhow::Result<
     assert!(stored.iter().any(|a| a.source == AssertionSource::Tiantian));
     let figures: usize = stored.iter().map(|a| a.points().count()).sum();
     assert!(loaded.check.ok() && loaded.check.figures() == figures, "{}", loaded.check);
+
+    // Labels come from mapping.toml; ancestors are accounts too, so every tree
+    // level has one.
+    let labels: Vec<(String, String)> = sqlx::query(
+        "SELECT path, label FROM accounts WHERE path IN ('Assets', 'Assets:Cash', \
+         'Assets:Broker') ORDER BY path",
+    )
+    .fetch_all(&pool)
+    .await?
+    .iter()
+    .map(|r| (r.get(0), r.get(1)))
+    .collect();
+    assert_eq!(labels, [
+        ("Assets".to_string(), "Assets".to_string()),
+        ("Assets:Broker".to_string(), "Broker".to_string()),
+        ("Assets:Cash".to_string(), "現金".to_string()),
+    ]);
     Ok(())
 }
 
@@ -248,6 +270,7 @@ async fn load_journal_requires_the_assertions_file() -> anyhow::Result<()> {
     std::fs::remove_file(journal::assertions_path(&freeze_args.journal))?;
     let err = load::run(&load_args).await.expect_err("an unchecked journal must not load");
     assert!(format!("{err:#}").contains("assertions.csv"), "{err:#}");
+
     Ok(())
 }
 
@@ -334,6 +357,8 @@ clearing               = "Assets:Cathay:Clearing"
 [fallback]
 income  = "Income:Uncategorized"
 expense = "Expenses:Uncategorized"
+[accounts]
+"券商" = "Assets:Broker"
 "#;
     // Newest-first (load reverses it): the 錯誤更正 (negative withdrawal) undoes
     // the same-day, same-counterparty 電子轉出 debit above it.
@@ -364,6 +389,7 @@ expense = "Expenses:Uncategorized"
     let load_args = load::Args {
         journal: root.join("journal.csv"),
         database_url: format!("sqlite:{}", root.join("ledger-app.db").display()),
+        mapping: root.join("mapping.toml"),
     };
 
     let frozen = freeze::run(&freeze_args)?;
@@ -479,9 +505,14 @@ fn self_assertions(postings: &[journal::Posting]) -> Vec<BalanceAssertion> {
 /// Writes `postings` as a journal and loads it into a fresh database.
 async fn load_journal(postings: Vec<journal::Posting>) -> anyhow::Result<(TempDir, load::Report)> {
     let dir = TempDir::new()?;
+    // The loader insists on a chart; these paths are not in it, so every label
+    // falls back to the leaf.
+    let mapping = dir.path().join("mapping.toml");
+    std::fs::write(&mapping, "[display]\n")?;
     let args = load::Args {
         journal: dir.path().join("journal.csv"),
         database_url: format!("sqlite:{}", dir.path().join("ledger-app.db").display()),
+        mapping,
     };
     let assertions = self_assertions(&postings);
     journal::write(&args.journal, &journal::Journal { postings })?;
@@ -511,7 +542,9 @@ async fn the_journal_load_types_accounts_by_their_root() -> anyhow::Result<()> {
         leg(0, "Expenses:Food", dec!(120)),
     ])
     .await?;
-    assert_eq!(report.accounts, 2);
+    // The two the journal names, plus the roots they hang from: every tree
+    // level is an account, so the UI has a labelled row for it.
+    assert_eq!(report.accounts, 4);
     let pool =
         db::init_db(&format!("sqlite:{}", dir.path().join("ledger-app.db").display())).await?;
     let kind: String = sqlx::query("SELECT type FROM accounts WHERE path = 'Liabilities:Card'")
@@ -524,6 +557,7 @@ async fn the_journal_load_types_accounts_by_their_root() -> anyhow::Result<()> {
         load_journal(vec![leg(0, "Spending:Food", dec!(120)), leg(0, "Assets:Cash", dec!(-120))])
             .await
             .expect_err("a rootless account must not load");
+    // The error names the whole account, not just the root that has no type.
     assert!(format!("{err:#}").contains("\"Spending:Food\" is not a Beancount account"), "{err:#}");
     Ok(())
 }

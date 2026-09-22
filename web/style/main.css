@@ -1,0 +1,265 @@
+/* Mobile first: one column, full width; wider screens only cap the width. */
+
+:root {
+  --bg: #fbfbfa;
+  --fg: #1d1d1b;
+  --muted: #6b6b66;
+  --line: #e2e1dc;
+  --hover: #f0efea;
+  --accent: #2f5d8a;
+  --negative: #b3261e;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171716;
+    --fg: #e8e7e3;
+    --muted: #9b9a94;
+    --line: #2e2e2b;
+    --hover: #22221f;
+    --accent: #8cb4dc;
+    --negative: #f2877f;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.45 system-ui, -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
+}
+
+header.top {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+header.top nav {
+  display: flex;
+  gap: 1rem;
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 0.6rem 1rem;
+}
+
+header.top a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+header.top a[aria-current] {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+main {
+  max-width: 76rem;
+  margin: 0 auto;
+  padding: 0.5rem 0 2rem;
+}
+
+/* 資產 beside 負債 wherever two readable columns fit, one under the other
+   otherwise — the window decides, not a guessed breakpoint. */
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(24rem, 1fr));
+  gap: 0.6rem 2.5rem;
+  align-items: start;
+}
+
+/* The row gap spaces stacked sections, so side by side they share one top. */
+.columns > details > summary.row.section {
+  margin-top: 0;
+}
+
+.note {
+  color: var(--muted);
+  padding: 0 1rem;
+}
+
+.error {
+  color: var(--negative);
+}
+
+.tools {
+  display: flex;
+  gap: 1rem;
+  align-items: baseline;
+  padding: 0.4rem 1rem;
+}
+
+.tools .as-of {
+  margin-right: auto;
+  color: var(--muted);
+}
+
+.tools button {
+  background: none;
+  border: none;
+  padding: 0.3rem 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The name keeps its width; the figures take what is left and wrap. */
+.row .name {
+  flex: none;
+  white-space: nowrap;
+}
+
+.marker {
+  flex: none;
+  width: 1rem;
+  color: var(--muted);
+}
+
+summary.row {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+}
+
+/* Each level down is smaller than the one above, so a group reads as the
+   parent of the rows under it. */
+.row.level-0 {
+  font-size: 1.1rem;
+}
+
+.row.level-1 {
+  font-size: 1rem;
+}
+
+.row.level-2 {
+  font-size: 0.92rem;
+}
+
+summary.row::-webkit-details-marker {
+  display: none;
+}
+
+summary.row:hover {
+  background: var(--hover);
+}
+
+details.group > summary .marker::before {
+  content: "▸";
+}
+
+details.group[open] > summary .marker::before {
+  content: "▾";
+}
+
+.row.section,
+.row.net {
+  font-weight: 700;
+  font-size: 1.3rem;
+}
+
+details.group > summary.row.section {
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--line);
+}
+
+.row.net {
+  margin-top: 0.6rem;
+  border-top: 2px solid var(--line);
+}
+
+.figures {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.money {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.negative {
+  color: var(--negative);
+}
+
+.native,
+.at-cost,
+.unpriced {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.summary {
+  padding: 0 1rem;
+}
+
+.summary .as-of {
+  color: var(--muted);
+  margin: 0.6rem 0;
+}
+
+.summary .headline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.summary .headline .name {
+  color: var(--muted);
+}
+
+.summary .headline .money {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.tile {
+  flex: 1 1 10rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+}
+
+.tile .name {
+  color: var(--muted);
+}
+
+.tile .money {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.summary a {
+  color: var(--accent);
+}

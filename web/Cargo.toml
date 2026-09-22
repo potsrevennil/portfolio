@@ -1,0 +1,73 @@
+[package]
+name    = "web"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name              = "web"
+required-features = ["ssr"]
+
+[dependencies]
+console_error_panic_hook = { version = "0.1", optional = true }
+leptos                   = "0.8"
+leptos_meta              = "0.8"
+leptos_router            = "0.8"
+# Shared: the view model carries exact amounts to the client.
+rust_decimal = { version = "1.38", features = ["serde-str"] }
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+# Pinned to the wasm-bindgen the devShell's cargo-leptos bundles (nixpkgs); the
+# two must match exactly. web-sys is the release built against it.
+wasm-bindgen = { version = "=0.2.100", optional = true }
+web-sys      = { version = "=0.3.77", features = ["HtmlDetailsElement", "Storage", "Window"] }
+
+# Server only.
+anyhow      = { version = "1", optional = true }
+axum        = { version = "0.8", optional = true }
+chrono      = { version = "0.4", optional = true }
+leptos_axum = { version = "0.8", optional = true }
+portfolio   = { path = "..", optional = true }
+sqlx        = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite"], optional = true }
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "net"], optional = true }
+
+[dev-dependencies]
+http-body-util      = "0.1"
+rust_decimal_macros = "1.38"
+tempfile            = "3.10.0"
+tower               = { version = "0.5", features = ["util"] }
+
+[features]
+default = ["ssr"]
+hydrate = ["dep:console_error_panic_hook", "dep:wasm-bindgen", "leptos/hydrate"]
+ssr = [
+  "dep:anyhow",
+  "dep:axum",
+  "dep:chrono",
+  "dep:leptos_axum",
+  "dep:portfolio",
+  "dep:sqlx",
+  "dep:tokio",
+  "leptos/ssr",
+  "leptos_meta/ssr",
+  "leptos_router/ssr",
+]
+
+# Read by cargo-leptos (`cargo leptos build|serve|watch`).
+[package.metadata.leptos]
+output-name = "web"
+# Every release build names its files after their content, so a browser can
+# never pair a cached web.js with a freshly built web.wasm — which fails to
+# link and leaves the page rendered but dead.
+hash-files           = true
+site-root            = "target/site"
+site-pkg-dir         = "pkg"
+style-file           = "style/main.css"
+site-addr            = "127.0.0.1:3000"
+reload-port          = 3001
+bin-features         = ["ssr"]
+bin-default-features = false
+lib-features         = ["hydrate"]
+lib-default-features = false

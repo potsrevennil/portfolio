@@ -5,6 +5,9 @@ use rust_decimal_macros::dec;
 
 use super::*;
 
+/// The chart's securities account in these tests.
+const ROOT: &str = "Assets:Broker:Holdings";
+
 /// A stand-in date for the balancing tests, which do not depend on it.
 fn day() -> NaiveDate { NaiveDate::from_ymd_opt(2024, 1, 1).unwrap() }
 
@@ -21,6 +24,7 @@ fn a_balanced_single_currency_transaction_needs_no_conversion() {
         ],
         day(),
         &None,
+        ROOT,
     )
     .expect("balances");
     assert_eq!(postings.len(), 2, "no conversion leg should be added");
@@ -39,6 +43,7 @@ fn two_postings_on_one_account_are_both_kept() {
         ],
         day(),
         &None,
+        ROOT,
     )
     .expect("balances");
     assert_eq!(postings.len(), 2, "both same-account legs are kept");
@@ -55,6 +60,7 @@ fn a_cross_currency_transfer_is_plugged_through_conversions() {
         ],
         day(),
         &None,
+        ROOT,
     )
     .expect("balances");
     // Two originals plus one conversion leg per currency.
@@ -76,6 +82,7 @@ fn a_single_currency_imbalance_is_rejected_not_masked() {
         ],
         day(),
         &None,
+        ROOT,
     )
     .expect_err("a genuine imbalance must fail loudly");
     assert!(format!("{err:#}").contains("does not balance"), "got: {err:#}");
@@ -87,6 +94,7 @@ fn an_inferred_leg_is_filled_from_the_others() {
         &[explicit("Expenses:Food", dec!(100), Currency::TWD), Posting::inferred("Assets:Cash")],
         day(),
         &None,
+        ROOT,
     )
     .expect("balances");
     let cash = postings.iter().find(|p| p.account == "Assets:Cash").unwrap();
@@ -98,14 +106,15 @@ fn an_inferred_leg_is_filled_from_the_others() {
 fn a_securities_posting_is_tagged_as_placeholder() {
     let postings = balance_postings(
         &[
-            explicit("Assets:Securities:ETF", dec!(3000), Currency::TWD),
+            explicit("Assets:Broker:Holdings", dec!(3000), Currency::TWD),
             explicit("Assets:Cathay:Savings", dec!(-3000), Currency::TWD),
         ],
         day(),
         &Some("investment".into()),
+        ROOT,
     )
     .expect("balances");
-    let etf = postings.iter().find(|p| p.account == "Assets:Securities:ETF").unwrap();
+    let etf = postings.iter().find(|p| p.account == "Assets:Broker:Holdings").unwrap();
     let tags = etf.tags.as_deref().unwrap();
     assert!(tags.contains(PLACEHOLDER_TAG), "placeholder marker missing: {tags}");
     assert!(tags.contains("investment"), "transaction tag lost: {tags}");
@@ -157,11 +166,18 @@ fn tag_merging_covers_every_combination() {
 }
 
 #[test]
-fn placeholder_and_subtree_predicates_match_only_the_right_paths() {
-    assert!(is_placeholder("Assets:Securities:ETF"));
-    assert!(is_placeholder("Assets:Securities"));
-    assert!(!is_placeholder("Assets:Securities-Fund"));
-    assert!(!is_placeholder("Assets:Cash"));
+fn the_placeholder_root_is_the_mapped_settlement_account() {
+    let chart = |accounts: &str| -> Chart {
+        toml::from_str(&format!(
+            "[institution]\nsettlement_app_account = \"證券\"\n[accounts]\n{accounts}"
+        ))
+        .unwrap()
+    };
+    let mapped = chart(&format!("\"證券\" = \"{ROOT}\""));
+    assert_eq!(placeholder_root(&mapped).unwrap(), ROOT);
+    // Unmapped, the freeze would tag nothing and still pass.
+    let err = placeholder_root(&chart("")).unwrap_err();
+    assert!(format!("{err}").contains("證券"), "{err}");
     assert!(in_subtree("Assets:Cash:Petty", "Assets:Cash"));
     assert!(in_subtree("Assets:Cash", "Assets:Cash"));
     assert!(!in_subtree("Assets:Cashew", "Assets:Cash"));
@@ -184,6 +200,7 @@ fn two_inferred_legs_are_rejected() {
         ],
         day(),
         &None,
+        ROOT,
     )
     .expect_err("which leg takes the remainder is ambiguous");
     assert!(format!("{err:#}").contains("more than one inferred"), "got: {err:#}");
@@ -199,6 +216,7 @@ fn an_inferred_leg_in_a_multi_currency_transaction_is_rejected() {
         ],
         day(),
         &None,
+        ROOT,
     )
     .expect_err("the inferred leg has no single currency to take");
     assert!(format!("{err:#}").contains("multi-currency"), "got: {err:#}");
@@ -228,6 +246,6 @@ fn a_repeated_dedup_key_is_refused() {
         ..model::Model::default()
     };
 
-    let err = reconcile(&model, &[]).expect_err("one key, two transactions");
+    let err = reconcile(&model, &[], ROOT).expect_err("one key, two transactions");
     assert!(format!("{err:#}").contains("(tiantian, U-1)"), "got: {err:#}");
 }

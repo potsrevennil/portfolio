@@ -104,7 +104,12 @@ jobs:
       # against. That is strictly more checking than offline mode reading
       # .sqlx/, and it means a stale .sqlx/ cache shows up as a failure here
       # instead of passing quietly.
+      #
+      # `cargo leptos build` builds the web UI both ways: the server binary and
+      # the wasm32 client (target from rust-toolchain.toml, cargo-leptos from
+      # the devShell). RUSTFLAGS' +aes is unknown to wasm32 and only warns there.
       - shell: nix develop -c bash -e {0}
         run: |
-          cargo build
-          cargo test
+          cargo build --workspace
+          cargo test --workspace
+          cargo leptos build

@@ -1,6 +1,6 @@
 use portfolio::{
     currency::Currency,
-    ledger::model::Source,
+    ledger::{labels::Labels, model::Source},
     store::import::{ImportStore, InsertOutcome, Posting, Transaction},
 };
 use rust_decimal::Decimal;
@@ -41,7 +41,7 @@ async fn count(store: &ImportStore) -> i64 {
 #[tokio::test]
 async fn duplicate_within_a_source_is_rejected_same_ref_across_sources_is_allowed() {
     let (_dir, pool) = fixture().await;
-    let store = ImportStore::new(pool);
+    let store = ImportStore::new(pool, Labels::default());
     let ps = balanced(dec!(100));
 
     let first = store.insert_deduped(&txn(Source::Import, Some("L1"), ps.clone())).await.unwrap();
@@ -62,7 +62,7 @@ async fn duplicate_within_a_source_is_rejected_same_ref_across_sources_is_allowe
 #[tokio::test]
 async fn null_external_ref_is_exempt_and_always_inserts() {
     let (_dir, pool) = fixture().await;
-    let store = ImportStore::new(pool);
+    let store = ImportStore::new(pool, Labels::default());
     let ps = balanced(dec!(50));
 
     let a = store.insert_deduped(&txn(Source::Manual, None, ps.clone())).await.unwrap();
@@ -75,7 +75,7 @@ async fn null_external_ref_is_exempt_and_always_inserts() {
 #[tokio::test]
 async fn unbalanced_postings_are_rejected_and_write_nothing() {
     let (_dir, pool) = fixture().await;
-    let store = ImportStore::new(pool);
+    let store = ImportStore::new(pool, Labels::default());
 
     let unbalanced = vec![
         ("Assets:Cash", dec!(-100), Currency::TWD).into(),
@@ -86,4 +86,33 @@ async fn unbalanced_postings_are_rejected_and_write_nothing() {
     let accounts: i64 =
         sqlx::query_scalar("SELECT count(*) FROM accounts").fetch_one(store.pool()).await.unwrap();
     assert_eq!(accounts, 0, "a rejected transaction creates no accounts");
+}
+
+#[tokio::test]
+async fn a_new_account_and_its_ancestors_get_the_mapping_labels() {
+    let (_dir, pool) = fixture().await;
+    let labels = Labels::parse(
+        r#"
+[accounts]
+"現金" = "Assets:Cash"
+[display]
+"Assets" = "資產"
+"#,
+    )
+    .unwrap();
+    let store = ImportStore::new(pool, labels);
+    store.insert_deduped(&txn(Source::Import, Some("L1"), balanced(dec!(10)))).await.unwrap();
+
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT path, label FROM accounts ORDER BY path")
+            .fetch_all(store.pool())
+            .await
+            .unwrap();
+    let rows: Vec<(&str, &str)> = rows.iter().map(|(p, l)| (p.as_str(), l.as_str())).collect();
+    assert_eq!(rows, [
+        ("Assets", "資產"),
+        ("Assets:Cash", "現金"),
+        ("Expenses", "Expenses"),
+        ("Expenses:Food", "Food")
+    ]);
 }
