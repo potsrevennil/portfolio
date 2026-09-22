@@ -12,10 +12,9 @@ use db::{
 };
 use ledger::{
     accounts::Chart,
-    journal::UNVERIFIED_TAG,
     model::{Source, CONVERSIONS, OPENING_EQUITY},
     names::fallback_account,
-    statements::bank::{Bank, BankStatement},
+    statements::bank::{Bank, BankStatement, StatementLine},
 };
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
@@ -30,13 +29,20 @@ pub struct Statement<'a> {
     pub files: Vec<usize>,
     /// What the ledger holds on `account` in the statement's currency.
     pub existing: Vec<LedgerPosting>,
-    /// Every leg of each unverified record among `existing`, by transaction.
-    pub unverified: HashMap<i64, Vec<Posting>>,
 }
 
 /// How far a record's date may be from the line that verifies it: the
 /// records take the bank's date when they are a week or more off.
 const VERIFY_WINDOW_DAYS: i64 = 7;
+
+/// An unverified record a line verifies: it takes the line's date and ref
+/// and keeps everything else, its row, legs and review state included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verified {
+    pub transaction_id: i64,
+    pub date: NaiveDate,
+    pub external_ref: String,
+}
 
 /// A 天天記帳 record a line may be matched to, already resolved to the
 /// account it books against.
@@ -57,8 +63,8 @@ pub struct Counts {
     /// with its partner line.
     pub covered: usize,
     pub new: usize,
-    /// Unverified records a line replaced, keeping their category.
-    pub replaced: usize,
+    /// Unverified records a line verified.
+    pub verified: usize,
     pub openings: usize,
     pub matched: usize,
     pub uncategorised: usize,
@@ -72,9 +78,7 @@ pub struct Plan {
     pub counts: Counts,
     /// Each statement's opening date; the ledger tracks its lines after it.
     pub openings: Vec<NaiveDate>,
-    /// Unverified records to delete: the lines replacing them carry their
-    /// legs.
-    pub replaced: Vec<i64>,
+    pub verified: Vec<Verified>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,15 +87,8 @@ enum Status {
     Known,
     Covered,
     /// Verifies the unverified record with this transaction id.
-    Replaces(i64),
+    Verifies(i64),
     New,
-}
-
-/// `tags` without [`UNVERIFIED_TAG`].
-fn verified(tags: &Option<String>) -> Option<String> {
-    let kept: Vec<&str> =
-        tags.iter().flat_map(|t| t.split(',')).filter(|t| *t != UNVERIFIED_TAG).collect();
-    (!kept.is_empty()).then(|| kept.join(","))
 }
 
 /// How a new line's other side is booked.
@@ -190,32 +187,52 @@ pub fn plan(
                 }
             }
         }
-        // An unverified record the line verifies: same amount, nearest date.
-        let mut unverified: Vec<&LedgerPosting> =
+        // A new line verifies an unverified record of its amount within the
+        // window, but only one-to-one: with two candidates either way (two
+        // lunches of the same price) nothing chooses, and the import stops
+        // with the records still unverified, for review.
+        let unverified: Vec<&LedgerPosting> =
             s.existing.iter().filter(|p| p.unverified && !p.opening).collect();
-        for (li, l) in st.lines.iter().enumerate() {
-            if line_status[li] != Status::New {
-                continue;
+        let fits = |l: &StatementLine, p: &LedgerPosting| {
+            p.amount == l.delta() && (p.date - l.book_date).num_days().abs() <= VERIFY_WINDOW_DAYS
+        };
+        let new_lines: Vec<usize> =
+            (0..st.lines.len()).filter(|&li| line_status[li] == Status::New).collect();
+        let mut ambiguous: Vec<String> = Vec::new();
+        for &li in &new_lines {
+            let l = &st.lines[li];
+            let records: Vec<&&LedgerPosting> = unverified.iter().filter(|p| fits(l, p)).collect();
+            let rivals =
+                |p: &LedgerPosting| new_lines.iter().filter(|&&o| fits(&st.lines[o], p)).count();
+            match records.as_slice() {
+                [] => {}
+                [only] if rivals(only) == 1 => {
+                    line_status[li] = Status::Verifies(only.transaction_id);
+                }
+                many => ambiguous.push(format!(
+                    "{} {} matches {} unverified records within {VERIFY_WINDOW_DAYS} days ({})",
+                    l.book_date,
+                    l.delta(),
+                    many.len(),
+                    many.iter().map(|p| p.date.to_string()).collect::<Vec<_>>().join(", ")
+                )),
             }
-            let record = unverified
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| {
-                    p.amount == l.delta()
-                        && (p.date - l.book_date).num_days().abs() <= VERIFY_WINDOW_DAYS
-                })
-                .min_by_key(|(_, p)| (p.date - l.book_date).num_days().abs())
-                .map(|(i, _)| i);
-            if let Some(i) = record {
-                line_status[li] = Status::Replaces(unverified.remove(i).transaction_id);
-            }
+        }
+        if !ambiguous.is_empty() {
+            bail!(
+                "{} {}: lines and unverified records pair ambiguously; review them, then import \
+                 again. Nothing was imported.\n  {}",
+                s.account,
+                st.currency,
+                ambiguous.join("\n  ")
+            );
         }
         for s in &line_status {
             match s {
                 Status::PredatesOpening => plan.counts.predate_opening += 1,
                 Status::Known => plan.counts.known += 1,
                 Status::Covered => plan.counts.covered += 1,
-                Status::Replaces(_) => plan.counts.replaced += 1,
+                Status::Verifies(_) => plan.counts.verified += 1,
                 Status::New => plan.counts.new += 1,
             }
         }
@@ -401,40 +418,20 @@ pub fn plan(
         }));
     }
 
-    // --- lines that verify an unverified record take over its legs ---
+    // --- lines that verify an unverified record: it keeps its row ---
     for (si, s) in statements.iter().enumerate() {
         for (li, l) in s.statement.lines.iter().enumerate() {
-            let Status::Replaces(id) = status[si][li] else { continue };
-            let currency = s.statement.currency;
-            let mut legs = s.unverified[&id].clone();
-            let own = legs
-                .iter()
-                .position(|p| {
-                    p.account == s.account && p.currency == currency && p.amount == l.delta()
-                })
-                .expect("the record posts the line's amount to the account");
-            legs.remove(own);
-            let mut postings: Vec<Posting> = vec![(&s.account, l.delta(), currency).into()];
-            postings.extend(legs.into_iter().map(|p| Posting { tags: verified(&p.tags), ..p }));
-            let narration = [l.info.as_str(), l.memo.as_str()]
-                .into_iter()
-                .filter(|t| !t.is_empty())
-                .collect::<Vec<_>>()
-                .join(" · ");
-            plan.transactions.push((s.files[li], Transaction {
-                date: l.book_date,
-                payee: Some(l.description.clone()),
-                narration: (!narration.is_empty()).then_some(narration),
-                source: Source::Import,
-                external_ref: Some(refs[si][li].clone()),
-                import_batch_id: None,
-                postings,
-            }));
-            plan.replaced.push(id);
+            if let Status::Verifies(transaction_id) = status[si][li] {
+                plan.verified.push(Verified {
+                    transaction_id,
+                    date: l.book_date,
+                    external_ref: refs[si][li].clone(),
+                });
+            }
         }
     }
 
-    chain(statements, &openings, &plan.transactions, &plan.replaced)?;
+    chain(statements, &openings, &plan.transactions, &plan.verified)?;
     plan.openings = openings;
     Ok(plan)
 }
@@ -450,8 +447,10 @@ fn chain(
     statements: &[Statement],
     openings: &[NaiveDate],
     planned: &[(usize, Transaction)],
-    replaced: &[i64],
+    verified: &[Verified],
 ) -> Result<()> {
+    let redated: HashMap<i64, NaiveDate> =
+        verified.iter().map(|v| (v.transaction_id, v.date)).collect();
     for (s, &opening) in statements.iter().zip(openings) {
         let currency = s.statement.currency;
         let mut expected: BTreeMap<NaiveDate, Decimal> = BTreeMap::new();
@@ -461,8 +460,7 @@ fn chain(
         let mut movements: Vec<(NaiveDate, Decimal)> = s
             .existing
             .iter()
-            .filter(|p| !replaced.contains(&p.transaction_id))
-            .map(|p| (p.date, p.amount))
+            .map(|p| (redated.get(&p.transaction_id).copied().unwrap_or(p.date), p.amount))
             .collect();
         let last = s.statement.lines.last().expect("load rejects empty statements").book_date;
         let mut adds_to_last_day = false;

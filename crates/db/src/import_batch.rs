@@ -10,8 +10,6 @@ use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
-use crate::import::Posting;
-
 pub async fn create(
     db: &mut SqliteConnection,
     source: &str,
@@ -92,10 +90,11 @@ pub async fn postings(
     rows.into_iter().map(LedgerPosting::try_from).collect()
 }
 
+/// Refs under `prefix` from any source: a verified record keeps its own
+/// source but holds its statement line's ref.
 pub async fn refs(db: &mut SqliteConnection, prefix: &str) -> Result<HashSet<String>> {
     let rows: Vec<String> = sqlx::query_scalar(
-        "SELECT external_ref FROM transactions
-         WHERE source = 'import' AND substr(external_ref, 1, length(?1)) = ?1",
+        "SELECT external_ref FROM transactions WHERE substr(external_ref, 1, length(?1)) = ?1",
     )
     .bind(prefix)
     .fetch_all(db)
@@ -103,33 +102,30 @@ pub async fn refs(db: &mut SqliteConnection, prefix: &str) -> Result<HashSet<Str
     Ok(rows.into_iter().collect())
 }
 
-/// Every leg of a transaction, by account path.
-pub async fn legs(db: &mut SqliteConnection, transaction_id: i64) -> Result<Vec<Posting>> {
-    let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT a.path, p.amount, p.currency, p.tags FROM postings p
-         JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
-    )
-    .bind(transaction_id)
-    .fetch_all(db)
-    .await?;
-    rows.into_iter()
-        .map(|(account, amount, currency, tags)| {
-            Ok(Posting {
-                account,
-                amount: amount.parse().with_context(|| format!("posting amount {amount:?}"))?,
-                currency: currency.parse().with_context(|| format!("currency {currency:?}"))?,
-                tags,
-            })
-        })
-        .collect()
-}
-
-/// Removes a transaction and, by cascade, its postings.
-pub async fn delete(db: &mut SqliteConnection, transaction_id: i64) -> Result<()> {
-    sqlx::query("DELETE FROM transactions WHERE id = ?")
+/// Marks an unverified record as checked by a statement line: it takes the
+/// line's date and ref, and its legs lose the unverified tag. Nothing else
+/// changes, so its category and review state stand.
+pub async fn verify(
+    db: &mut SqliteConnection,
+    transaction_id: i64,
+    date: NaiveDate,
+    external_ref: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE transactions SET date = ?, external_ref = ? WHERE id = ?")
+        .bind(date.to_string())
+        .bind(external_ref)
         .bind(transaction_id)
-        .execute(db)
+        .execute(&mut *db)
         .await
-        .with_context(|| format!("deleting transaction {transaction_id}"))?;
+        .with_context(|| format!("verifying transaction {transaction_id}"))?;
+    sqlx::query(
+        "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ?1 || ',', \
+         ','), ','), '') WHERE transaction_id = ?2",
+    )
+    .bind(UNVERIFIED_TAG)
+    .bind(transaction_id)
+    .execute(db)
+    .await
+    .with_context(|| format!("clearing the unverified tag of transaction {transaction_id}"))?;
     Ok(())
 }

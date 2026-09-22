@@ -60,7 +60,6 @@ fn run(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
         statement: st,
         files: vec![0; st.lines.len()],
         existing,
-        unverified: HashMap::new(),
     };
     plan(&chart(), &[s], &HashSet::new(), &[])
 }
@@ -119,35 +118,58 @@ fn a_ledger_that_disagrees_with_the_statement_is_refused() {
     assert!(err.to_string().contains("nothing was imported"), "{err}");
 }
 
-/// Only a record of the line's amount, within a week of it, is replaced; one
-/// that disagrees stays and breaks the chain rather than being overwritten.
-#[test]
-fn only_an_unverified_record_of_the_same_amount_is_replaced() -> Result<()> {
-    let st = statement(&[(10, dec!(-20), dec!(80))]);
-    let record = |amount: Decimal| LedgerPosting { unverified: true, ..held(9, amount, false) };
-    let legs = |amount: Decimal| {
-        HashMap::from([(9, vec![
-            ("Assets:Bank:Savings", amount, Currency::TWD).into(),
-            ("Expenses:Food", -amount, Currency::TWD).into(),
-        ])])
-    };
-    let s = |amount| Statement {
+fn unverified(d: u32, amount: Decimal, id: i64) -> LedgerPosting {
+    LedgerPosting { unverified: true, transaction_id: id, ..held(d, amount, false) }
+}
+
+fn with(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
+    let s = Statement {
         account: "Assets:Bank:Savings".into(),
-        statement: &st,
-        files: vec![0],
-        existing: vec![held(1, dec!(100), true), record(amount)],
-        unverified: legs(amount),
+        statement: st,
+        files: vec![0; st.lines.len()],
+        existing,
     };
+    plan(&chart(), &[s], &HashSet::new(), &[])
+}
 
-    let p = plan(&chart(), &[s(dec!(-20))], &HashSet::new(), &[])?;
-    assert_eq!((p.replaced, p.counts.replaced), (vec![9], 1));
-    let food = &p.transactions[0].1.postings[1];
-    assert_eq!(
-        (food.account.as_str(), food.amount, food.tags.clone()),
-        ("Expenses:Food", dec!(20), None)
-    );
-
-    let err = plan(&chart(), &[s(dec!(-19))], &HashSet::new(), &[]).expect_err("19 is not 20");
-    assert!(err.to_string().contains("nothing was imported"), "{err}");
+/// A line verifies the one unverified record of its amount near it: the
+/// record keeps its row and takes the line's date and ref; nothing is
+/// inserted for the line.
+#[test]
+fn a_line_verifies_its_one_unverified_record_in_place() -> Result<()> {
+    let st = statement(&[(10, dec!(-20), dec!(80))]);
+    let p = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-20), 42)])?;
+    assert_eq!(p.verified, vec![Verified {
+        transaction_id: 42,
+        date: day(10),
+        external_ref: st.dedup_refs()[0].clone(),
+    }]);
+    assert_eq!((p.counts.verified, p.transactions.len()), (1, 0));
     Ok(())
+}
+
+/// Two lunches of one price, two records of it: nothing picks which is
+/// which, and the import stops with both records unverified.
+#[test]
+fn an_ambiguous_pairing_verifies_nothing() {
+    let st = statement(&[(10, dec!(-150), dec!(-50)), (11, dec!(-150), dec!(-200))]);
+    let existing =
+        vec![held(1, dec!(100), true), unverified(9, dec!(-150), 1), unverified(10, dec!(-150), 2)];
+    let err = with(&st, existing).expect_err("two records, two lines");
+    assert!(err.to_string().contains("ambiguously"), "{err}");
+
+    // One line, two records: still no choice.
+    let st = statement(&[(10, dec!(-150), dec!(-50))]);
+    let existing =
+        vec![held(1, dec!(100), true), unverified(9, dec!(-150), 1), unverified(11, dec!(-150), 2)];
+    assert!(with(&st, existing).is_err());
+}
+
+/// A record whose amount disagrees verifies nothing and breaks the chain.
+#[test]
+fn an_unverified_record_of_another_amount_breaks_the_chain() {
+    let st = statement(&[(10, dec!(-20), dec!(80))]);
+    let err = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-19), 42)])
+        .expect_err("19 is not 20");
+    assert!(err.to_string().contains("nothing was imported"), "{err}");
 }
