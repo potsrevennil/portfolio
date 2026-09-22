@@ -38,18 +38,7 @@ pub fn SummaryView(sheet: BalanceSheet) -> impl IntoView {
                 <UnpricedNote unpriced=sheet.net_worth.unpriced />
             </div>
             <div class="tiles">
-                {sections
-                    .into_iter()
-                    .map(|(label, total)| {
-                        view! {
-                            <div class="tile">
-                                <span class="name">{label}</span>
-                                <MoneyText money=total.money />
-                                <UnpricedNote unpriced=total.unpriced />
-                            </div>
-                        }
-                    })
-                    .collect_view()}
+                {sections.into_iter().map(|(label, total)| view! { <Tile label total /> }).collect_view()}
             </div>
             // Apart from the tiles above: no total includes it.
             {sheet
@@ -57,14 +46,22 @@ pub fn SummaryView(sheet: BalanceSheet) -> impl IntoView {
                 .map(|s| {
                     view! {
                         <div class="tiles aside">
-                            <div class="tile">
-                                <span class="name">{s.label}</span>
-                                <MoneyText money=s.total.money />
-                                <UnpricedNote unpriced=s.total.unpriced />
-                            </div>
+                            <Tile label=s.label total=s.total />
                         </div>
                     }
                 })}
+        </div>
+    }
+}
+
+/// A heading over its total.
+#[component]
+fn Tile(label: String, total: Converted) -> impl IntoView {
+    view! {
+        <div class="tile">
+            <span class="name">{label}</span>
+            <MoneyText money=total.money />
+            <UnpricedNote unpriced=total.unpriced />
         </div>
     }
 }

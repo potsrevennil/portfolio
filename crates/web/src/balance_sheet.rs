@@ -96,10 +96,7 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
 /// A section heading over its rows; it folds.
 fn section(s: Section, open: RwSignal<BTreeSet<String>>) -> impl IntoView {
     let path = s.path.clone();
-    let is_open = {
-        let path = path.clone();
-        move || open.with(|o| o.contains(&path))
-    };
+    let is_open = is_open(path.clone(), open);
     view! {
         <details class="group" open=is_open on:toggle=on_toggle(path, open)>
             <summary class="row section">
@@ -137,10 +134,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         return view! { <div class=level.clone() style=indent>{row()}</div> }.into_any();
     }
     let path = n.path.clone();
-    let is_open = {
-        let path = path.clone();
-        move || open.with(|o| o.contains(&path))
-    };
+    let is_open = is_open(path.clone(), open);
     let head = row();
     let children = n.children.into_iter().map(|c| node(c, depth + 1, open)).collect_view();
     view! {
@@ -150,6 +144,11 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         </details>
     }
     .into_any()
+}
+
+/// Whether the group at `path` is open, tracked for the `open` attribute.
+fn is_open(path: String, open: RwSignal<BTreeSet<String>>) -> impl Fn() -> bool {
+    move || open.with(|o| o.contains(&path))
 }
 
 /// Keeps the fold state in step with a `<details>` the reader just toggled.

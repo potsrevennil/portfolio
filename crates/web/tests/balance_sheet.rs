@@ -375,11 +375,15 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
         balance("Assets:Cash", "100"),
         balance("Assets:Unlisted:Gamma", "400"),
         balance("Assets:Unlisted:Delta", "-400"),
+        // One holding held in two sub-accounts, with no label of its own.
+        balance("Assets:Unlisted:Epsilon:Shares", "30"),
+        balance("Assets:Unlisted:Epsilon:Warrants", "20"),
+        // Two holdings whose leaf, their only label, is the same.
+        balance("Assets:Private:Zeta", "5"),
+        balance("Assets:Unlisted:Zeta", "7"),
     ];
-    let at_cost = AtCost::parse(
-        "[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\", \"Assets:Unlisted:Delta\"]\n",
-    )
-    .unwrap();
+    let at_cost =
+        AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\", \"Assets:Private\"]\n").unwrap();
     // 丙 is also a split account's label, which the tree tells apart by its
     // parent; under the heading the holding keeps its own.
     let labels = BTreeMap::from([
@@ -396,13 +400,21 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
     assert_eq!(assets.total.money.amount, Decimal::from(100));
     assert!(assets.nodes.iter().all(|n| n.path == "Assets:Cash"), "{:?}", assets.nodes);
     assert_eq!(sheet.net_worth.money.amount, Decimal::from(100));
-    // Listed by holding, even when they cancel out.
+    // One row per holding, even when they cancel out; sub-accounts add up.
     let cost = sheet.at_cost.expect("the holdings at cost are listed");
-    let listed: Vec<&str> = cost.nodes.iter().map(|n| n.path.as_str()).collect();
-    assert_eq!(listed, ["Assets:Unlisted:Delta", "Assets:Unlisted:Gamma"]);
-    let named: Vec<&str> = cost.nodes.iter().map(|n| n.label.as_str()).collect();
-    assert_eq!(named, ["丁", "丙"]);
-    assert_eq!(cost.total.money.amount, Decimal::ZERO);
+    let rows: Vec<(&str, &str, Decimal)> = cost
+        .nodes
+        .iter()
+        .map(|n| (n.path.as_str(), n.label.as_str(), n.total.money.amount))
+        .collect();
+    assert_eq!(rows, [
+        ("Assets:Private:Zeta", "PrivateZeta", Decimal::from(5)),
+        ("Assets:Unlisted:Delta", "丁", Decimal::from(-400)),
+        ("Assets:Unlisted:Epsilon", "Epsilon", Decimal::from(50)),
+        ("Assets:Unlisted:Gamma", "丙", Decimal::from(400)),
+        ("Assets:Unlisted:Zeta", "未上市持股Zeta", Decimal::from(7)),
+    ]);
+    assert_eq!(cost.total.money.amount, Decimal::from(62));
 }
 
 #[tokio::test]
