@@ -117,6 +117,9 @@ pub fn plan(
     // only this import's business when its own statement is here.
     let has_statements: HashSet<&str> =
         chart.institution.accounts.values().map(|a| a.as_ref()).collect();
+    let from_a_statement = |p: &LedgerPosting| {
+        p.refs.iter().any(|r| Bank::ALL.iter().any(|bank| r.starts_with(bank.ref_prefix())))
+    };
 
     // --- what the ledger already holds ---
     let mut openings: Vec<NaiveDate> = Vec::with_capacity(statements.len());
@@ -157,11 +160,7 @@ pub fn plan(
         // line takes back its own posting first.
         let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
         for p in &s.existing {
-            let from_a_statement = p
-                .refs
-                .iter()
-                .any(|r| Bank::ALL.iter().any(|bank| r.starts_with(bank.ref_prefix())));
-            if !p.opening && from_a_statement {
+            if !p.opening && from_a_statement(p) {
                 *spare.entry((p.date, p.amount)).or_default() += 1;
             }
         }
@@ -494,7 +493,11 @@ pub fn plan(
                     .collect();
                 plan.verified.push(Verification {
                     transaction_id,
-                    date: l.book_date,
+                    // A record already standing for another bank's line is on
+                    // that bank's date. Re-dating moves its every leg, and the
+                    // two banks may have booked it on different days, so the
+                    // date the other statement is checked against stands.
+                    date: (!from_a_statement(record)).then_some(l.book_date),
                     statement_ref: refs[si][li].clone(),
                     unchecked,
                 });
@@ -504,22 +507,23 @@ pub fn plan(
     // One record cannot sit on two days: two banks that booked it differently
     // need it split, which only a re-freeze can do.
     let mut dates: HashMap<i64, NaiveDate> = HashMap::new();
-    for v in &plan.verified {
-        if let Some(&other) = dates.get(&v.transaction_id).filter(|&&d| d != v.date) {
+    for v in plan.verified.iter().filter(|v| v.date.is_some()) {
+        let date = v.date.expect("filtered to the lines that re-date");
+        if let Some(&other) = dates.get(&v.transaction_id).filter(|&&d| d != date) {
             bail!(
                 "the record {} verifies was booked {} by one bank and {other} by the other; \
                  re-freeze so each side stands on its own. Nothing was imported",
                 v.statement_ref,
-                v.date
+                date
             );
         }
-        dates.insert(v.transaction_id, v.date);
+        dates.insert(v.transaction_id, date);
     }
 
     let redated: HashMap<i64, NaiveDate> = plan
         .verified
         .iter()
-        .map(|v| (v.transaction_id, v.date))
+        .filter_map(|v| v.date.map(|date| (v.transaction_id, date)))
         .chain(plan.deferred.iter().map(|d| (d.transaction_id, d.date)))
         .collect();
     chain(statements, &openings, &plan.transactions, &redated)?;

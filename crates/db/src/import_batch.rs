@@ -143,8 +143,9 @@ pub async fn add_ref(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verification {
     pub transaction_id: i64,
-    /// The line's date and ref.
-    pub date: NaiveDate,
+    /// The line's date, or `None` to leave the record on its own: a
+    /// transaction has one date, so re-dating moves its every leg.
+    pub date: Option<NaiveDate>,
     pub statement_ref: String,
     /// Legs on these accounts stay unverified: no line here vouched for them.
     pub unchecked: Vec<String>,
@@ -155,7 +156,9 @@ pub struct Verification {
 /// bar those on `unchecked` accounts. Its own ref stays, so its source still
 /// knows it, and so do its category and review state.
 pub async fn verify(db: &mut SqliteConnection, v: &Verification) -> Result<()> {
-    redate(db, v.transaction_id, v.date).await?;
+    if let Some(date) = v.date {
+        redate(db, v.transaction_id, date).await?;
+    }
     add_ref(db, v.transaction_id, &v.statement_ref).await?;
     let held = vec!["?"; v.unchecked.len()].join(", ");
     let sql = format!(

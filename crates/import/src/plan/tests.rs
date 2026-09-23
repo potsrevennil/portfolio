@@ -147,7 +147,7 @@ fn a_line_verifies_its_one_unverified_record_in_place() -> Result<()> {
     let p = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-20), 42)])?;
     assert_eq!(p.verified, vec![Verification {
         transaction_id: 42,
-        date: day(10),
+        date: Some(day(10)),
         statement_ref: st.dedup_refs()[0].clone(),
         unchecked: Vec::new(),
     }]);
@@ -227,4 +227,21 @@ fn a_transfer_the_statement_does_not_show_is_refused_rather_than_moved() {
         .expect_err("the far leg is not ours to move");
     assert!(err.to_string().contains(OTHER), "{err}");
     assert!(err.to_string().contains("Nothing was imported"), "{err}");
+}
+
+/// A record another bank's line already verified keeps that bank's date: the
+/// two may have booked it on different days, and moving it would move the leg
+/// that bank's statement is checked against.
+#[test]
+fn a_record_another_bank_already_verified_keeps_its_date() -> Result<()> {
+    let st = statement(&[(10, dec!(-20), dec!(80))]);
+    let record = LedgerPosting {
+        refs: vec!["tiantian:1".into(), "cathay-bank:20260609:1".into()],
+        other_accounts: vec![OTHER.to_string()],
+        ..unverified(9, dec!(-20), 42)
+    };
+    let p = with(&st, vec![held(1, dec!(100), true), record])?;
+    assert_eq!(p.verified[0].date, None);
+    assert_eq!(p.counts.verified, 1);
+    Ok(())
 }

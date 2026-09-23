@@ -68,7 +68,7 @@ async fn verifying_leaves_an_unchecked_leg_tagged() {
 
     import_batch::verify(&mut db, &Verification {
         transaction_id: id,
-        date: "2026-10-01".parse().expect("date"),
+        date: Some("2026-10-01".parse().expect("date")),
         statement_ref: "line-bank:1".into(),
         unchecked: vec![OTHER.to_string()],
     })
@@ -101,7 +101,7 @@ async fn verifying_every_leg_clears_the_tag() {
     for external_ref in ["line-bank:1", "cathay-bank:1"] {
         import_batch::verify(&mut db, &Verification {
             transaction_id: id,
-            date: "2026-10-01".parse().expect("date"),
+            date: Some("2026-10-01".parse().expect("date")),
             statement_ref: external_ref.into(),
             unchecked: Vec::new(),
         })
@@ -110,4 +110,31 @@ async fn verifying_every_leg_clears_the_tag() {
     }
     drop(db);
     assert!(tagged_accounts(&pool).await.is_empty());
+}
+
+/// Verifying with no date leaves the record where the bank that booked it
+/// first put it, and still clears its leg's tag.
+#[tokio::test]
+async fn verifying_without_a_date_moves_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let url = format!("sqlite:{}", dir.path().join("dateless.db").display());
+    let (pool, id) = transfer(db::init_db(&url).await.expect("db")).await;
+    let mut db = pool.acquire().await.expect("connection");
+    import_batch::verify(&mut db, &Verification {
+        transaction_id: id,
+        date: None,
+        statement_ref: "line-bank:1".into(),
+        unchecked: vec![OTHER.to_string()],
+    })
+    .await
+    .expect("verify");
+    drop(db);
+
+    let date: String = sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .expect("the record");
+    assert_eq!(date, "2026-09-29");
+    assert_eq!(tagged_accounts(&pool).await, [OTHER]);
 }
