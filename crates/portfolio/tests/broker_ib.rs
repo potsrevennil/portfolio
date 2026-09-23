@@ -44,7 +44,14 @@ const ACTIONS: &str = "Corporate Actions,Header,Asset Category,Currency,Account,
 
 #[test]
 fn a_consolidated_statement_is_keyed_on_the_account_number() {
-    let s = ib::parse(&statement("January 1, 2025 - December 31, 2025", "2026-01-08, 22:56:25 EST", DEPOSITS, "0", "")).unwrap();
+    let s = ib::parse(&statement(
+        "January 1, 2025 - December 31, 2025",
+        "2026-01-08, 22:56:25 EST",
+        DEPOSITS,
+        "0",
+        "",
+    ))
+    .unwrap();
     assert_eq!(s.account, "U0000000");
 }
 
