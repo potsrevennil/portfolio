@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, fmt};
 use anyhow::Result;
 use chrono::NaiveDate;
 use ledger_types::currency::Currency;
-use portfolio::broker::{replay, BrokerRecord};
+use portfolio::broker::{accumulate, BrokerRecord};
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
@@ -225,21 +225,38 @@ pub fn check_holdings(
     records: &BTreeMap<String, Vec<BrokerRecord>>,
     holdings: &[HoldingAssertion],
 ) {
-    let none = Vec::new();
+    let mut by_account: BTreeMap<&str, Vec<&HoldingAssertion>> = BTreeMap::new();
     for a in holdings {
-        let replayed = replay(records.get(&a.account).unwrap_or(&none), a.as_of);
-        let computed = replayed.get(&a.commodity).copied().unwrap_or_default();
-        let summary = report.accounts.entry(a.account.clone()).or_default();
-        summary.checked += 1;
-        summary.vouched_through = summary.vouched_through.max(Some(a.as_of));
-        if computed != a.quantity {
-            summary.failed += 1;
-            report.mismatches.push(Mismatch {
-                figure: Figure::Holding(a.clone()),
-                as_of: a.as_of,
-                expected: a.quantity,
-                computed,
-            });
+        by_account.entry(&a.account).or_default().push(a);
+    }
+    let none = Vec::new();
+    for (account, mut assertions) in by_account {
+        assertions.sort_by_key(|a| a.as_of);
+        let mut lines: Vec<&BrokerRecord> = records.get(account).unwrap_or(&none).iter().collect();
+        lines.sort_by_key(|r| r.settle_date);
+
+        // One walk per account: the figures are checked in date order against
+        // the running balance, not replayed from the start for each.
+        let mut balances = BTreeMap::new();
+        let mut next = 0;
+        for a in assertions {
+            while lines.get(next).is_some_and(|r| r.settle_date <= a.as_of) {
+                accumulate(&mut balances, lines[next]);
+                next += 1;
+            }
+            let computed = balances.get(&a.commodity).copied().unwrap_or_default();
+            let summary = report.accounts.entry(a.account.clone()).or_default();
+            summary.checked += 1;
+            summary.vouched_through = summary.vouched_through.max(Some(a.as_of));
+            if computed != a.quantity {
+                summary.failed += 1;
+                report.mismatches.push(Mismatch {
+                    figure: Figure::Holding(a.clone()),
+                    as_of: a.as_of,
+                    expected: a.quantity,
+                    computed,
+                });
+            }
         }
     }
 }

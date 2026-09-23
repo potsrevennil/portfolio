@@ -6,4 +6,6 @@ pub mod firstrade;
 pub mod ib;
 pub mod record;
 
-pub use record::{replay, BrokerRecord, BrokerStatement, Commodity, Holdings, RecordKind};
+pub use record::{
+    accumulate, replay, BrokerRecord, BrokerStatement, Commodity, Holdings, RecordKind,
+};

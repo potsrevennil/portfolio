@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 use portfolio::broker::BrokerRecord;
 use sqlx::SqliteConnection;
 
@@ -49,6 +50,26 @@ pub async fn insert(conn: &mut SqliteConnection, r: &NewRecord) -> Result<i64> {
     .await
     .with_context(|| format!("inserting broker record {}", r.external_ref))?
     .last_insert_rowid())
+}
+
+/// Fills in a trade date the stored record is missing; `false` when it
+/// already has one. A source that dates a line only later (a Firstrade trade
+/// pending at month end) must not have to be re-imported to supply it.
+pub async fn fill_trade_date(
+    conn: &mut SqliteConnection,
+    external_ref: &str,
+    trade_date: NaiveDate,
+) -> Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE broker_record SET trade_date = ? WHERE external_ref = ? AND trade_date IS NULL",
+    )
+    .bind(trade_date.to_string())
+    .bind(external_ref)
+    .execute(conn)
+    .await
+    .with_context(|| format!("dating broker record {external_ref}"))?
+    .rows_affected()
+        > 0)
 }
 
 /// Every stored ref starting with `prefix`.

@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
-use super::record::{BrokerRecord, BrokerStatement, RecordKind};
+use super::record::{number_repeats, BrokerRecord, BrokerStatement, RecordKind};
 use crate::{cathay::CathayTradeRecord, portfolio::Broker};
 
 pub const REF_PREFIX: &str = "cathay-securities:";
@@ -55,6 +55,10 @@ pub fn parse(text: &str, names: &HashMap<String, String>) -> Result<BrokerStatem
             description: t.name,
         });
     }
+
+    // One order filled in several executions prints the same 委託書號 on each
+    // row, so the key alone would collapse them into one trade.
+    number_repeats(&mut records);
 
     let dates = records.iter().map(|r| r.settle_date);
     let (start, end) = (dates.clone().min(), dates.max());

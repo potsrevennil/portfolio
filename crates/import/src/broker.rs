@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use chrono::NaiveDate;
 use db::{
     broker::{self, NewRecord},
@@ -89,6 +89,8 @@ pub struct Report {
     pub assertions: usize,
     /// Trades stored without an execution date.
     pub undated_trades: usize,
+    /// Records already held that this read could finally date.
+    pub dated: usize,
     pub check: check::CheckReport,
 }
 
@@ -101,6 +103,9 @@ impl fmt::Display for Report {
         writeln!(f, "  {} records inserted, {} already held", self.inserted, self.known)?;
         writeln!(f, "  {} opening records", self.openings)?;
         writeln!(f, "  {} holding figures recorded", self.assertions)?;
+        if self.dated > 0 {
+            writeln!(f, "  {} records dated by a later statement", self.dated)?;
+        }
         if self.undated_trades > 0 {
             writeln!(f, "  {} trades carry only a settlement date", self.undated_trades)?;
         }
@@ -153,24 +158,36 @@ pub fn read(source: Source, paths: &[PathBuf], names: &HashMap<String, String>) 
             .collect::<Result<_>>()?,
     };
 
+    // Only a download that says when it was generated can supersede another:
+    // for the rest the period is derived from the rows, so two different
+    // exports can share one.
     let mut newest: BTreeMap<(String, NaiveDate, NaiveDate), usize> = BTreeMap::new();
     for (i, (_, s)) in parsed.iter().enumerate() {
         let period = (s.account.clone(), s.period_start, s.period_end);
-        match newest.get(&period) {
-            Some(&j) if parsed[j].1.generated >= s.generated => {}
-            _ => {
+        match (s.generated, newest.get(&period)) {
+            (None, _) => {}
+            (Some(_), Some(&j)) if parsed[j].1.generated >= s.generated => {}
+            (Some(_), _) => {
                 newest.insert(period, i);
             }
         }
     }
-    let keep: HashSet<usize> = newest.into_values().collect();
+    let superseded_by: HashSet<usize> = parsed
+        .iter()
+        .enumerate()
+        .filter(|(i, (_, s))| {
+            let period = (s.account.clone(), s.period_start, s.period_end);
+            newest.get(&period).is_some_and(|newest| newest != i)
+        })
+        .map(|(i, _)| i)
+        .collect();
     let mut superseded = Vec::new();
     let mut kept = Vec::new();
     for (i, entry) in parsed.drain(..).enumerate() {
-        if keep.contains(&i) {
-            kept.push(entry);
-        } else {
+        if superseded_by.contains(&i) {
             superseded.push(entry.0);
+        } else {
+            kept.push(entry);
         }
     }
     kept.sort_by_key(|(_, s)| (s.period_start, s.period_end));
@@ -203,9 +220,22 @@ pub async fn import(
             .entry(ledger_account.clone())
             .or_insert_with(|| stored.get(&ledger_account).cloned().unwrap_or_default());
 
-        let openings = match (&s.opening, so_far.is_empty()) {
-            (Some(_), true) => s.opening_records(),
-            (None, true) if s.closing.is_some() => bail!(
+        // An opening stands in for everything before it, so a statement older
+        // than one already synthesised cannot be added underneath it.
+        if let Some(opening) = so_far.iter().find(|r| r.kind == RecordKind::Opening) {
+            ensure!(
+                opening.settle_date < s.period_start,
+                "{} ends before the opening already recorded for {ledger_account} ({}), which \
+                 stands in for everything before it; import this account's statements oldest \
+                 first, on a database without its later ones",
+                path.display(),
+                opening.settle_date
+            );
+        }
+        let explained = so_far.iter().any(|r| r.settle_date < s.period_start);
+        let openings = match (&s.opening, explained) {
+            (Some(_), false) => s.opening_records(),
+            (None, false) if s.closing.is_some() => bail!(
                 "{} opens holding securities it doesn't list; import the statement before it first",
                 path.display()
             ),
@@ -219,6 +249,10 @@ pub async fn import(
             let external_ref = format!("{}{}:{}", source.prefix(), s.account, r.key);
             if !known.insert(external_ref.clone()) {
                 report.known += 1;
+                if let Some(traded) = r.trade_date {
+                    report.dated +=
+                        usize::from(broker::fill_trade_date(db, &external_ref, traded).await?);
+                }
                 continue;
             }
             let id = match batch {

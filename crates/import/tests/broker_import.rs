@@ -6,6 +6,7 @@ use std::{collections::HashMap, path::PathBuf};
 use anyhow::Result;
 use import::broker::{import, read, Report, Source};
 use ledger::accounts::Chart;
+use portfolio::broker::firstrade;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
@@ -26,6 +27,7 @@ expense = "Expenses:Uncategorized"
 "#;
 
 const IB: &str = "Assets:Broker:IB";
+const FIRSTRADE: &str = "Assets:Broker:Firstrade";
 
 /// An invented IB statement: `body` rows, the ending cash and the positions
 /// (symbol, quantity) held at the end.
@@ -101,6 +103,28 @@ impl Fixture {
         let path = self.dir.path().join(name);
         std::fs::write(&path, text)?;
         Ok(path)
+    }
+
+    /// Imports Firstrade PDFs' text, which the tests write as `.txt` and the
+    /// parser reads the same way `pdftotext` would hand it over.
+    async fn import_firstrade(
+        &self,
+        pool: &SqlitePool,
+        texts: &[(&str, String)],
+    ) -> Result<Report> {
+        let statements = firstrade::parse_all(
+            &texts.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
+            &HashMap::new(),
+        )?
+        .into_iter()
+        .zip(texts)
+        .map(|(s, (name, _))| (PathBuf::from(name), s))
+        .collect::<Vec<_>>();
+        let mut tx = pool.begin().await?;
+        let report =
+            import(&mut tx, &self.chart, Source::Firstrade, &statements, Some(FIRSTRADE)).await?;
+        tx.commit().await?;
+        Ok(report)
     }
 
     async fn db(&self) -> Result<SqlitePool> {
@@ -223,6 +247,9 @@ const CATHAY_HEADER: &str = "根據您篩選的結果，總計有2筆資料
                              利息,稅款,券手續費/標借費,委託書號
 ";
 const CATHAY_A: &str = "範例一,2022/12/26,10,\"-1,001\",現買,100,\"1,000\",1,0,0,0,0,0,0,A0001\n";
+/// Same first and last trade date as CATHAY_C, a different security.
+const CATHAY_D: &str = "範例二,2023/01/05,4,-401,現買,100,400,1,0,0,0,0,0,0,A0004\n";
+const CATHAY_C: &str = "範例一,2023/01/05,4,398,現賣,100,400,1,1,0,0,0,0,0,A0003\n";
 const CATHAY_B: &str = "範例一,2023/01/05,4,398,現賣,100,400,1,1,0,0,0,0,0,A0001\n";
 
 #[tokio::test]
@@ -249,5 +276,128 @@ async fn overlapping_cathay_exports_store_each_trade_once() -> Result<()> {
     .await?;
     tx.commit().await?;
     assert_eq!((report.inserted, report.known, report.assertions), (2, 1, 0));
+    Ok(())
+}
+
+/// A Firstrade statement as `pdftotext -layout` prints it, with one settled
+/// trade and an optional trade pending at month end.
+fn firstrade_statement(
+    period: &str,
+    open: &str,
+    close: &str,
+    priced: &str,
+    activity: &[String],
+) -> String {
+    let mut lines = vec![
+        format!("    {period}"),
+        "    ACCOUNT NUMBER          000-00000-00".to_string(),
+        format!("    NET ACCOUNT BALANCE     {open}     {close}"),
+        format!("    TOTAL PRICED PORTFOLIO  {priced}"),
+        "      DESCRIPTION            SYMBOL/   ACCOUNT".to_string(),
+        "    * INVENTED A CORP        ZZA       M          1          $50.00      $50.00"
+            .to_string(),
+        "      TOTAL PRICED PORTFOLIO                                  $0".to_string(),
+        format!(
+            "{:<17}{:<10}{:<8}{:<30}{:>10}{:>12}{:>12}{:>12}",
+            "TRANSACTION", "DATE", "TYPE", "DESCRIPTION", "QUANTITY", "PRICE", "DEBIT", "CREDIT"
+        ),
+    ];
+    lines.extend(activity.iter().cloned());
+    lines.join("\n")
+}
+
+fn firstrade_row(tx: &str, date: &str, desc: &str, qty: &str, price: &str, debit: &str) -> String {
+    format!("{tx:<17}{date:<9} {:<8}{desc:<30}{qty:>10}{price:>12}{debit:>12}", "M")
+}
+
+/// June's pending trade settles in July.
+fn firstrade_june() -> String {
+    firstrade_statement("June 1, 2024 - June 30, 2024", "50.00", "50.00", "0.00     0.00", &[
+        firstrade_row("BOUGHT", "06/28/24 07/01/24", "INVENTED A CORP", "1", "$50", "$50.00"),
+        "    Total Executed Trades Pending Settlement                     $50.00".to_string(),
+    ])
+    .replace(
+        "* INVENTED A CORP        ZZA       M          1",
+        "* INVENTED A CORP        ZZA       M          0",
+    )
+}
+
+fn firstrade_july() -> String {
+    firstrade_statement("July 1, 2024 - July 31, 2024", "50.00", "0.00", "0.00     50.00", &[
+        firstrade_row("BOUGHT", "07/01/24", "INVENTED A CORP", "1", "$50", "$50.00"),
+        "    Total Buy / Sell Transactions                                $50.00".to_string(),
+    ])
+}
+
+/// The trade date only appears on the month-end pending line, so a July-only
+/// read stores none; reading June with it fills the date in place.
+#[tokio::test]
+async fn a_later_read_dates_a_trade_already_held() -> Result<()> {
+    let f = Fixture::new()?;
+    let pool = f.db().await?;
+    let june = f.import_firstrade(&pool, &[("2024-06.txt", firstrade_june())]).await?;
+    assert_eq!(
+        (june.inserted, june.openings),
+        (1, 1),
+        "June settles nothing; it opens the account"
+    );
+    let july = f.import_firstrade(&pool, &[("2024-07.txt", firstrade_july())]).await?;
+    assert_eq!((july.inserted, july.undated_trades), (1, 1), "the trade, with no date to give it");
+
+    let both = f
+        .import_firstrade(&pool, &[
+            ("2024-06.txt", firstrade_june()),
+            ("2024-07.txt", firstrade_july()),
+        ])
+        .await?;
+    assert_eq!((both.inserted, both.dated), (0, 1));
+    let dated: Option<String> =
+        sqlx::query_scalar("SELECT trade_date FROM broker_record WHERE kind = 'buy'")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(dated.as_deref(), Some("2024-06-28"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_statement_older_than_a_synthesised_opening_is_refused() -> Result<()> {
+    let f = Fixture::new()?;
+    let pool = f.db().await?;
+    // The newer statement first: its opening stands in for all of 2025.
+    let newer = ib("January 1, 2026 - June 30, 2026", "2026-07-01, 08:00:00 EDT", "", "19", &[(
+        "ZZA", "2",
+    )])
+    .replace("Starting Cash,Base Currency Summary,0,0", "Starting Cash,Base Currency Summary,19,19")
+    .replace(
+        "Current Quantity\n",
+        "Current Quantity\nMark-to-Market Performance Summary,Data,Stocks,ZZA,2,2\n",
+    );
+    let (report, _) = f.import(&pool, &[f.file("2026.csv", &newer)?]).await?;
+    assert_eq!(report.openings, 2, "cash and the position");
+
+    let err = f
+        .import(&pool, &[f.file("2025.csv", &half_year("2025-07-01, 08:00:00 EDT"))?])
+        .await
+        .unwrap_err();
+    let message = format!("{err:#}");
+    assert!(message.contains("ends before the opening already recorded"), "{message}");
+    assert!(message.contains("oldest first"), "{message}");
+    Ok(())
+}
+
+/// Two Cathay exports can share a period: it is the first and last trade in
+/// the file, not something the export states.
+#[tokio::test]
+async fn two_cathay_exports_of_one_period_are_both_read() -> Result<()> {
+    let f = Fixture::new()?;
+    let one = f.file("all.csv", &format!("\u{feff}{CATHAY_HEADER}{CATHAY_A}{CATHAY_C}"))?;
+    let other = f.file("one-stock.csv", &format!("\u{feff}{CATHAY_HEADER}{CATHAY_A}{CATHAY_D}"))?;
+    let names = HashMap::from([
+        ("範例一".to_string(), "ZZ01.TW".to_string()),
+        ("範例二".to_string(), "ZZ02.TW".to_string()),
+    ]);
+    let (statements, superseded) = read(Source::CathaySecurities, &[one, other], &names)?;
+    assert!(superseded.is_empty(), "{superseded:?}");
+    assert_eq!(statements.len(), 2);
     Ok(())
 }

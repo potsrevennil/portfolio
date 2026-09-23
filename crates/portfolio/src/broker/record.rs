@@ -165,20 +165,26 @@ impl BrokerStatement {
     }
 }
 
+/// Adds one record's cash and share movements to a running balance.
+pub fn accumulate(balances: &mut BTreeMap<Commodity, Decimal>, r: &BrokerRecord) {
+    if !r.cash().is_zero() {
+        *balances.entry(Commodity::Cash(r.currency)).or_default() += r.cash();
+    }
+    if let (Some(symbol), false) = (&r.symbol, r.quantity.is_zero()) {
+        *balances.entry(Commodity::Security(symbol.clone())).or_default() += r.quantity;
+    }
+}
+
 /// Balances after replaying `records` through the end of `as_of`, by settle
-/// date.
+/// date. Where several days are asked for, walk the records once with
+/// [`accumulate`] instead.
 pub fn replay<'a>(
     records: impl IntoIterator<Item = &'a BrokerRecord>,
     as_of: NaiveDate,
 ) -> BTreeMap<Commodity, Decimal> {
-    let mut balances: BTreeMap<Commodity, Decimal> = BTreeMap::new();
+    let mut balances = BTreeMap::new();
     for r in records.into_iter().filter(|r| r.settle_date <= as_of) {
-        if !r.cash().is_zero() {
-            *balances.entry(Commodity::Cash(r.currency)).or_default() += r.cash();
-        }
-        if let (Some(symbol), false) = (&r.symbol, r.quantity.is_zero()) {
-            *balances.entry(Commodity::Security(symbol.clone())).or_default() += r.quantity;
-        }
+        accumulate(&mut balances, r);
     }
     balances
 }
