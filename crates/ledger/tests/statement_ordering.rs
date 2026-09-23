@@ -50,6 +50,7 @@ fn statement_argument_order_does_not_change_the_ledger() -> anyhow::Result<()> {
     let generate = |order: Vec<std::path::PathBuf>| -> anyhow::Result<String> {
         let args = BuildArgs {
             cathay_statements: order,
+            line_bank_statements: Vec::new(),
             daily_income_expense: None,
             daily_transfers: None,
             transactions: None,

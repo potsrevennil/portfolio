@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 use db::{quotes::StockPriceStore, splits::StockSplitStore};
+use ledger::statements::bank::Bank;
 use portfolio::{calculate, record};
 use prices::PriceService;
 
@@ -40,7 +41,10 @@ enum Command {
     ExportHledger(ExportHledger),
     /// Import Cathay bank downloads into SQLite (scratch databases until the
     /// Cutover)
-    ImportCathayBank(import::cathay_bank::Args),
+    ImportCathayBank(import::bank::Args),
+    /// Import LINE Bank statement PDFs into SQLite (scratch databases until
+    /// the Cutover)
+    ImportLineBank(import::bank::Args),
     /// Fetch daily exchange rates so the ledger's currencies can be compared
     Rates(ledger::rates::Args),
 }
@@ -112,7 +116,11 @@ impl Cli {
                 Ok(())
             }
             Some(Command::ImportCathayBank(args)) => {
-                print!("{}", import::cathay_bank::run(args).await?);
+                print!("{}", import::bank::run(Bank::Cathay, args).await?);
+                Ok(())
+            }
+            Some(Command::ImportLineBank(args)) => {
+                print!("{}", import::bank::run(Bank::LineBank, args).await?);
                 Ok(())
             }
             Some(Command::Rates(args)) => {

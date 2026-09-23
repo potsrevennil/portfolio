@@ -103,6 +103,7 @@ fn inputs(
         journal: root.join("journal.csv"),
         build: BuildArgs {
             cathay_statements,
+            line_bank_statements: Vec::new(),
             daily_income_expense,
             daily_transfers,
             transactions,

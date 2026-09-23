@@ -584,6 +584,7 @@ async fn freeze_and_load() -> (TempDir, SqlitePool) {
 
     let build = BuildArgs {
         cathay_statements: vec![root.join("savings.csv")],
+        line_bank_statements: Vec::new(),
         daily_income_expense: None,
         daily_transfers: None,
         transactions: Some(root.join("transactions.csv")),

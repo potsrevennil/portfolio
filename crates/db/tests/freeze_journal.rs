@@ -91,6 +91,7 @@ fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
 
     let build = BuildArgs {
         cathay_statements: vec![root.join("savings.csv")],
+        line_bank_statements: Vec::new(),
         daily_income_expense: None,
         daily_transfers: None,
         transactions: Some(root.join("transactions.csv")),
@@ -377,6 +378,7 @@ expense = "Expenses:Uncategorized"
         journal: root.join("journal.csv"),
         build: BuildArgs {
             cathay_statements: vec![root.join("savings.csv")],
+            line_bank_statements: Vec::new(),
             daily_income_expense: None,
             daily_transfers: None,
             transactions: None,

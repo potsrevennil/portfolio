@@ -81,6 +81,7 @@ INSERT INTO import_batch (source, file) VALUES ('check', 'check.csv');
 INSERT INTO transactions (date, source, import_batch_id) VALUES ('2020-01-01', 'import', 1);
 INSERT INTO account_events (account_id, event) VALUES (1, 'created');
 INSERT INTO postings (transaction_id, account_id, amount, currency) VALUES (1, 1, '0', 'TWD');
+INSERT INTO transaction_refs (transaction_id, external_ref) VALUES (1, 'check:1');
 INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) VALUES (1, 'TWD', 'counted', '2020-01-01', '0');
 SQL
 

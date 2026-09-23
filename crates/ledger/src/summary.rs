@@ -21,8 +21,8 @@ pub struct Summary {
     pub categorised: usize,
     pub internal: usize,
     pub in_transit: usize,
-    /// Debits the bank itself reversed (錯誤更正), each netted with its
-    /// reversal.
+    /// Debits the bank itself reversed (錯誤更正, 取消轉帳), each booked with
+    /// its reversal.
     pub reversed: usize,
     pub uncategorised: usize,
     /// Records emitted for accounts that have no statement.
@@ -33,6 +33,12 @@ pub struct Summary {
     /// side is still emitted, but the near side lands in an uncategorised
     /// bucket — a rising count means the matcher is losing ground.
     pub unmatched_records: usize,
+    /// Records of a statement account from before its statement begins, which
+    /// carry its balance up to the statement's opening.
+    pub carried: usize,
+    /// Records of a statement account newer than its last statement, booked
+    /// onto it and tagged unverified.
+    pub unverified: usize,
     /// 天天記帳 names with no entry in mapping.toml.
     pub unmapped: BTreeSet<String>,
     /// `[overrides]` ids that matched no record in the exports. A correction is
@@ -71,7 +77,7 @@ impl fmt::Display for Summary {
             writeln!(f, "  {} of the internal transfers are currency conversions", self.converted)?;
         }
         if self.reversed > 0 {
-            writeln!(f, "  {} bank reversals netted against the debit they undid", self.reversed)?;
+            writeln!(f, "  {} bank reversals booked with the debit they undid", self.reversed)?;
         }
         if self.other_accounts > 0 {
             writeln!(
@@ -93,6 +99,20 @@ impl fmt::Display for Summary {
                 "  {} 天天記帳 records matched no statement line (far side kept, near side \
                  uncategorised)",
                 self.unmatched_records
+            )?;
+        }
+        if self.carried > 0 {
+            writeln!(
+                f,
+                "  {} records carry a statement account's balance up to its first statement",
+                self.carried
+            )?;
+        }
+        if self.unverified > 0 {
+            writeln!(
+                f,
+                "  {} records newer than a statement account's last statement, tagged unverified",
+                self.unverified
             )?;
         }
         if !self.superseded_openings.is_empty() {

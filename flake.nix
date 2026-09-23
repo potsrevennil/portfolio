@@ -44,6 +44,9 @@
                 sqlx-cli
                 sqlite
                 sccache
+                # LINE Bank statements are PDFs; the importer reads them through
+                # `pdftotext -raw`.
+                poppler_utils
 
                 # Web UI build (crates/web): cargo-leptos drives the server and wasm
                 # builds; its bundled wasm-bindgen must match the crate's,

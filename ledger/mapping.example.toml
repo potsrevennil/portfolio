@@ -17,17 +17,20 @@
 # The bank whose statements drive the ledger. Account numbers are yours, so the
 # code reads whichever numbers it is given rather than knowing any itself.
 [institution]
-app_account            = "銀行"                            # what the bookkeeping app calls them together
-primary                = "Assets:Bank:Savings"           # where activity with no statement lands
-settlement             = "Assets:Bank:Investment"        # where securities settlement passes
-settlement_app_account = "證券"                            # app account that means settlement
-clearing               = "Assets:Bank:Transfer-Clearing" # internal transfers still in flight
+app_account            = "銀行"                                 # what the bookkeeping app calls them together
+primary                = "Assets:Bank:Main:Savings"           # where activity with no statement lands
+settlement             = "Assets:Bank:Main:Investment"        # where securities settlement passes
+settlement_app_account = "證券"                                 # app account that means settlement
+clearing               = "Assets:Bank:Main:Transfer-Clearing" # internal transfers still in flight
 
-# Statement account number → ledger account.
+# Statement account number → ledger account, for every bank with statements.
+# A second bank's account gets its own pool of app records when [accounts] maps
+# one app account to exactly its ledger account.
 [institution.accounts]
-"123456789012" = "Assets:Bank:Savings"
-"210987654321" = "Assets:Bank:Investment"
-"345678901234" = "Assets:Bank:FX"         # foreign-currency account, one per currency
+"123456789012" = "Assets:Bank:Main:Savings"
+"210987654321" = "Assets:Bank:Main:Investment"
+"345678901234" = "Assets:Bank:Main:FX"         # foreign-currency account, one per currency
+"456789012345" = "Assets:Bank:LineBank"        # LINE Bank; its statements' folder names it
 
 # Where a statement line goes when no app record explains it. The statement
 # alone tells us only the direction, so that is all the default can use.
@@ -64,17 +67,19 @@ expense = "Expenses:Uncategorized"
 # Accounts the app names, including the ones no statement covers.
 [accounts]
 "現金" = "Assets:Cash"
-"銀行" = "Assets:Bank"
+"銀行" = "Assets:Bank:Main"
 # Mapped to exactly a statement's account: matched against that statement only.
-"外幣"  = "Assets:Bank:FX"
-"信用卡" = { account = "Liabilities:Card", tags = ["card"] }
-"應收款" = "Assets:Split:Others"
-"證券"  = "Assets:Securities"
-"起鼓"  = "Equity:Opening-Balances"                         # opening balances
+"外幣"   = "Assets:Bank:Main:FX"
+"LINE" = "Assets:Bank:LineBank"
+"信用卡"  = { account = "Liabilities:Card", tags = ["card"] }
+"應收款"  = "Assets:Split:Others"
+"證券"   = "Assets:Broker:Main:Holdings"                     # listed holdings, by broker
+"起鼓"   = "Equity:Opening-Balances"                         # opening balances
 
 # Accounts whose balance is what was paid, not what it is worth: an unlisted
 # holding has no market price, so adding it to a total would read as a
-# valuation nobody made. Reports show these at cost, outside the totals.
+# valuation nobody made. Reports show these at cost, outside the totals, one
+# holding per account under the root (Assets:Unlisted:<company>).
 [at_cost]
 accounts = ["Assets:Unlisted"]
 
@@ -114,6 +119,9 @@ roots = ["Assets:Split"]
 [display]
 "Assets"                  = "資產"
 "Assets:Bank"             = "銀行"
+"Assets:Bank:Main"        = "範例銀行"
+"Assets:Bank:LineBank"    = "LINE Bank"
+"Assets:Broker"           = "券商"
 "Assets:Cash"             = "現金"
 "Equity"                  = "權益"
 "Equity:Opening-Balances" = "期初餘額"

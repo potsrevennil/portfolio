@@ -6,10 +6,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 use anyhow::Result;
 use db::load;
 use import::{
-    cathay_bank::{import, Report},
+    bank::{import, Report},
     plan::Candidate,
 };
-use ledger::{accounts::Chart, args::Args as BuildArgs, freeze};
+use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, statements::bank::Bank};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use sqlx::{Row, SqlitePool};
@@ -150,7 +150,8 @@ async fn import_files(
     candidates: &[Candidate],
 ) -> Result<Report> {
     let mut tx = pool.begin().await?;
-    let report = import(&mut tx, chart, paths, candidates).await?;
+    let merged = Bank::Cathay.load_merged(paths)?;
+    let report = import(&mut tx, chart, Bank::Cathay, &merged, candidates).await?;
     tx.commit().await?;
     Ok(report)
 }
@@ -233,6 +234,7 @@ async fn a_frozen_ledger_holds_every_line() -> Result<()> {
         journal: f.dir.path().join("journal.csv"),
         build: BuildArgs {
             cathay_statements: statements.clone(),
+            line_bank_statements: Vec::new(),
             daily_income_expense: None,
             daily_transfers: None,
             transactions: Some(f.write("transactions.csv", RECORDS)?),
