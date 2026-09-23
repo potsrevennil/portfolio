@@ -32,6 +32,8 @@ pub struct LedgerPosting {
     pub amount: Decimal,
     /// Its transaction's ref, then any further ones it stands for.
     pub refs: Vec<String>,
+    /// Where its transaction's other legs post.
+    pub other_accounts: Vec<String>,
     /// Its transaction also posts to the opening equity.
     pub opening: bool,
     pub transaction_id: i64,
@@ -39,8 +41,12 @@ pub struct LedgerPosting {
     pub unverified: bool,
 }
 
-/// `char(31)` in the query: no ref holds it.
-const ALIAS_SEPARATOR: char = '\u{1f}';
+/// `char(31)` in the queries: no ref or account path holds it.
+const SEPARATOR: char = '\u{1f}';
+
+fn split(concatenated: Option<&str>) -> Vec<String> {
+    concatenated.into_iter().flat_map(|c| c.split(SEPARATOR)).map(String::from).collect()
+}
 
 #[derive(sqlx::FromRow)]
 struct Row {
@@ -48,6 +54,7 @@ struct Row {
     amount: String,
     external_ref: Option<String>,
     aliases: Option<String>,
+    others: Option<String>,
     opening: bool,
     transaction_id: i64,
     unverified: bool,
@@ -60,11 +67,8 @@ impl TryFrom<Row> for LedgerPosting {
         Ok(LedgerPosting {
             date: r.date.parse().with_context(|| format!("transaction date {:?}", r.date))?,
             amount: r.amount.parse().with_context(|| format!("posting amount {:?}", r.amount))?,
-            refs: r
-                .external_ref
-                .into_iter()
-                .chain(r.aliases.iter().flat_map(|a| a.split(ALIAS_SEPARATOR)).map(String::from))
-                .collect(),
+            refs: r.external_ref.into_iter().chain(split(r.aliases.as_deref())).collect(),
+            other_accounts: split(r.others.as_deref()),
             opening: r.opening,
             transaction_id: r.transaction_id,
             unverified: r.unverified,
@@ -83,6 +87,9 @@ pub async fn postings(
         "SELECT t.date, p.amount, t.external_ref, t.id AS transaction_id,
                 (SELECT group_concat(r.external_ref, char(31)) FROM transaction_refs r
                  WHERE r.transaction_id = t.id) AS aliases,
+                (SELECT group_concat(b.path, char(31)) FROM postings q
+                 JOIN accounts b ON b.id = q.account_id
+                 WHERE q.transaction_id = t.id AND b.id <> p.account_id) AS others,
                 EXISTS (SELECT 1 FROM postings q JOIN accounts b ON b.id = q.account_id
                         WHERE q.transaction_id = t.id AND b.path = ?) AS opening,
                 instr(',' || coalesce(p.tags, '') || ',', ',' || ? || ',') > 0 AS unverified
@@ -131,27 +138,38 @@ pub async fn add_ref(
     Ok(())
 }
 
+/// An unverified record a statement line checked, and what that leaves
+/// unchecked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verification {
+    pub transaction_id: i64,
+    /// The line's date and ref.
+    pub date: NaiveDate,
+    pub statement_ref: String,
+    /// Legs on these accounts stay unverified: no line here vouched for them.
+    pub unchecked: Vec<String>,
+}
+
 /// Marks an unverified record as checked by a statement line: it takes the
-/// line's date, stands for the line too, and its legs lose the unverified
-/// tag. Its own ref stays, so its source still knows it, and so do its
-/// category and review state.
-pub async fn verify(
-    db: &mut SqliteConnection,
-    transaction_id: i64,
-    date: NaiveDate,
-    statement_ref: &str,
-) -> Result<()> {
-    redate(db, transaction_id, date).await?;
-    add_ref(db, transaction_id, statement_ref).await?;
-    sqlx::query(
-        "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ?1 || ',', \
-         ','), ','), '') WHERE transaction_id = ?2",
-    )
-    .bind(UNVERIFIED_TAG)
-    .bind(transaction_id)
-    .execute(db)
-    .await
-    .with_context(|| format!("clearing the unverified tag of transaction {transaction_id}"))?;
+/// line's date, stands for the line too, and its legs lose the unverified tag,
+/// bar those on `unchecked` accounts. Its own ref stays, so its source still
+/// knows it, and so do its category and review state.
+pub async fn verify(db: &mut SqliteConnection, v: &Verification) -> Result<()> {
+    redate(db, v.transaction_id, v.date).await?;
+    add_ref(db, v.transaction_id, &v.statement_ref).await?;
+    let held = vec!["?"; v.unchecked.len()].join(", ");
+    let sql = format!(
+        "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ? || ',', \
+         ','), ','), '') WHERE transaction_id = ? AND account_id NOT IN
+         (SELECT id FROM accounts WHERE path IN ({held}))"
+    );
+    let mut clear = sqlx::query(&sql).bind(UNVERIFIED_TAG).bind(v.transaction_id);
+    for account in &v.unchecked {
+        clear = clear.bind(account);
+    }
+    clear.execute(db).await.with_context(|| {
+        format!("clearing the unverified tag of transaction {}", v.transaction_id)
+    })?;
     Ok(())
 }
 

@@ -115,7 +115,7 @@ pub async fn import(
     let Plan { transactions, mut counts, openings, verified, deferred } =
         plan::plan(chart, &statements, &known, candidates)?;
     for v in &verified {
-        import_batch::verify(db, v.transaction_id, v.date, &v.statement_ref).await?;
+        import_batch::verify(db, v).await?;
     }
     for d in &deferred {
         import_batch::redate(db, d.transaction_id, d.date).await?;

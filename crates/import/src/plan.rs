@@ -8,7 +8,7 @@ use anyhow::{bail, Result};
 use chrono::NaiveDate;
 use db::{
     import::{Posting, Transaction},
-    import_batch::LedgerPosting,
+    import_batch::{LedgerPosting, Verification},
 };
 use ledger::{
     accounts::Chart,
@@ -34,16 +34,6 @@ pub struct Statement<'a> {
 /// How far a record's date may be from the line that verifies it: the
 /// records take the bank's date when they are a week or more off.
 const VERIFY_WINDOW_DAYS: i64 = 7;
-
-/// An unverified record a line verifies: it takes the line's date, stands
-/// for the line's ref too, and keeps everything else, its own ref, row and
-/// review state included.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Verified {
-    pub transaction_id: i64,
-    pub date: NaiveDate,
-    pub statement_ref: String,
-}
 
 /// An unverified record from a statement's last days that none of its lines
 /// verifies: the bank books it after the statement, so it moves to the day
@@ -90,7 +80,7 @@ pub struct Plan {
     pub counts: Counts,
     /// Each statement's opening date; the ledger tracks its lines after it.
     pub openings: Vec<NaiveDate>,
-    pub verified: Vec<Verified>,
+    pub verified: Vec<Verification>,
     pub deferred: Vec<Deferred>,
 }
 
@@ -123,6 +113,10 @@ pub fn plan(
 ) -> Result<Plan> {
     let mut plan = Plan::default();
     let refs: Vec<Vec<String>> = statements.iter().map(|s| s.statement.dedup_refs()).collect();
+    // Accounts a statement of their own vouches for; a leg on one of those is
+    // only this import's business when its own statement is here.
+    let has_statements: HashSet<&str> =
+        chart.institution.accounts.values().map(|a| a.as_ref()).collect();
 
     // --- what the ledger already holds ---
     let mut openings: Vec<NaiveDate> = Vec::with_capacity(statements.len());
@@ -246,10 +240,24 @@ pub fn plan(
             let pending = p.date > opening
                 && p.date <= settled
                 && (settled - p.date).num_days() < VERIFY_WINDOW_DAYS;
-            if pending && !verifying.contains(&p.transaction_id) {
-                plan.deferred.push(Deferred { transaction_id: p.transaction_id, date: after });
-                plan.counts.deferred += 1;
+            if !pending || verifying.contains(&p.transaction_id) {
+                continue;
             }
+            // Moving the record moves its every leg, so one reaching another
+            // account that has its own statement is not ours to move.
+            if let Some(other) = p.other_accounts.iter().find(|a| has_statements.contains(&***a)) {
+                bail!(
+                    "{} {}: the record of {} on {} is also {other}'s, and this statement does not \
+                     show it. Import it together with the next statement, which may, or review \
+                     the record. Nothing was imported",
+                    s.account,
+                    st.currency,
+                    p.amount,
+                    p.date
+                );
+            }
+            plan.deferred.push(Deferred { transaction_id: p.transaction_id, date: after });
+            plan.counts.deferred += 1;
         }
         if !ambiguous.is_empty() {
             bail!(
@@ -452,16 +460,60 @@ pub fn plan(
     }
 
     // --- lines that verify an unverified record: it keeps its row ---
+    //
+    // A transfer between two accounts is one record with a leg on each. Each
+    // bank's line vouches for its own leg, so a leg whose account has a
+    // statement no line here covers stays unverified.
+    let checked: HashMap<i64, HashSet<&str>> = status.iter().enumerate().fold(
+        HashMap::new(),
+        |mut checked: HashMap<i64, HashSet<&str>>, (si, ls)| {
+            for id in ls.iter().filter_map(|s| match s {
+                Status::Verifies(id) => Some(*id),
+                _ => None,
+            }) {
+                checked.entry(id).or_default().insert(&statements[si].account);
+            }
+            checked
+        },
+    );
     for (si, s) in statements.iter().enumerate() {
         for (li, l) in s.statement.lines.iter().enumerate() {
             if let Status::Verifies(transaction_id) = status[si][li] {
-                plan.verified.push(Verified {
+                let record = s
+                    .existing
+                    .iter()
+                    .find(|p| p.transaction_id == transaction_id)
+                    .expect("the record a line verifies");
+                let unchecked: Vec<String> = record
+                    .other_accounts
+                    .iter()
+                    .filter(|a| {
+                        has_statements.contains(&***a) && !checked[&transaction_id].contains(&***a)
+                    })
+                    .cloned()
+                    .collect();
+                plan.verified.push(Verification {
                     transaction_id,
                     date: l.book_date,
                     statement_ref: refs[si][li].clone(),
+                    unchecked,
                 });
             }
         }
+    }
+    // One record cannot sit on two days: two banks that booked it differently
+    // need it split, which only a re-freeze can do.
+    let mut dates: HashMap<i64, NaiveDate> = HashMap::new();
+    for v in &plan.verified {
+        if let Some(&other) = dates.get(&v.transaction_id).filter(|&&d| d != v.date) {
+            bail!(
+                "the record {} verifies was booked {} by one bank and {other} by the other; \
+                 re-freeze so each side stands on its own. Nothing was imported",
+                v.statement_ref,
+                v.date
+            );
+        }
+        dates.insert(v.transaction_id, v.date);
     }
 
     let redated: HashMap<i64, NaiveDate> = plan

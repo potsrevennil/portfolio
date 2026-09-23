@@ -8,6 +8,7 @@ fn chart() -> Chart {
         r#"
         [institution.accounts]
         "111111111111" = "Assets:Bank:Savings"
+        "222222222222" = "Assets:Bank:Other"
         [institution]
         clearing = "Assets:Bank:Clearing"
         [fallback]
@@ -48,6 +49,7 @@ fn held(d: u32, amount: Decimal, opening: bool) -> LedgerPosting {
         date: day(d),
         amount,
         refs: Vec::new(),
+        other_accounts: Vec::new(),
         opening,
         transaction_id: i64::from(d),
         unverified: false,
@@ -118,6 +120,10 @@ fn a_ledger_that_disagrees_with_the_statement_is_refused() {
     assert!(err.to_string().contains("nothing was imported"), "{err}");
 }
 
+/// The account of the tests' second statement, which most of them leave out
+/// of the import.
+const OTHER: &str = "Assets:Bank:Other";
+
 fn unverified(d: u32, amount: Decimal, id: i64) -> LedgerPosting {
     LedgerPosting { unverified: true, transaction_id: id, ..held(d, amount, false) }
 }
@@ -139,10 +145,11 @@ fn with(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
 fn a_line_verifies_its_one_unverified_record_in_place() -> Result<()> {
     let st = statement(&[(10, dec!(-20), dec!(80))]);
     let p = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-20), 42)])?;
-    assert_eq!(p.verified, vec![Verified {
+    assert_eq!(p.verified, vec![Verification {
         transaction_id: 42,
         date: day(10),
         statement_ref: st.dedup_refs()[0].clone(),
+        unchecked: Vec::new(),
     }]);
     assert_eq!((p.counts.verified, p.transactions.len()), (1, 0));
     Ok(())
@@ -192,4 +199,32 @@ fn an_earlier_record_no_line_verifies_breaks_the_chain() {
     let err = with(&st, vec![held(1, dec!(100), true), unverified(2, dec!(-30), 42)])
         .expect_err("the statement never shows 30");
     assert!(err.to_string().contains("nothing was imported"), "{err}");
+}
+
+/// A transfer is one record with a leg on each account, and a line vouches
+/// only for its own: the other bank's leg stays unverified until its own
+/// statement shows it.
+#[test]
+fn a_line_leaves_the_other_banks_leg_of_a_transfer_unverified() -> Result<()> {
+    let st = statement(&[(10, dec!(-20), dec!(80))]);
+    let record = LedgerPosting {
+        other_accounts: vec![OTHER.to_string(), "Expenses:Food".to_string()],
+        ..unverified(9, dec!(-20), 42)
+    };
+    let p = with(&st, vec![held(1, dec!(100), true), record])?;
+    assert_eq!(p.verified[0].unchecked, [OTHER]);
+    Ok(())
+}
+
+/// Moving a record moves its every leg, so one the other bank's statement
+/// will be checked against is not this import's to move.
+#[test]
+fn a_transfer_the_statement_does_not_show_is_refused_rather_than_moved() {
+    let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
+    let record =
+        LedgerPosting { other_accounts: vec![OTHER.to_string()], ..unverified(9, dec!(-30), 42) };
+    let err = with(&st, vec![held(1, dec!(100), true), record])
+        .expect_err("the far leg is not ours to move");
+    assert!(err.to_string().contains(OTHER), "{err}");
+    assert!(err.to_string().contains("Nothing was imported"), "{err}");
 }
