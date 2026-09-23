@@ -158,9 +158,13 @@ pub fn plan(
         // Postings the ledger booked from other lines (a transfer's far half, a
         // reversal) can each cover one line with no ref of its own. A known
         // line takes back its own posting first.
+        //
+        // A leg still tagged unverified is never one of those, whatever its
+        // transaction stands for: the other bank's line vouched for the other
+        // leg, and this one is here to be verified, not to cover a line.
         let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
         for p in &s.existing {
-            if !p.opening && from_a_statement(p) {
+            if !p.opening && !p.unverified && from_a_statement(p) {
                 *spare.entry((p.date, p.amount)).or_default() += 1;
             }
         }

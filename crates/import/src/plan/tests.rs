@@ -245,3 +245,21 @@ fn a_record_another_bank_already_verified_keeps_its_date() -> Result<()> {
     assert_eq!(p.counts.verified, 1);
     Ok(())
 }
+
+/// Both banks booked the transfer on one day, and the other bank verified it
+/// first: its ref is on the record, but this leg is still unverified, so the
+/// line verifies it rather than taking it for a posting of its own.
+#[test]
+fn a_same_day_transfer_the_other_bank_verified_is_verified_here_too() -> Result<()> {
+    let st = statement(&[(10, dec!(-20), dec!(80))]);
+    let record = LedgerPosting {
+        refs: vec!["tiantian:1".into(), "cathay-bank:20260610:1".into()],
+        other_accounts: vec![OTHER.to_string()],
+        ..unverified(10, dec!(-20), 42)
+    };
+    let p = with(&st, vec![held(1, dec!(100), true), record])?;
+    assert_eq!((p.counts.verified, p.counts.covered, p.counts.new), (1, 0, 0));
+    assert_eq!(p.verified[0].unchecked, [OTHER]);
+    assert_eq!(p.verified[0].date, None);
+    Ok(())
+}
