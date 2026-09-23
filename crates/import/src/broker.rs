@@ -205,6 +205,14 @@ pub async fn import(
     let labels = Labels::from(chart);
     let mut known = broker::refs(db, source.prefix()).await?;
     let stored = broker::load(db).await?;
+    // Refs whose stored copy already carries a trade date, so re-reading the
+    // same statements issues no pointless updates.
+    let mut dated: HashSet<String> = stored
+        .values()
+        .flatten()
+        .filter(|r| r.trade_date.is_some())
+        .map(|r| r.key.clone())
+        .collect();
     let mut report = Report { statements: statements.len(), ..Default::default() };
     // Per ledger account: every record so far, for the symbols it has touched.
     let mut held: BTreeMap<String, Vec<BrokerRecord>> = BTreeMap::new();
@@ -225,9 +233,9 @@ pub async fn import(
         if let Some(opening) = so_far.iter().find(|r| r.kind == RecordKind::Opening) {
             ensure!(
                 opening.settle_date < s.period_start,
-                "{} ends before the opening already recorded for {ledger_account} ({}), which \
-                 stands in for everything before it; import this account's statements oldest \
-                 first, on a database without its later ones",
+                "{} begins on or before the opening already recorded for {ledger_account} ({}), \
+                 which stands in for everything up to that day; import this account's statements \
+                 oldest first, on a database without its later ones",
                 path.display(),
                 opening.settle_date
             );
@@ -249,9 +257,11 @@ pub async fn import(
             let external_ref = format!("{}{}:{}", source.prefix(), s.account, r.key);
             if !known.insert(external_ref.clone()) {
                 report.known += 1;
-                if let Some(traded) = r.trade_date {
-                    report.dated +=
-                        usize::from(broker::fill_trade_date(db, &external_ref, traded).await?);
+                if let (Some(traded), false) = (r.trade_date, dated.contains(&external_ref)) {
+                    if broker::fill_trade_date(db, &external_ref, traded).await? {
+                        report.dated += 1;
+                        dated.insert(external_ref);
+                    }
                 }
                 continue;
             }
@@ -267,6 +277,9 @@ pub async fn import(
             };
             broker::insert(db, &new).await?;
             report.inserted += 1;
+            if r.trade_date.is_some() {
+                dated.insert(new.external_ref);
+            }
             let trade = matches!(r.kind, RecordKind::Buy | RecordKind::Sell);
             if trade && r.trade_date.is_none() {
                 report.undated_trades += 1;

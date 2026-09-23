@@ -380,7 +380,7 @@ async fn a_statement_older_than_a_synthesised_opening_is_refused() -> Result<()>
         .await
         .unwrap_err();
     let message = format!("{err:#}");
-    assert!(message.contains("ends before the opening already recorded"), "{message}");
+    assert!(message.contains("begins on or before the opening already recorded"), "{message}");
     assert!(message.contains("oldest first"), "{message}");
     Ok(())
 }
