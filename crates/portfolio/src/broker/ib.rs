@@ -50,7 +50,10 @@ pub fn parse(text: &str) -> Result<BrokerStatement> {
     };
     let (period_start, period_end) = period(field("Statement", "Period")?)?;
     let generated = generated(field("Statement", "WhenGenerated")?)?;
-    let account = field("Account Information", "Account")?.clone();
+    // A consolidated statement prints "U0000000 (Custom Consolidated)"; the
+    // account number alone is what the chart is keyed on.
+    let account = field("Account Information", "Account")?;
+    let account = account.split_once(" (").map_or(&account[..], |(number, _)| number).to_string();
     let base: Currency =
         field("Account Information", "Base Currency")?.parse().context("IB base currency")?;
 

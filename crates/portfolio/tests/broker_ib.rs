@@ -19,7 +19,7 @@ Statement,Data,Title,Activity Statement
 Statement,Data,Period,\"{period}\"
 Statement,Data,WhenGenerated,\"{generated}\"
 Account Information,Header,Field Name,Field Value
-Account Information,Data,Account,U0000000
+Account Information,Data,Account,U0000000 (Custom Consolidated)
 Account Information,Data,Base Currency,USD
 Cash Report,Header,Currency Summary,Currency,Total,Securities,Futures,
 Cash Report,Data,Starting Cash,Base Currency Summary,0,0,0,
@@ -41,6 +41,12 @@ const GRANTS: &str = "Grant Activity,Header,Account,Symbol,Report Date,Descripti
                       Date,Vesting Date,Quantity,Price,Value\n";
 const ACTIONS: &str = "Corporate Actions,Header,Asset Category,Currency,Account,Report \
                        Date,Date/Time,Description,Quantity,Proceeds,Value,Realized P/L,Code\n";
+
+#[test]
+fn a_consolidated_statement_is_keyed_on_the_account_number() {
+    let s = ib::parse(&statement("January 1, 2025 - December 31, 2025", "2026-01-08, 22:56:25 EST", DEPOSITS, "0", "")).unwrap();
+    assert_eq!(s.account, "U0000000");
+}
 
 #[test]
 fn a_withholding_reversal_pair_stays_three_records() {
