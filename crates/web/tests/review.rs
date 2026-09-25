@@ -528,6 +528,49 @@ async fn a_manual_entry_is_an_ordinary_reviewed_transaction() {
     assert!(!counted.contains("balance check"), "{counted}");
 }
 
+/// A record forgotten in 天天記帳 and added here later: the 天天記帳 closing
+/// it contradicts was only that app's own sum, so the entry is kept and the
+/// closing is marked superseded, not checked again.
+#[tokio::test]
+async fn a_late_record_supersedes_a_tiantian_closing() {
+    let (_dir, pool) = ledger().await;
+    sqlx::query(
+        "INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) SELECT \
+         id, 'TWD', 'tiantian', '2024-02-29', '880' FROM accounts WHERE path = 'Assets:Cash'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let id = call(&pool, || {
+        enter_manual(
+            "2024-02-20".into(),
+            "260".into(),
+            "TWD".into(),
+            "Assets:Cash".into(),
+            Some("Expenses:Food".into()),
+            None,
+            Some("便當".into()),
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(legs(&pool, id).await.len(), 2);
+    let superseded: Option<String> = sqlx::query_scalar(
+        "SELECT superseded_at FROM balance_assertion WHERE source = 'tiantian' AND period_end = \
+         '2024-02-29'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(superseded.is_some());
+    // The check, and every import gate after it, no longer holds it.
+    let mut conn = pool.acquire().await.unwrap();
+    let report = db::check::check(&mut conn).await.unwrap();
+    assert!(report.ok(), "{report}");
+    // A count still binds: the cash counted on 2024-01-31 refuses a spend
+    // before it (tested with its message in the manual-entry test).
+}
+
 /// A figure the ledger already disagreed with holds up nothing else: a write
 /// is refused only for a balance it breaks.
 #[tokio::test]

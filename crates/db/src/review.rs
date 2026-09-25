@@ -14,7 +14,7 @@ use rust_decimal::Decimal;
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::{
-    assertions::AssertionSource,
+    assertions::{self, AssertionSource},
     check::{self, Figure, Mismatch},
     events::{self, Change, EventKind},
     import::Origin,
@@ -133,13 +133,24 @@ async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
     Ok(check::check(db).await?.mismatches)
 }
 
-/// Commits `db` unless the write broke a balance an outside figure vouches
-/// for; then it says which one, and what to do, in the reader's words.
+/// Commits `db` unless the write broke a balance a statement or a count
+/// vouches for; then it says which one, and what to do, in the reader's
+/// words. A 天天記帳 closing it contradicts is only that app's sum of what
+/// was logged there, so a record added later supersedes it instead.
 async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>, before: Vec<Mismatch>) -> Result<()> {
     let after = check::check(&mut db).await?;
-    if let Some(broken) = after.mismatches.iter().find(|m| !before.contains(m)) {
+    let (tiantian, broken): (Vec<&Mismatch>, Vec<&Mismatch>) =
+        after.mismatches.iter().filter(|m| !before.contains(m)).partition(
+            |m| matches!(&m.figure, Figure::Balance(a) if a.source == AssertionSource::Tiantian),
+        );
+    if let Some(broken) = broken.first() {
         let refusal = refusal(&mut db, broken).await?;
         bail!(refusal);
+    }
+    for m in tiantian {
+        if let Figure::Balance(a) = &m.figure {
+            assertions::supersede(&mut db, a).await?;
+        }
     }
     db.commit().await?;
     Ok(())
