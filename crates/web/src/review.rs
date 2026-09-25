@@ -25,7 +25,9 @@ pub async fn load_queue(query: JournalQuery) -> Result<Queue, ServerFnError> {
 
 #[server]
 pub async fn review_count() -> Result<u64, ServerFnError> {
-    let pool = expect_context::<db::SqlitePool>();
+    // The nav renders on every page, including the one pass that gathers
+    // the route list, where no database is in context yet.
+    let pool = use_context::<db::SqlitePool>().ok_or_else(|| ServerFnError::new("沒有資料庫"))?;
     crate::queue::count(&pool).await.map_err(failed)
 }
 

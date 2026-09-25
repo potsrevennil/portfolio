@@ -40,6 +40,13 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     provide_meta_context();
     provide_context(Actions::new());
+    // Effects run only in the browser, once the page is live: what a browser
+    // test waits for before it clicks.
+    Effect::new(|| {
+        if let Some(body) = document().body() {
+            let _ = body.set_attribute("data-hydrated", "");
+        }
+    });
     view! {
         <Title formatter=|page: String| format!("{page} · 帳簿") />
         <Router>
