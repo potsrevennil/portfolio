@@ -7,7 +7,8 @@ use leptos_router::{components::Form, hooks::use_query_map};
 
 use crate::{
     balance_sheet::MoneyText,
-    model::{AccountChoice, Entry, Journal, JournalQuery, Review},
+    model::{AccountChoice, Entry, Journal, JournalQuery, Origin, Review, Source},
+    review::ReviewControls,
 };
 
 #[server]
@@ -55,16 +56,26 @@ pub fn JournalFilter(
     action: &'static str,
     query: JournalQuery,
     accounts: Vec<AccountChoice>,
+    /// Offer the review state; the queue lists only unreviewed records.
+    #[prop(default = true)]
+    review: bool,
 ) -> impl IntoView {
     let chosen = query.account.clone();
     let current = query.review.clone().unwrap_or_default();
-    let review = move |value: Review, text: &'static str| {
-        let value = value.to_string();
+    let option = move |current: String, value: String, text: &'static str| {
         view! {
             <option value=value.clone() selected=current == value>
                 {text}
             </option>
         }
+    };
+    let review_option = {
+        let current = current.clone();
+        move |value: Review, text| option(current.clone(), value.to_string(), text)
+    };
+    let source = query.source.clone().unwrap_or_default();
+    let source_option = move |value: Option<Source>, text| {
+        option(source.clone(), value.map(|s| s.to_string()).unwrap_or_default(), text)
     };
     view! {
         <Form method="GET" action=action>
@@ -98,13 +109,27 @@ pub fn JournalFilter(
                     "搜尋" <input type="search" name="q" value=query.text.clone().unwrap_or_default() />
                 </label>
                 <label>
-                    "確認"
-                    <select name="review">
-                        {review(Review::Any, "全部")}
-                        {review(Review::Reviewed, "已確認")}
-                        {review(Review::Unreviewed, "未確認")}
+                    "來源"
+                    <select name="source">
+                        {source_option(None, "全部")}
+                        {source_option(Some(Source::Import), "對帳單")}
+                        {source_option(Some(Source::Tiantian), "天天記帳")}
+                        {source_option(Some(Source::Manual), "手動")}
                     </select>
                 </label>
+                {review
+                    .then(|| {
+                        view! {
+                            <label>
+                                "確認"
+                                <select name="review">
+                                    {review_option(Review::Any, "全部")}
+                                    {review_option(Review::Reviewed, "已確認")}
+                                    {review_option(Review::Unreviewed, "未確認")}
+                                </select>
+                            </label>
+                        }
+                    })}
                 <label>
                     <input type="checkbox" name="unverified" value="1" checked=query.unverified />
                     "只看未對帳"
@@ -118,15 +143,25 @@ pub fn JournalFilter(
 
 /// One page of transactions and the links to the pages around it.
 #[component]
-pub fn JournalList(action: &'static str, journal: Journal) -> impl IntoView {
+pub fn JournalList(
+    action: &'static str,
+    journal: Journal,
+    /// Each row carries its source and the queue's controls.
+    #[prop(optional)]
+    review: bool,
+) -> impl IntoView {
     let Journal { query, account, entries, total, pages, .. } = journal;
     let page = query.page;
     let link = move |page: u32| format!("{action}{}", query.with_page(page));
     let heading = account.map(|a| view! { <h2 class="account">{a}</h2> });
     let list = match entries.is_empty() {
         true => view! { <p class="note">"查無交易"</p> }.into_any(),
-        false => view! { <ol class="entries">{entries.into_iter().map(entry).collect_view()}</ol> }
-            .into_any(),
+        false => view! {
+            <ol class="entries">
+                {entries.into_iter().map(|e| entry(e, review)).collect_view()}
+            </ol>
+        }
+        .into_any(),
     };
     view! {
         {heading}
@@ -139,33 +174,77 @@ pub fn JournalList(action: &'static str, journal: Journal) -> impl IntoView {
     }
 }
 
-fn entry(e: Entry) -> impl IntoView {
+fn entry(e: Entry, review: bool) -> impl IntoView {
+    let id = e.id;
     view! {
         <li class="entry" class:unverified=e.unverified class:unreviewed=!e.reviewed>
-            <div class="head">
-                <span class="date">{e.date}</span>
-                {e.payee.map(|p| view! { <span class="payee">{p}</span> })}
-                {e.narration.map(|n| view! { <span class="narration">{n}</span> })}
-                {e.unverified.then(|| view! { <span class="badge unverified">"未對帳"</span> })}
-                {(!e.reviewed).then(|| view! { <span class="badge unreviewed">"未確認"</span> })}
-            </div>
-            <ul class="legs">
-                {e
-                    .legs
-                    .into_iter()
-                    .map(|l| {
-                        let href = format!("/journal{}", JournalQuery::account(&l.path));
-                        view! {
-                            <li class="leg" class:focus=l.focus>
-                                <a class="account" href=href>
-                                    {l.label}
-                                </a>
-                                <MoneyText money=l.money />
-                            </li>
-                        }
-                    })
-                    .collect_view()}
-            </ul>
+            <EntryHead entry=e.clone() source=review />
+            <EntryLegs legs=e.legs />
+            {review.then(|| view! { <ReviewControls id /> })}
         </li>
     }
+}
+
+/// Date, payee, note and the states a record is in.
+#[component]
+pub fn EntryHead(
+    entry: Entry,
+    /// Show where it came from.
+    #[prop(optional)]
+    source: bool,
+) -> impl IntoView {
+    let e = entry;
+    let source = source.then(|| {
+        let text = match e.source {
+            Source::Import => "對帳單",
+            Source::Tiantian => "天天記帳",
+            Source::Manual => "手動",
+        };
+        view! { <span class="badge source">{text}</span> }
+    });
+    view! {
+        <div class="head">
+            <span class="date">{e.date}</span>
+            {e.payee.map(|p| view! { <span class="payee">{p}</span> })}
+            {e.narration.map(|n| view! { <span class="narration">{n}</span> })}
+            {source}
+            {e.unverified.then(|| view! { <span class="badge unverified">"未對帳"</span> })}
+            {(!e.reviewed).then(|| view! { <span class="badge unreviewed">"未確認"</span> })}
+        </div>
+    }
+}
+
+#[component]
+pub fn EntryLegs(legs: Vec<crate::model::Leg>) -> impl IntoView {
+    view! {
+        <ul class="legs">
+            {legs
+                .into_iter()
+                .map(|l| {
+                    let href = format!("/journal{}", JournalQuery::account(&l.path));
+                    view! {
+                        <li class="leg" class:focus=l.focus>
+                            <span class="account">
+                                <a href=href>{l.label}</a>
+                                <OriginNote origin=l.origin />
+                            </span>
+                            <MoneyText money=l.money />
+                        </li>
+                    }
+                })
+                .collect_view()}
+        </ul>
+    }
+}
+
+/// Where a machine-chosen account came from; nothing for a person's choice.
+#[component]
+pub fn OriginNote(origin: Option<Origin>) -> impl IntoView {
+    let text = match origin {
+        Some(Origin::Tiantian) => Some("配對天天記帳"),
+        Some(Origin::Rule) => Some("對應規則"),
+        Some(Origin::Fallback) => Some("未分類"),
+        Some(Origin::Manual) | None => None,
+    };
+    text.map(|t| view! { <span class="origin">{t}</span> })
 }

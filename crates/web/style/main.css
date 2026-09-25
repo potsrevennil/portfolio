@@ -411,13 +411,25 @@ details.group > summary.row.section {
   font-weight: 600;
 }
 
-.leg a.account {
+.leg .account a {
   color: inherit;
   text-decoration: none;
 }
 
-.leg a.account:hover {
+.leg .account a:hover {
   text-decoration: underline;
+}
+
+/* How a machine chose the account: small, beside the name it explains. */
+.origin {
+  margin-left: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.origin::before {
+  content: "·";
+  margin-right: 0.3rem;
 }
 
 .pager {
@@ -428,4 +440,193 @@ details.group > summary.row.section {
 
 .pager a[rel="next"] {
   margin-left: auto;
+}
+
+.badge.source {
+  color: var(--accent);
+}
+
+.badge.closed {
+  color: var(--muted);
+}
+
+/* The queue's size beside its link. */
+.count-badge {
+  display: inline-block;
+  min-width: 1.4em;
+  margin-left: 0.3rem;
+  padding: 0 0.35rem;
+  border-radius: 0.7em;
+  background: var(--pending);
+  color: var(--bg);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.entry .actions {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.3rem 0 0 1rem;
+}
+
+.entry .actions form {
+  margin: 0;
+}
+
+.review button,
+.edit button,
+.manual button,
+.accounts button {
+  font: inherit;
+  padding: 0.2rem 0.8rem;
+}
+
+.review a,
+.edit a,
+.manual a {
+  color: var(--accent);
+}
+
+.pairings {
+  margin: 0.8rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--pending);
+  border-radius: 0.4rem;
+}
+
+.pairings h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.pairings > ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.choice {
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.choice .line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.75rem;
+  font-weight: 600;
+}
+
+.choice .chosen {
+  color: var(--pending);
+  margin: 0.2rem 0;
+}
+
+.candidates {
+  list-style: none;
+  padding: 0;
+}
+
+.candidates label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 0.5rem;
+  padding: 0.3rem 0;
+  cursor: pointer;
+}
+
+.candidates .legs {
+  grid-column: 2;
+}
+
+.field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0.5rem 0;
+  color: var(--muted);
+}
+
+.field input,
+.field select,
+.legs-edit input,
+.legs-edit select {
+  font: inherit;
+  max-width: 100%;
+}
+
+/* Narrow screens: the table scrolls inside itself, the page does not. */
+.edit form {
+  overflow-x: auto;
+}
+
+.legs-edit {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+}
+
+.legs-edit th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: normal;
+}
+
+.legs-edit td {
+  padding: 0.2rem 0.4rem 0.2rem 0;
+}
+
+.legs-edit input[inputmode="decimal"] {
+  width: 8rem;
+  text-align: right;
+}
+
+input.currency {
+  width: 4.5rem;
+}
+
+.submit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+}
+
+.history ol {
+  padding-left: 1.2rem;
+  color: var(--muted);
+}
+
+.done {
+  color: var(--fg);
+}
+
+.account-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.account-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.account-row form {
+  margin: 0 0 0 auto;
+}
+
+.account-row a.name {
+  color: inherit;
+  text-decoration: none;
+}
+
+.account-row.closed a.name {
+  color: var(--muted);
 }

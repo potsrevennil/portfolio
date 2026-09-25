@@ -22,7 +22,7 @@ use sqlx::SqlitePool;
 use tempfile::TempDir;
 use web::{
     journal::{load_journal, JournalList},
-    model::{Journal as Page, JournalQuery, Review},
+    model::{Journal as Page, JournalQuery, Review, Source as TxnSource},
     server,
 };
 
@@ -396,6 +396,7 @@ fn a_query_survives_the_url() {
         text: Some("晚餐 & 100%".into()),
         review: Some(Review::Unreviewed.to_string()),
         unverified: true,
+        source: Some(TxnSource::Tiantian.to_string()),
         page: 3,
     };
     let url = query.to_string();

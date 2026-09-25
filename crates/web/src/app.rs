@@ -7,7 +7,14 @@ use leptos_router::{
     path,
 };
 
-use crate::{balance_sheet::BalanceSheetPage, journal::JournalPage, summary::SummaryPage};
+use crate::{
+    accounts::AccountsPage,
+    balance_sheet::BalanceSheetPage,
+    journal::JournalPage,
+    manual::ManualPage,
+    review::{Actions, EditPage, ReviewCount, ReviewPage},
+    summary::SummaryPage,
+};
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
@@ -32,6 +39,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
+    provide_context(Actions::new());
     view! {
         <Title formatter=|page: String| format!("{page} · 帳簿") />
         <Router>
@@ -40,6 +48,9 @@ pub fn App() -> impl IntoView {
                     <A href="/" exact=true>"總覽"</A>
                     <A href="/balance-sheet">"資產負債表"</A>
                     <A href="/journal">"日記帳"</A>
+                    <A href="/review">"待確認" <ReviewCount /></A>
+                    <A href="/entry">"記一筆"</A>
+                    <A href="/accounts">"帳戶"</A>
                 </nav>
             </header>
             <main>
@@ -47,6 +58,10 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/") view=SummaryPage />
                     <Route path=path!("/balance-sheet") view=BalanceSheetPage />
                     <Route path=path!("/journal") view=JournalPage />
+                    <Route path=path!("/review") view=ReviewPage />
+                    <Route path=path!("/review/:id") view=EditPage />
+                    <Route path=path!("/entry") view=ManualPage />
+                    <Route path=path!("/accounts") view=AccountsPage />
                 </Routes>
             </main>
         </Router>
