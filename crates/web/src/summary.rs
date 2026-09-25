@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use leptos_meta::Title;
 
 use crate::{
-    balance_sheet::{load_balance_sheet, Excluded, MoneyText, UnpricedNote},
+    balance_sheet::{load_balance_sheet, MoneyText, UnpricedNote},
     model::{BalanceSheet, Converted},
 };
 
@@ -36,22 +36,32 @@ pub fn SummaryView(sheet: BalanceSheet) -> impl IntoView {
                 <span class="name">"淨資產"</span>
                 <MoneyText money=sheet.net_worth.money.clone() />
                 <UnpricedNote unpriced=sheet.net_worth.unpriced />
-                <Excluded excluded=sheet.excluded />
             </div>
             <div class="tiles">
-                {sections
-                    .into_iter()
-                    .map(|(label, total)| {
-                        view! {
-                            <div class="tile">
-                                <span class="name">{label}</span>
-                                <MoneyText money=total.money />
-                                <UnpricedNote unpriced=total.unpriced />
-                            </div>
-                        }
-                    })
-                    .collect_view()}
+                {sections.into_iter().map(|(label, total)| view! { <Tile label total /> }).collect_view()}
             </div>
+            // Apart from the tiles above: no total includes it.
+            {sheet
+                .at_cost
+                .map(|s| {
+                    view! {
+                        <div class="tiles aside">
+                            <Tile label=s.label total=s.total />
+                        </div>
+                    }
+                })}
+        </div>
+    }
+}
+
+/// A heading over its total.
+#[component]
+fn Tile(label: String, total: Converted) -> impl IntoView {
+    view! {
+        <div class="tile">
+            <span class="name">{label}</span>
+            <MoneyText money=total.money />
+            <UnpricedNote unpriced=total.unpriced />
         </div>
     }
 }

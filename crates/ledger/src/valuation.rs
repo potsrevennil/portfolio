@@ -63,9 +63,22 @@ impl AtCost {
     }
 
     /// True for a listed account and everything under it.
-    pub fn covers(&self, account: &str) -> bool {
-        self.roots.iter().any(|root| {
-            account.strip_prefix(root.as_str()).is_some_and(|r| r.is_empty() || r.starts_with(':'))
+    pub fn covers(&self, account: &str) -> bool { self.holding(account).is_some() }
+
+    /// The holding `account` belongs to: a listed account holds itself, and
+    /// an account under one belongs to the listed account's child it sits
+    /// in (`Assets:Unlisted:Alpha:Shares` → `Assets:Unlisted:Alpha`).
+    pub fn holding<'a>(&self, account: &'a str) -> Option<&'a str> {
+        self.roots.iter().find_map(|root| {
+            let rest = account.strip_prefix(root.as_str())?;
+            match rest.strip_prefix(':') {
+                None if rest.is_empty() => Some(account),
+                None => None,
+                Some(below) => {
+                    let child = below.split(':').next().unwrap_or(below);
+                    Some(&account[..root.len() + 1 + child.len()])
+                }
+            }
         })
     }
 }
@@ -82,6 +95,16 @@ mod tests {
         assert!(!at_cost.covers("Assets:Unlisted-Other"));
         assert!(!at_cost.covers("Assets:Cash"));
         assert!(!AtCost::default().covers("Assets:Unlisted"));
+    }
+
+    #[test]
+    fn a_holding_is_the_listed_account_or_its_child() {
+        let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\"]\n").unwrap();
+        assert_eq!(at_cost.holding("Assets:Unlisted"), Some("Assets:Unlisted"));
+        assert_eq!(at_cost.holding("Assets:Unlisted:Alpha"), Some("Assets:Unlisted:Alpha"));
+        assert_eq!(at_cost.holding("Assets:Unlisted:Alpha:Shares"), Some("Assets:Unlisted:Alpha"));
+        assert_eq!(at_cost.holding("Assets:Unlisted-Other"), None);
+        assert_eq!(at_cost.holding("Assets:Cash"), None);
     }
 
     #[test]

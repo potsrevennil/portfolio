@@ -1,11 +1,12 @@
-//! 資產 and 負債 as fold-out account trees, and net worth.
+//! Net worth, 資產 and 負債 as fold-out account trees, and the holdings
+//! carried at cost, which no total includes.
 
 use std::collections::BTreeSet;
 
 use leptos::{prelude::*, web_sys::HtmlDetailsElement};
 use leptos_meta::Title;
 
-use crate::model::{BalanceSheet, Converted, Money, Node, Unpriced};
+use crate::model::{BalanceSheet, Converted, Money, Node, Section, Unpriced};
 
 /// Where the open groups are remembered across visits, per browser.
 const OPEN_KEY: &str = "balance-sheet-open";
@@ -41,7 +42,8 @@ pub fn BalanceSheetPage() -> impl IntoView {
 #[component]
 pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
     // Sections start open; the groups under them start folded.
-    let sections: BTreeSet<String> = sheet.sections.iter().map(|s| s.path.clone()).collect();
+    let sections: BTreeSet<String> =
+        sheet.sections.iter().chain(&sheet.at_cost).map(|s| s.path.clone()).collect();
     let open = RwSignal::new(sections.clone());
     // Client only: restore the open groups once, then save every change. The
     // `open` attribute is rendered on the server, and hydration adopts the
@@ -76,38 +78,34 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
                     <button type="button" on:click=move |_| open.set(BTreeSet::new())>"全部收合"</button>
                 </Show>
             </div>
-            <div class="columns">
-                {sheet
-                    .sections
-                    .into_iter()
-                .map(|s| {
-                    let path = s.path.clone();
-                    let is_open = {
-                        let path = path.clone();
-                        move || open.with(|o| o.contains(&path))
-                    };
-                    view! {
-                        <details class="group" open=is_open on:toggle=on_toggle(path, open)>
-                            <summary class="row section">
-                                <span class="marker" aria-hidden="true"></span>
-                                <span class="name">{s.label}</span>
-                                <Figures total=s.total excluded=s.excluded />
-                            </summary>
-                            {s.nodes.into_iter().map(|n| node(n, 0, open)).collect_view()}
-                        </details>
-                    }
-                })
-                    .collect_view()}
-            </div>
             <div class="row net">
                 <span class="name">"淨資產"</span>
                 <span class="figures">
                     <MoneyText money=sheet.net_worth.money />
                     <UnpricedNote unpriced=sheet.net_worth.unpriced />
-                    <Excluded excluded=sheet.excluded />
                 </span>
             </div>
+            <div class="columns">
+                {sheet.sections.into_iter().map(|s| section(s, open)).collect_view()}
+            </div>
+            {sheet.at_cost.map(|s| view! { <div class="cost-section">{section(s, open)}</div> })}
         </div>
+    }
+}
+
+/// A section heading over its rows; it folds.
+fn section(s: Section, open: RwSignal<BTreeSet<String>>) -> impl IntoView {
+    let path = s.path.clone();
+    let is_open = is_open(path.clone(), open);
+    view! {
+        <details class="group" open=is_open on:toggle=on_toggle(path, open)>
+            <summary class="row section">
+                <span class="marker" aria-hidden="true"></span>
+                <span class="name">{s.label}</span>
+                <Figures total=s.total />
+            </summary>
+            {s.nodes.into_iter().map(|n| node(n, 0, open)).collect_view()}
+        </details>
     }
 }
 
@@ -129,22 +127,14 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         view! {
             <span class="marker" aria-hidden="true"></span>
             <span class="name">{n.label.clone()}</span>
-            <Figures
-                total=n.total.clone()
-                native=n.native.clone()
-                at_cost=n.at_cost
-                excluded=n.excluded.clone()
-            />
+            <Figures total=n.total.clone() native=n.native.clone() />
         }
     };
     if n.children.is_empty() {
         return view! { <div class=level.clone() style=indent>{row()}</div> }.into_any();
     }
     let path = n.path.clone();
-    let is_open = {
-        let path = path.clone();
-        move || open.with(|o| o.contains(&path))
-    };
+    let is_open = is_open(path.clone(), open);
     let head = row();
     let children = n.children.into_iter().map(|c| node(c, depth + 1, open)).collect_view();
     view! {
@@ -154,6 +144,11 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         </details>
     }
     .into_any()
+}
+
+/// Whether the group at `path` is open, tracked for the `open` attribute.
+fn is_open(path: String, open: RwSignal<BTreeSet<String>>) -> impl Fn() -> bool {
+    move || open.with(|o| o.contains(&path))
 }
 
 /// Keeps the fold state in step with a `<details>` the reader just toggled.
@@ -179,12 +174,6 @@ fn Figures(
     /// The account's own foreign balance, the figure its statement shows.
     #[prop(default = Vec::new())]
     native: Vec<Money>,
-    /// A cost rather than a valuation, so it is labelled as one.
-    #[prop(default = false)]
-    at_cost: bool,
-    /// The at-cost holdings this total leaves out.
-    #[prop(default = None)]
-    excluded: Option<Converted>,
 ) -> impl IntoView {
     let native = (!native.is_empty()).then(|| {
         let text = native.iter().map(ToString::to_string).collect::<Vec<_>>().join(" · ");
@@ -195,22 +184,8 @@ fn Figures(
             <MoneyText money=total.money />
             <UnpricedNote unpriced=total.unpriced />
             {native}
-            {at_cost.then(|| view! { <span class="at-cost">"成本，未計入總額"</span> })}
-            <Excluded excluded=excluded />
         </span>
     }
-}
-
-/// What a total leaves out because it is held at cost.
-#[component]
-pub fn Excluded(excluded: Option<Converted>) -> impl IntoView {
-    excluded.map(|c| {
-        view! {
-            <span class="at-cost">
-                {format!("另有成本 {}", c.money)} <UnpricedNote unpriced=c.unpriced />
-            </span>
-        }
-    })
 }
 
 #[component]

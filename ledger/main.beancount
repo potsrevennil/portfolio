@@ -66,7 +66,7 @@ option "inferred_tolerance_default" "*:0.01"
 ;; Jump straight to holdings filtered to the securities accounts. Fava's 持倉
 ;; otherwise lists every cash account too, which buries the few positions that
 ;; are worth looking at. One link per broker once those accounts exist.
-2000-01-01 custom "fava-sidebar-link" "持股" "/personal-ledger/holdings/?filter=account:\"Assets:Securities\""
+2000-01-01 custom "fava-sidebar-link" "持股" "/personal-ledger/holdings/?filter=account:\"Assets:Broker:Cathay\""
 
 ;; Relabel account names in Chinese. Beancount names must be ASCII and Fava
 ;; cannot alias them, so this extension's JS swaps them in the page on every
