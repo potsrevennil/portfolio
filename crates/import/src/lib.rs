@@ -2,5 +2,6 @@
 //! the ledger already holds and gated by the balance check.
 
 pub mod bank;
+pub mod broker;
 pub mod matcher;
 pub mod plan;

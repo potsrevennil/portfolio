@@ -1,5 +1,6 @@
 //! The invariant gate: every balance assertion must equal the balance the
-//! postings compute, per account, currency and period. Run after the journal
+//! postings compute, per account, currency and period, and every holding
+//! assertion the balance the broker records replay to. Run after the journal
 //! load and after every import, inside the writer's transaction, so a drifting
 //! ledger never commits.
 
@@ -8,18 +9,29 @@ use std::{collections::BTreeMap, fmt};
 use anyhow::Result;
 use chrono::NaiveDate;
 use ledger_types::currency::Currency;
+use portfolio::broker::{accumulate, BrokerRecord};
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
 use super::{
     assertions::{self, BalanceAssertion},
+    broker,
+    holdings::{self, HoldingAssertion},
     query::{in_subtree, AccountBalance, AccountType, LedgerData},
 };
 
-/// One figure that disagrees with the postings.
+/// An outside figure: a balance held to the postings, or a holding held to
+/// the broker records.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Figure {
+    Balance(BalanceAssertion),
+    Holding(HoldingAssertion),
+}
+
+/// One figure that disagrees with what the ledger computes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Mismatch {
-    pub assertion: BalanceAssertion,
+    pub figure: Figure,
     /// The day whose balance is compared: the day before `period_start` for
     /// the opening, `period_end` for the closing.
     pub as_of: NaiveDate,
@@ -99,12 +111,25 @@ impl fmt::Display for CheckReport {
     }
 }
 
+impl fmt::Display for Figure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Figure::Balance(a) => write!(f, "{a}"),
+            Figure::Holding(a) => write!(f, "{a}"),
+        }
+    }
+}
+
 impl fmt::Display for Mismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let basis = match self.figure {
+            Figure::Balance(_) => "postings",
+            Figure::Holding(_) => "broker records",
+        };
         write!(
             f,
-            "MISMATCH {}: at end of {} expected {}, postings sum to {} (off by {})",
-            self.assertion,
+            "MISMATCH {}: at end of {} expected {}, {basis} sum to {} (off by {})",
+            self.figure,
             self.as_of,
             self.expected,
             self.computed,
@@ -124,12 +149,16 @@ impl fmt::Display for Unchecked {
     }
 }
 
-/// Checks every recorded assertion against the postings visible on `conn`,
-/// including the caller's uncommitted writes.
+/// Checks every recorded assertion against the postings and broker records
+/// visible on `conn`, including the caller's uncommitted writes.
 pub async fn check(conn: &mut SqliteConnection) -> Result<CheckReport> {
     let data = LedgerData::load_from(conn).await?;
     let assertions = assertions::load(conn).await?;
-    Ok(check_data(&data, &assertions))
+    let mut report = check_data(&data, &assertions);
+    let records = broker::load(conn).await?;
+    let holdings = holdings::load(conn).await?;
+    check_holdings(&mut report, &records, &holdings);
+    Ok(report)
 }
 
 /// [`check`], failing on any mismatch with the report as the error.
@@ -154,7 +183,7 @@ pub fn check_data(data: &LedgerData, assertions: &[BalanceAssertion]) -> CheckRe
                 if computed == expected {
                     None
                 } else {
-                    Some(Mismatch { assertion: a.clone(), as_of, expected, computed })
+                    Some(Mismatch { figure: Figure::Balance(a.clone()), as_of, expected, computed })
                 }
             })
             .collect();
@@ -186,6 +215,50 @@ pub fn check_data(data: &LedgerData, assertions: &[BalanceAssertion]) -> CheckRe
         })
         .collect();
     report
+}
+
+/// The pure part of [`check`] for holdings: each figure against the replay of
+/// its account's broker records through that day. Folded into the same
+/// per-account summary as balance figures.
+pub fn check_holdings(
+    report: &mut CheckReport,
+    records: &BTreeMap<String, Vec<BrokerRecord>>,
+    holdings: &[HoldingAssertion],
+) {
+    let mut by_account: BTreeMap<&str, Vec<&HoldingAssertion>> = BTreeMap::new();
+    for a in holdings {
+        by_account.entry(&a.account).or_default().push(a);
+    }
+    let none = Vec::new();
+    for (account, mut assertions) in by_account {
+        assertions.sort_by_key(|a| a.as_of);
+        let mut lines: Vec<&BrokerRecord> = records.get(account).unwrap_or(&none).iter().collect();
+        lines.sort_by_key(|r| r.settle_date);
+
+        // One walk per account: the figures are checked in date order against
+        // the running balance, not replayed from the start for each.
+        let mut balances = BTreeMap::new();
+        let mut next = 0;
+        for a in assertions {
+            while lines.get(next).is_some_and(|r| r.settle_date <= a.as_of) {
+                accumulate(&mut balances, lines[next]);
+                next += 1;
+            }
+            let computed = balances.get(&a.commodity).copied().unwrap_or_default();
+            let summary = report.accounts.entry(a.account.clone()).or_default();
+            summary.checked += 1;
+            summary.vouched_through = summary.vouched_through.max(Some(a.as_of));
+            if computed != a.quantity {
+                summary.failed += 1;
+                report.mismatches.push(Mismatch {
+                    figure: Figure::Holding(a.clone()),
+                    as_of: a.as_of,
+                    expected: a.quantity,
+                    computed,
+                });
+            }
+        }
+    }
 }
 
 /// An assertion on an account covers its subtree, as a Beancount `balance`

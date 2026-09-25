@@ -23,4 +23,5 @@ toml          = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+rust_decimal_macros = { workspace = true }
+tempfile            = { workspace = true }

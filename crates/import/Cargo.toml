@@ -11,6 +11,7 @@ csv                 = { workspace = true }
 db                  = { workspace = true }
 ledger              = { workspace = true }
 ledger-types        = { workspace = true }
+portfolio           = { workspace = true }
 rust_decimal        = { workspace = true }
 rust_decimal_macros = { workspace = true }
 toml                = { workspace = true }
