@@ -350,7 +350,12 @@ async fn an_edit_is_refused_by_name() {
         leg(Some(rows[1].0), "Expenses:Uncategorized", "400"),
     ])
     .await;
-    assert!(gate.contains("改了會對不上對帳單"), "{gate}");
+    // One balance, in words, and what to do: not the whole check report.
+    assert_eq!(
+        gate.trim_start_matches("error running server function: "),
+        "沒有儲存：這筆會讓「活存」2024-02-29 的餘額變成 12400 TWD，但你盤點記那天是 12300 \
+         TWD。2024-02-29 以前的帳已經對過了：這筆可能已經記過，或者日期該在 2024-02-29 之後。"
+    );
     let amount = refused(vec![leg(Some(rows[0].0), "Assets:Bank:Savings", "五百")]).await;
     assert!(amount.contains("金額不對：五百"), "{amount}");
     let stranger = refused(vec![
@@ -501,6 +506,55 @@ async fn a_manual_entry_is_an_ordinary_reviewed_transaction() {
         let error = enter(category, counter, amount).await.unwrap_err().to_string();
         assert!(error.contains(refusal), "{category}/{counter}/{amount}: {error}");
     }
+
+    // Cash spent on a day a count already closed: the count says what the
+    // cash held, so the spend is either in it already or belongs later.
+    let counted = call(&pool, || {
+        enter_manual(
+            "2024-01-20".into(),
+            "260".into(),
+            "TWD".into(),
+            "Assets:Cash".into(),
+            Some("Expenses:Food".into()),
+            None,
+            None,
+        )
+    })
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(counted.contains("「現金」2024-01-31 的餘額變成 740 TWD"), "{counted}");
+    assert!(counted.contains("日期該在 2024-01-31 之後"), "{counted}");
+    assert!(!counted.contains("balance check"), "{counted}");
+}
+
+/// A figure the ledger already disagreed with holds up nothing else: a write
+/// is refused only for a balance it breaks.
+#[tokio::test]
+async fn a_mismatch_elsewhere_does_not_block_a_write() {
+    let (_dir, pool) = ledger().await;
+    sqlx::query(
+        "INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) SELECT \
+         id, 'TWD', 'statement', '2024-03-31', '1' FROM accounts WHERE path = 'Liabilities:Card'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let fee = id_of(&pool, FEE).await;
+    let rows = legs(&pool, fee).await;
+    save(
+        &pool,
+        fee,
+        FEE,
+        vec![
+            leg(Some(rows[0].0), "Assets:Bank:Savings", "-500"),
+            leg(Some(rows[1].0), "Expenses:Food", "500"),
+        ],
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(reviewed(&pool, fee).await);
 }
 
 // --- Closing accounts -------------------------------------------------------
@@ -592,7 +646,13 @@ async fn the_review_pages_render() {
     position(&visible(&site.page("/review/999").await), "讀取失敗：查無交易 999");
 
     let entry = site.page("/entry").await;
-    assert!(entry.contains(r#"name="category""#) && entry.contains(r#"name="counter""#), "{entry}");
+    // A spend by default: an account to pay from and a category, nothing else.
+    assert!(
+        entry.contains(r#"name="category""#) && !entry.contains(r#"name="counter""#),
+        "{entry}"
+    );
+    position(&visible(&entry), "支出 收入 轉帳");
+    position(&visible(&entry), "付款帳戶");
     let accounts = site.page("/accounts").await;
     position(&visible(&accounts), "舊錢包 結清");
     // Every account, as a tree: the roots open, the groups under them folded.

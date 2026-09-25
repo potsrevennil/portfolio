@@ -62,14 +62,27 @@ pub fn ManualPage() -> impl IntoView {
     }
 }
 
+/// What the entry is: it decides which accounts the form asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// Paid from an account, into a spending category.
+    Spend,
+    /// Received into an account, from an income category.
+    Income,
+    /// Moved from one account to another.
+    Transfer,
+}
+
 #[component]
 pub fn ManualEntry(form: ManualForm) -> impl IntoView {
     let enter = ServerAction::<EnterManual>::new();
+    let kind = RwSignal::new(Kind::Spend);
     let of = |kinds: &[AccountKind]| -> Vec<AccountChoice> {
         form.accounts.iter().filter(|a| kinds.contains(&a.kind)).cloned().collect()
     };
     let held = of(&[AccountKind::Asset, AccountKind::Liability]);
-    let categories = of(&[AccountKind::Expense, AccountKind::Income]);
+    let spending = of(&[AccountKind::Expense]);
+    let income = of(&[AccountKind::Income]);
     let entered = move || {
         enter.value().get().and_then(Result::ok).map(|id| {
             view! {
@@ -79,27 +92,51 @@ pub fn ManualEntry(form: ManualForm) -> impl IntoView {
             }
         })
     };
+    let choice = move |value: Kind, text: &'static str| {
+        view! {
+            <label>
+                <input
+                    type="radio"
+                    name="kind"
+                    checked=move || kind.get() == value
+                    on:change=move |_| kind.set(value)
+                />
+                {text}
+            </label>
+        }
+    };
+    // Only the accounts this kind of entry needs; the others are not sent.
+    let accounts = move || {
+        let (from, other, other_name, other_list) = match kind.get() {
+            Kind::Spend => ("付款帳戶", "類別", "category", spending.clone()),
+            Kind::Income => ("收款帳戶", "類別", "category", income.clone()),
+            Kind::Transfer => ("從", "轉到", "counter", held.clone()),
+        };
+        view! {
+            <label class="field">
+                {from} <AccountSelect name="account".to_string() accounts=held.clone() blank="請選" />
+            </label>
+            <label class="field">
+                {other} <AccountSelect name=other_name.to_string() accounts=other_list blank="請選" />
+            </label>
+        }
+    };
     view! {
         <div class="journal manual">
             <ActionForm action=enter>
+                <div class="kinds">
+                    {choice(Kind::Spend, "支出")} {choice(Kind::Income, "收入")}
+                    {choice(Kind::Transfer, "轉帳")}
+                </div>
                 <div class="form">
                     <label class="field">"日期" <input type="date" name="date" value=form.today required /></label>
                     <label class="field">
                         "金額" <input type="text" inputmode="decimal" name="amount" required />
                     </label>
                     <label class="field">"幣別" <input type="text" class="currency" name="currency" value="TWD" /></label>
-                    <label class="field">
-                        "帳戶" <AccountSelect name="account".to_string() accounts=held.clone() blank="請選" />
-                    </label>
-                    <label class="field">
-                        "類別" <AccountSelect name="category".to_string() accounts=categories />
-                    </label>
-                    <label class="field">
-                        "對方帳戶" <AccountSelect name="counter".to_string() accounts=held />
-                    </label>
+                    {accounts}
                     <label class="field">"備註" <input type="text" name="note" /></label>
                 </div>
-                <p class="note">"類別和對方帳戶選一個：支出從帳戶扣，收入進帳戶，轉帳從帳戶轉到對方帳戶。金額填負的就反過來。"</p>
                 <button type="submit">"記下"</button>
             </ActionForm>
             {entered}

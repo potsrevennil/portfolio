@@ -340,6 +340,12 @@ async fn pick_a_pairing() {
 async fn enter_cash_by_hand() {
     let j = Journey::start().await;
     j.open("/entry").await;
+    // 轉帳 asks where the money goes instead of a category, and back.
+    let kinds = j.all(".kinds input").await;
+    kinds[2].click().await.unwrap();
+    j.find(r#"select[name="counter"]"#).await;
+    j.until_count(r#"select[name="category"]"#, 0).await;
+    kinds[0].click().await.unwrap();
     j.fill(r#"input[name="amount"]"#, "85").await;
     j.find(r#"select[name="account"]"#).await.select_by_value("Assets:Cash").await.unwrap();
     j.find(r#"select[name="category"]"#).await.select_by_value("Expenses:Food").await.unwrap();

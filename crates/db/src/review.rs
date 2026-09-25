@@ -1,8 +1,8 @@
 //! What the review queue writes: an edit or split of a transaction's legs in
 //! place, a confirmation, and a hand-entered transaction. Each commits only
-//! with its `transaction_events` row and only if the balance gate still
-//! passes, as an import does. Refusals are worded for the page that shows
-//! them.
+//! with its `transaction_events` row and only if it breaks no balance a
+//! statement, 天天記帳 or a count vouches for. Refusals are worded for the page
+//! that shows them.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -14,7 +14,8 @@ use rust_decimal::Decimal;
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::{
-    check,
+    assertions::AssertionSource,
+    check::{self, Figure, Mismatch},
     events::{self, Change, EventKind},
     import::Origin,
     query::AccountType,
@@ -126,18 +127,58 @@ fn balanced(legs: impl IntoIterator<Item = (Decimal, Currency)>) -> Result<()> {
     }
 }
 
-/// Commits `db` only if the balance gate passes on it.
-async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<()> {
-    if let Err(e) = check::gate(&mut db).await {
-        bail!("改了會對不上對帳單，沒有儲存：{e:#}");
+/// The figures the ledger disagrees with before a write: a write is held
+/// only to the ones it breaks, not to one already broken elsewhere.
+async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
+    Ok(check::check(db).await?.mismatches)
+}
+
+/// Commits `db` unless the write broke a balance an outside figure vouches
+/// for; then it says which one, and what to do, in the reader's words.
+async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>, before: Vec<Mismatch>) -> Result<()> {
+    let after = check::check(&mut db).await?;
+    if let Some(broken) = after.mismatches.iter().find(|m| !before.contains(m)) {
+        let refusal = refusal(&mut db, broken).await?;
+        bail!(refusal);
     }
     db.commit().await?;
     Ok(())
 }
 
+async fn refusal(db: &mut SqliteConnection, m: &Mismatch) -> Result<String> {
+    let account = match &m.figure {
+        Figure::Balance(a) => &a.account,
+        Figure::Holding(h) => &h.account,
+    };
+    let label: String = sqlx::query_scalar("SELECT label FROM accounts WHERE path = ?")
+        .bind(account)
+        .fetch_optional(db)
+        .await?
+        .unwrap_or_else(|| account.clone());
+    let day = m.as_of;
+    Ok(match &m.figure {
+        Figure::Balance(a) => {
+            let who = match a.source {
+                AssertionSource::Statement => "對帳單",
+                AssertionSource::Tiantian => "天天記帳",
+                AssertionSource::Counted => "你盤點",
+            };
+            format!(
+                "沒有儲存：這筆會讓「{label}」{day} 的餘額變成 {} {c}，但{who}記那天是 {} \
+                 {c}。{day} 以前的帳已經對過了：這筆可能已經記過，或者日期該在 {day} 之後。",
+                m.computed.normalize(),
+                m.expected.normalize(),
+                c = a.currency,
+            )
+        }
+        Figure::Holding(_) => format!("沒有儲存：這筆會對不上「{label}」{day} 的持股。"),
+    })
+}
+
 /// Rewrites a transaction's legs and note in place.
 pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
     let mut db = pool.begin().await?;
+    let before_check = baseline(&mut db).await?;
     let before = events::snapshot(&mut db, id).await?;
     let rows: Vec<PostingRow> = sqlx::query_as(
         "SELECT p.id, a.path, p.amount, p.currency FROM postings p
@@ -227,7 +268,7 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
     if edit.confirm {
         confirm_in(&mut db, id).await?;
     }
-    gated(db).await
+    gated(db, before_check).await
 }
 
 /// Marks a transaction reviewed as it stands. Confirming a reviewed one
@@ -258,6 +299,7 @@ async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
 /// Books a hand-entered transaction, reviewed. Returns its id.
 pub async fn enter(pool: &SqlitePool, m: &Manual) -> Result<i64> {
     let mut db = pool.begin().await?;
+    let before = baseline(&mut db).await?;
     if m.amount.is_zero() {
         bail!("金額不可為 0");
     }
@@ -314,6 +356,6 @@ pub async fn enter(pool: &SqlitePool, m: &Manual) -> Result<i64> {
     }
     let after = events::snapshot(&mut db, id).await?;
     events::record(&mut db, id, EventKind::Entered, &Change { before: None, after }).await?;
-    gated(db).await?;
+    gated(db, before).await?;
     Ok(id)
 }

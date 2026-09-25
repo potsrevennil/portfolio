@@ -614,3 +614,16 @@ input.currency {
 .account-row.closed a.name {
   color: var(--muted);
 }
+
+/* 支出 / 收入 / 轉帳: which accounts the entry asks for. */
+.manual .kinds {
+  display: flex;
+  gap: 1.2rem;
+  padding: 0.6rem 0 0.2rem;
+}
+
+.manual .kinds label {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
