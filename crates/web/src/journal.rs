@@ -7,6 +7,7 @@ use leptos_router::{components::Form, hooks::use_query_map};
 
 use crate::{
     balance_sheet::MoneyText,
+    error::LoadFailed,
     model::{AccountChoice, Entry, Journal, JournalQuery, Review},
 };
 
@@ -42,7 +43,7 @@ pub fn JournalPage() -> impl IntoView {
                         }
                             .into_any()
                     }
-                    Err(e) => view! { <p class="note error">{crate::error::load_failed(&e)}</p> }.into_any(),
+                    Err(e) => view! { <LoadFailed error=e /> }.into_any(),
                 }
             })}
         </Suspense>
