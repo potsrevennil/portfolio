@@ -228,6 +228,17 @@ impl Fixture {
         .await?)
     }
 
+    /// What the transaction booked on `date` narrates.
+    async fn narration(&self, date: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT narration FROM transactions WHERE date = ? AND coalesce(payee, '') <> \
+             'Opening balance'",
+        )
+        .bind(date)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     async fn cash(&self) -> Result<Decimal> {
         let amounts: Vec<String> = sqlx::query_scalar(
             "SELECT p.amount FROM postings p JOIN accounts a ON a.id = p.account_id
@@ -331,11 +342,18 @@ async fn a_bank_record_relabels_the_line_already_imported() -> Result<()> {
     ]);
     // Nothing of the cross-account transfer was booked by the record.
     assert_eq!(f.legs_on("2026-01-22").await?.len(), 4);
+    // Each record's own 備註 reaches the line it relabelled, beside what the
+    // bank called it.
+    assert_eq!(f.narration("2026-01-20").await?.as_deref(), Some("咖啡"), "{report}");
+    assert_eq!(f.narration("2026-01-21").await?.as_deref(), Some("無卡提款 · 領現"), "{report}");
 
     let again = f.import_tiantian().await?;
     assert_eq!(again.counts.known, 3, "{again}");
     assert_eq!(f.transactions().await?, before + 1);
     assert_eq!(f.cash().await?, dec!(730));
+    // Nothing was said twice by the second run.
+    assert_eq!(f.narration("2026-01-20").await?.as_deref(), Some("咖啡"), "{again}");
+    assert_eq!(f.narration("2026-01-21").await?.as_deref(), Some("無卡提款 · 領現"), "{again}");
     Ok(())
 }
 

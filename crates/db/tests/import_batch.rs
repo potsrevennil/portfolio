@@ -138,3 +138,26 @@ async fn verifying_without_a_date_moves_nothing() {
     assert_eq!(date, "2026-09-29");
     assert_eq!(tagged_accounts(&pool).await, [OTHER]);
 }
+
+/// A memo is text, not a pattern. `提%` is not already in `提款`, though a LIKE
+/// guard built from it would have matched and dropped the memo.
+#[tokio::test]
+async fn a_memo_with_wildcards_is_not_mistaken_for_one_already_there() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let url = format!("sqlite:{}", dir.path().join("narration.db").display());
+    let (pool, id) = transfer(db::init_db(&url).await.expect("db")).await;
+    let mut db = pool.acquire().await.expect("connection");
+    for text in ["提款", "提%", "提%"] {
+        import_batch::append_narration(&mut db, id, text).await.expect("narrate");
+    }
+    drop(db);
+
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT narration FROM transactions WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("the record");
+    // The bank's wording, then the memo once: the repeat adds nothing.
+    assert_eq!(stored.as_deref(), Some("提款 · 提%"));
+}

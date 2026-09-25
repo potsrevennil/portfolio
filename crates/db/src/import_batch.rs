@@ -326,8 +326,10 @@ pub async fn append_narration(
     text: &str,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE transactions SET narration = iif(coalesce(narration, '') = '', ?1, narration || ' \
-         · ' || ?1) WHERE id = ?2 AND coalesce(narration, '') NOT LIKE '%' || ?1 || '%'",
+        // instr, not LIKE: a memo is text, and `%` or `_` in it would make a
+        // LIKE pattern that matches the wrong thing.
+        "UPDATE transactions SET narration = CASE WHEN coalesce(narration, '') = '' THEN ?1 ELSE \
+         narration || ' · ' || ?1 END WHERE id = ?2 AND instr(coalesce(narration, ''), ?1) = 0",
     )
     .bind(text)
     .bind(transaction_id)
