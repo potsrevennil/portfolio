@@ -414,6 +414,15 @@ fn a_query_survives_the_url() {
 // --- Through the router ----------------------------------------------------
 
 #[tokio::test]
+async fn a_refused_filter_is_reported_in_the_reader_s_words() {
+    let site = site().await;
+    let text = visible(&site.page("/journal?review=unreviwed").await);
+    position(&text, "讀取失敗：不明的確認狀態：unreviwed");
+    // The framework's English about the call itself is not the reader's business.
+    assert!(!text.contains("server function"), "{text}");
+}
+
+#[tokio::test]
 async fn the_journal_route_renders_with_its_filter() {
     let site = site().await;
     let html = site.page("/journal?account=Assets%3ASplit&review=unreviewed").await;

@@ -18,7 +18,7 @@ pub fn SummaryPage() -> impl IntoView {
             {move || Suspend::new(async move {
                 match sheet.await {
                     Ok(sheet) => view! { <SummaryView sheet /> }.into_any(),
-                    Err(e) => view! { <p class="note error">{format!("讀取失敗：{e}")}</p> }.into_any(),
+                    Err(e) => view! { <p class="note error">{crate::error::load_failed(&e)}</p> }.into_any(),
                 }
             })}
         </Suspense>

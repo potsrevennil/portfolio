@@ -42,7 +42,7 @@ pub fn JournalPage() -> impl IntoView {
                         }
                             .into_any()
                     }
-                    Err(e) => view! { <p class="note error">{format!("讀取失敗：{e}")}</p> }.into_any(),
+                    Err(e) => view! { <p class="note error">{crate::error::load_failed(&e)}</p> }.into_any(),
                 }
             })}
         </Suspense>
