@@ -602,29 +602,13 @@ input.currency {
   color: var(--fg);
 }
 
-.account-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.account-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-  padding-top: 0.35rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid var(--line);
-}
-
 .account-row form {
   margin: 0 0 0 auto;
 }
 
-.account-row a.name {
-  color: inherit;
-  text-decoration: none;
+.account-row button {
+  font-size: 0.85rem;
+  padding: 0.1rem 0.6rem;
 }
 
 .account-row.closed a.name {

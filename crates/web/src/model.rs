@@ -311,6 +311,40 @@ pub struct AccountChoice {
     pub closed: bool,
 }
 
+/// An account with the accounts under it, as the 帳戶 page folds them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountNode {
+    pub account: AccountChoice,
+    pub children: Vec<AccountNode>,
+}
+
+/// The chart as a forest of roots.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccountTree(pub Vec<AccountNode>);
+
+/// From accounts listed parents first, as the chart sorts them.
+impl FromIterator<AccountChoice> for AccountTree {
+    fn from_iter<I: IntoIterator<Item = AccountChoice>>(accounts: I) -> Self {
+        fn place(nodes: &mut Vec<AccountNode>, account: AccountChoice) {
+            let parent = nodes.last_mut().filter(|last| {
+                account
+                    .path
+                    .strip_prefix(last.account.path.as_str())
+                    .is_some_and(|r| r.starts_with(':'))
+            });
+            match parent {
+                Some(parent) => place(&mut parent.children, account),
+                None => nodes.push(AccountNode { account, children: Vec::new() }),
+            }
+        }
+        let mut roots = Vec::new();
+        for account in accounts {
+            place(&mut roots, account);
+        }
+        AccountTree(roots)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Leg {
     /// The posting's id: what an edit names it by.
@@ -442,6 +476,39 @@ mod tests {
         let dust = money(dec!(-0.001), Currency::TWD);
         assert_eq!(dust.to_string(), "0 TWD");
         assert!(!dust.is_negative());
+    }
+
+    #[test]
+    fn accounts_nest_under_their_parents_only() {
+        let choice = |path: &str| AccountChoice {
+            path: path.into(),
+            label: path.into(),
+            depth: path.matches(':').count(),
+            kind: AccountKind::Asset,
+            closed: false,
+        };
+        let tree: AccountTree =
+            ["Assets", "Assets:Bank", "Assets:Bank:FX", "Assets:Banker", "Liabilities"]
+                .into_iter()
+                .map(choice)
+                .collect();
+        let shape: Vec<(String, Vec<String>)> = tree
+            .0
+            .iter()
+            .flat_map(|root| &root.children)
+            .map(|n| {
+                (
+                    n.account.path.clone(),
+                    n.children.iter().map(|c| c.account.path.clone()).collect(),
+                )
+            })
+            .collect();
+        // A shared prefix is not a parent.
+        assert_eq!(shape, [
+            ("Assets:Bank".to_string(), vec!["Assets:Bank:FX".to_string()]),
+            ("Assets:Banker".to_string(), vec![]),
+        ]);
+        assert_eq!(tree.0.len(), 2);
     }
 
     #[test]

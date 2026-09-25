@@ -506,7 +506,7 @@ async fn a_manual_entry_is_an_ordinary_reviewed_transaction() {
 // --- Closing accounts -------------------------------------------------------
 
 #[tokio::test]
-async fn closing_an_account_hides_it_and_leaves_an_event() {
+async fn closing_an_account_marks_it_and_leaves_an_event() {
     let (_dir, pool) = ledger().await;
     call(&pool, || close_account("Assets:Old-Wallet".into(), Some("不用了".into()))).await.unwrap();
     let (closed, event, note): (bool, String, Option<String>) = sqlx::query_as(
@@ -518,13 +518,13 @@ async fn closing_an_account_hides_it_and_leaves_an_event() {
     .unwrap();
     assert_eq!((closed, event.as_str(), note.as_deref()), (true, "closed", Some("不用了")));
 
-    // Gone from the pickers and the list, unless closed ones are asked for.
+    // Gone from the pickers; still in the 帳戶 tree, marked closed.
     let journal = call(&pool, || load_journal(JournalQuery::default())).await.unwrap();
     assert!(!journal.accounts.iter().any(|a| a.path == "Assets:Old-Wallet"));
-    let open = call(&pool, || load_accounts(false)).await.unwrap();
-    assert!(!open.iter().any(|a| a.path == "Assets:Old-Wallet"));
-    let all = call(&pool, || load_accounts(true)).await.unwrap();
-    assert!(all.iter().any(|a| a.path == "Assets:Old-Wallet" && a.closed));
+    let tree = call(&pool, load_accounts).await.unwrap();
+    let assets = tree.0.iter().find(|n| n.account.path == "Assets").unwrap();
+    let wallet = assets.children.iter().find(|n| n.account.path == "Assets:Old-Wallet").unwrap();
+    assert!(wallet.account.closed);
     // Its history still filters by it.
     let filtered =
         call(&pool, || load_journal(JournalQuery::account("Assets:Old-Wallet"))).await.unwrap();
@@ -593,6 +593,14 @@ async fn the_review_pages_render() {
 
     let entry = site.page("/entry").await;
     assert!(entry.contains(r#"name="category""#) && entry.contains(r#"name="counter""#), "{entry}");
-    let accounts = visible(&site.page("/accounts").await);
-    position(&accounts, "舊錢包 結清");
+    let accounts = site.page("/accounts").await;
+    position(&visible(&accounts), "舊錢包 結清");
+    // Every account, as a tree: the roots open, the groups under them folded.
+    let assets = &accounts[position(&accounts, "資產")..];
+    assert_eq!(accounts.matches(r#"<details open class="group">"#).count(), 4, "{accounts}");
+    let folded = &assets[position(assets, r#"<details class="group">"#)..];
+    position(&visible(folded), "分帳");
+    position(&visible(&accounts), "全部展開");
+    // The button says what it does.
+    assert!(accounts.contains("不再使用這個帳戶"), "{accounts}");
 }
