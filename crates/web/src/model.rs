@@ -237,13 +237,50 @@ impl fmt::Display for JournalQuery {
     }
 }
 
+/// Which of the four kinds an account belongs to. 權益 is not among them: the
+/// loader's own accounts are nobody's filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountKind {
+    Asset,
+    Liability,
+    Income,
+    Expense,
+}
+
+impl fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            AccountKind::Asset => "資產",
+            AccountKind::Liability => "負債",
+            AccountKind::Income => "收入",
+            AccountKind::Expense => "支出",
+        })
+    }
+}
+
 /// An account the journal can be filtered to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountChoice {
-    pub path: String,
     /// Standalone, so it reads without the tree around it.
     pub label: String,
-    pub depth: usize,
+    pub kind: AccountKind,
+}
+
+/// The name the account box offers, holds once a reader picks it, and matches
+/// on while they type. The kind rides inside the value rather than in an
+/// `<option label>`, which browsers draw as they please — some in place of the
+/// value, which would leave the whole list reading as four names. It also
+/// tells apart the accounts a bare label alone cannot: 收入 and 支出 share
+/// names for the same thing going each way.
+impl fmt::Display for AccountChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = self.kind.to_string();
+        match self.label == kind {
+            // A root is its own kind; 資產（資產） says it twice.
+            true => f.write_str(&self.label),
+            false => write!(f, "{}（{kind}）", self.label),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -273,6 +310,9 @@ pub struct Journal {
     pub query: JournalQuery,
     /// The filtered account's label, when there is one.
     pub account: Option<String>,
+    /// The same account under the name the picker offers it by: what the
+    /// account box holds, so submitting the form again finds it again.
+    pub chosen: Option<String>,
     pub accounts: Vec<AccountChoice>,
     pub entries: Vec<Entry>,
     pub total: u64,

@@ -21,8 +21,8 @@ use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 use web::{
-    journal::{load_journal, JournalList},
-    model::{Journal as Page, JournalQuery, Review},
+    journal::{load_journal, JournalFilter, JournalList},
+    model::{AccountChoice, AccountKind, Journal as Page, JournalQuery, Review},
     server,
 };
 
@@ -47,7 +47,10 @@ const MAPPING: &str = r#"
 "Liabilities"             = "負債"
 "Liabilities:Card"        = "信用卡"
 "Income"                  = "收入"
-"Income:Interest"         = "利息"
+# 銀行 names an account under two roots, as a chart does when the same thing
+# comes in and goes out: neither is under a parent that could tell them apart.
+"Income:Bank"             = "銀行"
+"Income:Bank:Interest"    = "利息"
 "Expenses"                = "支出"
 "Equity"                  = "權益"
 "Equity:Conversions"      = "匯兌"
@@ -111,7 +114,7 @@ fn journal() -> Journal {
         // Cents on TWD: the display rounds them, the ledger keeps them.
         txn("2024-04-03", "利息", &[
             ("Assets:Cash", "12.34", TWD),
-            ("Income:Interest", "-12.34", TWD),
+            ("Income:Bank:Interest", "-12.34", TWD),
         ]),
         Txn {
             unverified: true,
@@ -207,6 +210,25 @@ async fn journal_page(pool: &SqlitePool, query: JournalQuery) -> Page {
 
 fn render(journal: Page) -> String {
     Owner::new().with(|| view! { <JournalList action="/journal" journal /> }.to_html())
+}
+
+fn render_filter(
+    query: JournalQuery,
+    chosen: Option<String>,
+    accounts: Vec<AccountChoice>,
+) -> String {
+    Owner::new()
+        .with(|| view! { <JournalFilter action="/journal" query chosen accounts /> }.to_html())
+}
+
+/// The names the account picker offers, in the order it offers them.
+fn offered(html: &str) -> Vec<String> {
+    let list = &html[position(html, "<datalist")..];
+    list[..position(list, "</datalist>")]
+        .split(r#"<option value=""#)
+        .skip(1)
+        .map(|option| option.split('"').next().unwrap().to_string())
+        .collect()
 }
 
 /// Each entry's visible text, newest first.
@@ -314,13 +336,47 @@ async fn an_account_filters_to_its_subtree() {
     let bank = journal_page(&pool, JournalQuery::account("Assets:Bank")).await;
     assert_eq!(narrations(&bank), [JUICE, "美金", "期初"]);
     assert_eq!(bank.account.as_deref(), Some("銀行"));
-    // A path prefix that is not a parent is not the subtree.
-    let partial = journal_page(&pool, JournalQuery::account("Assets:Ba")).await;
-    assert_eq!(partial.total, 0);
+    // A path prefix that is not an account of its own names none: it is
+    // refused, rather than listing the subtree it looks like.
+    let partial = load(&pool, JournalQuery::account("Assets:Ba")).await.unwrap_err().to_string();
+    assert!(partial.contains("查無帳戶：Assets:Ba"), "{partial}");
     let leaf = journal_page(&pool, JournalQuery::account("Assets:Bank:FX")).await;
     assert_eq!(narrations(&leaf), ["美金"]);
     let focus: Vec<_> = leaf.entries[0].legs.iter().map(|l| (l.label.as_str(), l.focus)).collect();
     assert_eq!(focus, [("外幣", true), ("匯兌", false), ("活存", false), ("匯兌", false)]);
+}
+
+#[tokio::test]
+async fn a_typed_name_and_a_linked_path_reach_the_same_account() {
+    let (_dir, pool) = ledger().await;
+    // The name the picker offers, the bare label, and the path a link carries.
+    for typed in ["甲公司分帳（資產）", "甲公司分帳", "Assets:Split:Alpha:Tab"] {
+        let page = journal_page(&pool, JournalQuery::account(typed)).await;
+        assert_eq!(page.query.account.as_deref(), Some("Assets:Split:Alpha:Tab"), "{typed}");
+        assert_eq!(page.account.as_deref(), Some("甲公司分帳"), "{typed}");
+    }
+    // A root names its whole section.
+    let assets = journal_page(&pool, JournalQuery::account("資產")).await;
+    assert_eq!(assets.query.account.as_deref(), Some("Assets"));
+}
+
+#[tokio::test]
+async fn a_name_no_one_account_answers_to_is_refused_by_name() {
+    let (_dir, pool) = ledger().await;
+    let refused =
+        async |name: &str| load(&pool, JournalQuery::account(name)).await.unwrap_err().to_string();
+    assert!(refused("活存2").await.contains("查無帳戶：活存2"));
+    // 銀行 stands under two roots: the picker's own names tell them apart, so
+    // the refusal offers them rather than falling back to every account.
+    let clash = refused("銀行").await;
+    assert!(clash.contains("帳戶名重複：銀行（收入）、銀行（資產）"), "{clash}");
+    for (typed, path) in [("銀行（資產）", "Assets:Bank"), ("銀行（收入）", "Income:Bank")]
+    {
+        let page = journal_page(&pool, JournalQuery::account(typed)).await;
+        assert_eq!(page.query.account.as_deref(), Some(path), "{typed}");
+    }
+    // An empty box is not a refusal: it is every account.
+    assert_eq!(journal_page(&pool, JournalQuery::default()).await.total, 67);
 }
 
 #[tokio::test]
@@ -371,20 +427,65 @@ async fn review_and_verification_are_separate_filters() {
 }
 
 #[tokio::test]
-async fn the_filter_offers_no_equity_account() {
+async fn the_picker_offers_every_account_by_kind_and_no_equity_one() {
     let (_dir, pool) = ledger().await;
     let journal = journal_page(&pool, JournalQuery::default()).await;
-    let labels: Vec<_> = journal.accounts.iter().map(|a| a.label.as_str()).collect();
-    assert!(labels.contains(&"甲公司分帳") && labels.contains(&"食食"), "{labels:?}");
-    // Sections in balance-sheet order, each root before its accounts.
-    let roots: Vec<_> =
-        journal.accounts.iter().filter(|a| a.depth == 0).map(|a| a.label.as_str()).collect();
-    assert_eq!(roots, ["資產", "負債", "收入", "支出"]);
-    let position = |label| labels.iter().position(|l| *l == label).unwrap();
-    assert!(position("負債") < position("信用卡") && position("信用卡") < position("收入"));
-    for hidden in ["權益", "起鼓", "匯兌"] {
-        assert!(!labels.contains(&hidden), "{hidden} offered: {labels:?}");
-    }
+    let html = render_filter(journal.query.clone(), journal.chosen.clone(), journal.accounts);
+    // Sections in balance-sheet order, paths within; a root is its own kind,
+    // so it is not named twice over.
+    assert_eq!(offered(&html), [
+        "資產",
+        "銀行（資產）",
+        "外幣（資產）",
+        "活存（資產）",
+        "現金（資產）",
+        "分帳（資產）",
+        "甲公司（資產）",
+        "甲公司分帳（資產）",
+        "乙公司（資產）",
+        "乙公司分帳（資產）",
+        "負債",
+        "信用卡（負債）",
+        "收入",
+        "銀行（收入）",
+        "利息（收入）",
+        "支出",
+        "食食（支出）",
+    ]);
+    // 權益 is the loader's own; nobody files under it.
+    assert!(!html.contains("權益") && !html.contains("起鼓") && !html.contains("匯兌"), "{html}");
+    // An empty box is every account, and says so.
+    assert!(html.contains(r#"placeholder="全部""#), "{html}");
+    assert!(html.contains(r#"value="""#), "{html}");
+}
+
+#[tokio::test]
+async fn the_chosen_account_survives_the_round_trip() {
+    let (_dir, pool) = ledger().await;
+    // A leg's link carries the path; the box comes back holding the name.
+    let linked = journal_page(&pool, JournalQuery::account("Assets:Split:Alpha:Tab")).await;
+    assert_eq!(linked.chosen.as_deref(), Some("甲公司分帳（資產）"));
+    let html = render_filter(linked.query.clone(), linked.chosen.clone(), linked.accounts.clone());
+    assert!(html.contains(r#"value="甲公司分帳（資產）""#), "{html}");
+
+    // Submitting that name again lands on the same account, and the links the
+    // page leaves behind still carry the path.
+    let typed = journal_page(&pool, JournalQuery::account("甲公司分帳（資產）")).await;
+    assert_eq!(typed.query.account.as_deref(), Some("Assets:Split:Alpha:Tab"));
+    assert_eq!(typed.chosen, linked.chosen);
+    assert_eq!(narrations(&typed), narrations(&linked));
+}
+
+#[test]
+fn an_account_name_is_escaped_where_the_picker_offers_it() {
+    let label = r#"<b>甲 & "乙"</b>"#;
+    let choice = AccountChoice { label: label.into(), kind: AccountKind::Expense };
+    let chosen = Some(choice.to_string());
+    let html = render_filter(JournalQuery::default(), chosen, vec![choice]);
+    assert!(!html.contains("<b>甲"), "{html}");
+    assert_eq!(html.matches("&lt;b&gt;").count(), 2, "{html}");
+    assert!(html.contains("&amp;"), "{html}");
+    assert!(!html.contains(r#""乙""#), "{html}");
 }
 
 #[test]
@@ -427,10 +528,10 @@ async fn the_journal_route_renders_with_its_filter() {
     let site = site().await;
     let html = site.page("/journal?account=Assets%3ASplit&review=unreviewed").await;
     assert!(html.contains("日記帳 · 帳簿"), "{html}");
-    let select = &html[position(&html, r#"<select name="account""#)..];
-    let select = &select[..position(select, "</select>")];
-    assert!(select.contains(r#"<option value="Assets:Split" selected"#), "{select}");
-    assert!(!visible(select).contains("起鼓"), "{select}");
+    // The box holds the name; the list the browser filters holds every other.
+    assert!(html.contains(r#"value="分帳（資產）""#), "{html}");
+    assert!(offered(&html).contains(&"甲公司分帳（資產）".to_string()), "{html}");
+    assert!(!html.contains("起鼓"), "{html}");
     let text = visible(&html);
     position(&text, "查無交易");
 }

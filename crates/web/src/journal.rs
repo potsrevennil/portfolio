@@ -36,6 +36,7 @@ pub fn JournalPage() -> impl IntoView {
                                 <JournalFilter
                                     action="/journal"
                                     query=journal.query.clone()
+                                    chosen=journal.chosen.clone()
                                     accounts=journal.accounts.clone()
                                 />
                                 <JournalList action="/journal" journal />
@@ -55,9 +56,11 @@ pub fn JournalPage() -> impl IntoView {
 pub fn JournalFilter(
     action: &'static str,
     query: JournalQuery,
+    /// The account box's contents: the name the picker offers the filtered
+    /// account by, or nothing while every account is listed.
+    chosen: Option<String>,
     accounts: Vec<AccountChoice>,
 ) -> impl IntoView {
-    let chosen = query.account.clone();
     let current = query.review.clone().unwrap_or_default();
     let review = move |value: Review, text: &'static str| {
         let value = value.to_string();
@@ -72,22 +75,21 @@ pub fn JournalFilter(
             <div class="filter">
                 <label>
                     "帳戶"
-                    <select name="account">
-                        <option value="">"全部"</option>
+                    // A native list: the browser narrows it down as the reader
+                    // types, with no script of ours to go wrong.
+                    <input
+                        type="search"
+                        name="account"
+                        list="accounts"
+                        placeholder="全部"
+                        value=chosen.unwrap_or_default()
+                    />
+                    <datalist id="accounts">
                         {accounts
                             .into_iter()
-                            .map(|a| {
-                                let selected = chosen.as_deref() == Some(a.path.as_str());
-                                // Full-width spaces: a select draws no tree.
-                                let text = format!("{}{}", "\u{3000}".repeat(a.depth), a.label);
-                                view! {
-                                    <option value=a.path selected=selected>
-                                        {text}
-                                    </option>
-                                }
-                            })
+                            .map(|a| view! { <option value=a.to_string()></option> })
                             .collect_view()}
-                    </select>
+                    </datalist>
                 </label>
                 <label>
                     "從" <input type="date" name="from" value=query.from.clone().unwrap_or_default() />

@@ -326,6 +326,11 @@ details.group > summary.row.section {
   max-width: 100%;
 }
 
+/* Wide enough for an account's name and its kind after it. */
+.journal .filter input[name="account"] {
+  width: 14rem;
+}
+
 .journal .filter a,
 .journal .pager a {
   color: var(--accent);
