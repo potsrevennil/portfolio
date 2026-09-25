@@ -4,6 +4,10 @@
 
 pub mod app;
 pub mod balance_sheet;
+#[cfg(feature = "ssr")]
+pub mod entries;
+pub mod error;
+pub mod journal;
 pub mod model;
 #[cfg(feature = "ssr")]
 pub mod server;

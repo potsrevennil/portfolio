@@ -6,6 +6,7 @@ use leptos_meta::Title;
 
 use crate::{
     balance_sheet::{load_balance_sheet, MoneyText, UnpricedNote},
+    error::LoadFailed,
     model::{BalanceSheet, Converted},
 };
 
@@ -18,7 +19,7 @@ pub fn SummaryPage() -> impl IntoView {
             {move || Suspend::new(async move {
                 match sheet.await {
                     Ok(sheet) => view! { <SummaryView sheet /> }.into_any(),
-                    Err(e) => view! { <p class="note error">{format!("讀取失敗：{e}")}</p> }.into_any(),
+                    Err(e) => view! { <LoadFailed error=e /> }.into_any(),
                 }
             })}
         </Suspense>

@@ -1,9 +1,10 @@
 //! What the server sends a page: display-ready figures. The one ledger type
 //! it shares with the wasm client is `Currency`, from `ledger-types`.
 
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use ledger_types::Currency;
+use leptos_router::params::ParamsMap;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,164 @@ pub struct BalanceSheet {
     /// 以成本衡量之投資: what was paid for holdings with no market price, one
     /// row per holding, outside every total. `None` when there are none.
     pub at_cost: Option<Section>,
+}
+
+/// Which review state the journal lists.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Review {
+    #[default]
+    Any,
+    Reviewed,
+    Unreviewed,
+}
+
+impl fmt::Display for Review {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Review::Any => "",
+            Review::Reviewed => "reviewed",
+            Review::Unreviewed => "unreviewed",
+        })
+    }
+}
+
+impl FromStr for Review {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "" => Ok(Review::Any),
+            "reviewed" => Ok(Review::Reviewed),
+            "unreviewed" => Ok(Review::Unreviewed),
+            other => Err(format!("不明的確認狀態：{other}")),
+        }
+    }
+}
+
+/// The journal filter as a URL carries it. Every value stays as typed, so the
+/// client needs no date type and the server can refuse a bad one by name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JournalQuery {
+    pub account: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub text: Option<String>,
+    /// A [`Review`], as text.
+    pub review: Option<String>,
+    pub unverified: bool,
+    /// From 1.
+    pub page: u32,
+}
+
+impl Default for JournalQuery {
+    fn default() -> Self {
+        JournalQuery {
+            account: None,
+            from: None,
+            to: None,
+            text: None,
+            review: None,
+            unverified: false,
+            page: 1,
+        }
+    }
+}
+
+impl JournalQuery {
+    pub fn account(path: &str) -> Self {
+        JournalQuery { account: Some(path.to_string()), ..Default::default() }
+    }
+
+    pub fn with_review(&self, review: Review) -> Self {
+        JournalQuery { review: Some(review.to_string()).filter(|r| !r.is_empty()), ..self.clone() }
+    }
+
+    pub fn with_page(&self, page: u32) -> Self { JournalQuery { page, ..self.clone() } }
+}
+
+/// Blank form fields are no filter.
+impl From<&ParamsMap> for JournalQuery {
+    fn from(params: &ParamsMap) -> Self {
+        let get =
+            |key: &str| params.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        JournalQuery {
+            account: get("account"),
+            from: get("from"),
+            to: get("to"),
+            text: get("q"),
+            review: get("review"),
+            unverified: get("unverified").is_some(),
+            page: get("page").and_then(|p| p.parse().ok()).unwrap_or(1),
+        }
+    }
+}
+
+/// The query string, `?` included; empty when nothing is filtered.
+impl fmt::Display for JournalQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let page = self.page.to_string();
+        let fields = [
+            ("account", self.account.as_deref()),
+            ("from", self.from.as_deref()),
+            ("to", self.to.as_deref()),
+            ("q", self.text.as_deref()),
+            ("review", self.review.as_deref()),
+            ("unverified", self.unverified.then_some("1")),
+            ("page", (self.page > 1).then_some(page.as_str())),
+        ];
+        let mut query = form_urlencoded::Serializer::new(String::new());
+        for (key, value) in fields {
+            if let Some(value) = value {
+                query.append_pair(key, value);
+            }
+        }
+        match query.finish() {
+            query if query.is_empty() => Ok(()),
+            query => write!(f, "?{query}"),
+        }
+    }
+}
+
+/// An account the journal can be filtered to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountChoice {
+    pub path: String,
+    /// Standalone, so it reads without the tree around it.
+    pub label: String,
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Leg {
+    /// Links the leg to its account's journal; never shown.
+    pub path: String,
+    pub label: String,
+    pub money: Money,
+    /// On the account the journal is filtered to, or below it.
+    pub focus: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    pub id: i64,
+    pub date: String,
+    pub payee: Option<String>,
+    pub narration: Option<String>,
+    pub reviewed: bool,
+    /// Booked after the account's last statement: nothing has checked it.
+    pub unverified: bool,
+    pub legs: Vec<Leg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Journal {
+    pub query: JournalQuery,
+    /// The filtered account's label, when there is one.
+    pub account: Option<String>,
+    pub accounts: Vec<AccountChoice>,
+    pub entries: Vec<Entry>,
+    pub total: u64,
+    pub pages: u32,
 }
 
 #[cfg(test)]

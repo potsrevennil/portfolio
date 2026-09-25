@@ -12,6 +12,7 @@ pub mod hledger;
 pub mod holdings;
 pub mod import;
 pub mod import_batch;
+pub mod journal;
 pub mod load;
 pub mod query;
 pub mod quotes;

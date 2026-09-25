@@ -2,15 +2,16 @@
 //! journal loaded by the real load-journal (so labels come from mapping.toml),
 //! served by the real router. All values are invented.
 
+mod common;
+
 use std::collections::BTreeMap;
 
-use axum::{body::Body, http::Request};
 use chrono::NaiveDate;
+use common::page::{position, visible, Site};
 use db::{
     assertions::{AssertionSource, BalanceAssertion},
     load,
 };
-use http_body_util::BodyExt;
 use ledger::{
     journal::{self, Journal, Posting},
     model::Source,
@@ -22,7 +23,6 @@ use prices::YFinanceSource;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
-use tower::ServiceExt;
 use web::{balance_sheet::SheetView, server};
 
 const MAPPING: &str = r#"
@@ -166,28 +166,6 @@ async fn render(pool: &SqlitePool) -> String {
     Owner::new().with(|| view! { <SheetView sheet /> }.to_html())
 }
 
-/// The text a reader sees: markup and scripts removed.
-fn visible(html: &str) -> String {
-    let mut out = String::new();
-    let mut rest = html;
-    while let Some(start) = rest.find('<') {
-        out.push_str(&rest[..start]);
-        rest = &rest[start..];
-        let end = match rest.starts_with("<script") {
-            true => rest.find("</script>").map_or(rest.len(), |i| i + "</script>".len()),
-            false => rest.find('>').map_or(rest.len(), |i| i + 1),
-        };
-        out.push(' ');
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn position(text: &str, needle: &str) -> usize {
-    text.find(needle).unwrap_or_else(|| panic!("{needle:?} not in:\n{text}"))
-}
-
 #[tokio::test]
 async fn labels_come_from_the_mapping_and_no_path_shows() {
     let (_dir, pool) = ledger().await;
@@ -282,36 +260,13 @@ async fn every_row_is_one_figure_in_twd() {
     assert_eq!(cost.trim(), "以成本衡量之投資 40,000 TWD 丙公司股 40,000 TWD");
 }
 
-/// Only one site serves at a time. Leptos keeps process-wide state, and
-/// pages rendered at once on separate test runtimes can stall for good; the
-/// server runs one runtime, so it never does. The global at fault is not yet
-/// pinned down (separate reactive arenas did not help), so a second runtime in
-/// the app, e.g. for a batch job, would need the same care.
-static SERVING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// The router over the fixture ledger. Tests reach pages only through it, so
-/// every one takes the lock without having to know about it.
-struct Site {
-    router: axum::Router,
-    _serving: tokio::sync::MutexGuard<'static, ()>,
-    _dir: TempDir,
-}
-
 async fn site() -> Site {
-    let serving = SERVING.lock().await;
-    let (dir, pool) = ledger().await;
-    let options = LeptosOptions::builder().output_name("web").build();
-    Site { router: server::router(options, pool, AtCost::default()), _serving: serving, _dir: dir }
-}
-
-impl Site {
-    async fn page(&self, path: &str) -> String {
-        let request = Request::get(path).body(Body::empty()).unwrap();
-        let response = self.router.clone().oneshot(request).await.unwrap();
-        assert!(response.status().is_success(), "{path}: {}", response.status());
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        String::from_utf8(body.to_vec()).unwrap()
-    }
+    Site::new(|| async {
+        let (dir, pool) = ledger().await;
+        let options = LeptosOptions::builder().output_name("web").build();
+        (server::router(options, pool, AtCost::default()), dir)
+    })
+    .await
 }
 
 #[tokio::test]

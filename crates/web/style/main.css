@@ -8,6 +8,8 @@
   --hover: #f0efea;
   --accent: #2f5d8a;
   --negative: #b3261e;
+  --pending: #9a6700;
+  --pending-bg: #fdf6e3;
   color-scheme: light dark;
 }
 
@@ -20,6 +22,8 @@
     --hover: #22221f;
     --accent: #8cb4dc;
     --negative: #f2877f;
+    --pending: #e3b341;
+    --pending-bg: #2a2416;
   }
 }
 
@@ -283,4 +287,145 @@ details.group > summary.row.section {
 
 .summary a {
   color: var(--accent);
+}
+
+/* An account name opens its journal; it reads as a name, not a link. */
+.row a.name {
+  color: inherit;
+  text-decoration: none;
+}
+
+.row a.name:hover {
+  text-decoration: underline;
+}
+
+.journal {
+  padding: 0 1rem;
+}
+
+.journal .filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.journal .filter label {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  color: var(--muted);
+}
+
+.journal .filter select,
+.journal .filter input,
+.journal .filter button {
+  font: inherit;
+  max-width: 100%;
+}
+
+.journal .filter a,
+.journal .pager a {
+  color: var(--accent);
+}
+
+.journal h2.account {
+  margin: 0.8rem 0 0;
+  font-size: 1.3rem;
+}
+
+.journal .count {
+  color: var(--muted);
+  margin: 0.6rem 0;
+}
+
+.entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.entry {
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent;
+}
+
+/* Nothing has checked it against a statement yet: marked down its whole
+   height, not only by the badge. */
+.entry.unverified {
+  border-left-color: var(--pending);
+  background: var(--pending-bg);
+}
+
+.entry .head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.75rem;
+  align-items: baseline;
+}
+
+.entry .date {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.entry .payee {
+  font-weight: 600;
+}
+
+.badge {
+  font-size: 0.8rem;
+  padding: 0 0.4rem;
+  border-radius: 0.3rem;
+  border: 1px solid currentColor;
+}
+
+.badge.unverified {
+  color: var(--pending);
+}
+
+.badge.unreviewed {
+  color: var(--muted);
+}
+
+/* Capped, so an amount stays within reach of its account on a wide screen. */
+.legs {
+  list-style: none;
+  max-width: 36rem;
+  margin: 0.2rem 0 0;
+  padding: 0 0 0 1rem;
+}
+
+.leg {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.92rem;
+}
+
+/* The legs on the account the journal is filtered to. */
+.leg.focus {
+  font-weight: 600;
+}
+
+.leg a.account {
+  color: inherit;
+  text-decoration: none;
+}
+
+.leg a.account:hover {
+  text-decoration: underline;
+}
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.8rem 0;
+}
+
+.pager a[rel="next"] {
+  margin-left: auto;
 }

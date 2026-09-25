@@ -12,10 +12,12 @@ required-features = ["ssr"]
 
 [dependencies]
 console_error_panic_hook = { version = "0.1", optional = true }
-ledger-types             = { workspace = true }
-leptos                   = "0.8"
-leptos_meta              = "0.8"
-leptos_router            = "0.8"
+# Links encode alike on both halves; leptos_router escapes differently in each.
+form_urlencoded = "1.2"
+ledger-types    = { workspace = true }
+leptos          = "0.8"
+leptos_meta     = "0.8"
+leptos_router   = "0.8"
 # Shared: the view model carries exact amounts to the client.
 rust_decimal = { workspace = true }
 serde        = { workspace = true }
