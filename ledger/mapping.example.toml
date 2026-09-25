@@ -91,6 +91,12 @@ accounts = ["Assets:Unlisted"]
 [split_accounts]
 roots = ["Assets:Split"]
 
+# Accounts no institution reports on, such as cash: only a balance you count
+# checks them (`portfolio count`). `check --mapping` lists any that hold
+# postings but have never been counted; that is a note, not a failure.
+[counted]
+roots = ["Assets:Cash"]
+
 # Each card's credit limit, as its statement prints it (信用額度). The 資產 page
 # shows credit used and left per card, to check against the card's own app,
 # which counts an instalment purchase in full from the day it is made.

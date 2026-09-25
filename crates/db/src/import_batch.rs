@@ -5,10 +5,16 @@ use std::{collections::HashSet, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
-use ledger::{journal::UNVERIFIED_TAG, model::OPENING_EQUITY};
+use ledger::{
+    journal::UNVERIFIED_TAG,
+    labels::Labels,
+    model::{Source, OPENING_EQUITY},
+};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
+
+use crate::import::{ensure_account, Posting};
 
 pub async fn create(
     db: &mut SqliteConnection,
@@ -183,5 +189,152 @@ pub async fn redate(db: &mut SqliteConnection, transaction_id: i64, date: NaiveD
         .execute(db)
         .await
         .with_context(|| format!("re-dating transaction {transaction_id}"))?;
+    Ok(())
+}
+
+/// A transaction with a leg on some account, and all its legs.
+#[derive(Clone, Debug)]
+pub struct HeldTransaction {
+    pub id: i64,
+    pub date: NaiveDate,
+    pub external_ref: Option<String>,
+    pub postings: Vec<HeldPosting>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldPosting {
+    pub id: i64,
+    pub account: String,
+    pub amount: Decimal,
+    pub currency: Currency,
+}
+
+#[derive(sqlx::FromRow)]
+struct HeldRow {
+    transaction_id: i64,
+    date: String,
+    external_ref: Option<String>,
+    posting_id: i64,
+    account: String,
+    amount: String,
+    currency: String,
+}
+
+/// Every transaction with a leg on exactly `path` in `currency`, oldest first.
+pub async fn transactions_on(
+    db: &mut SqliteConnection,
+    path: &str,
+    currency: Currency,
+) -> Result<Vec<HeldTransaction>> {
+    let rows: Vec<HeldRow> = sqlx::query_as(
+        "SELECT t.id AS transaction_id, t.date, t.external_ref, p.id AS posting_id,
+                a.path AS account, p.amount, p.currency
+         FROM transactions t
+         JOIN postings p ON p.transaction_id = t.id
+         JOIN accounts a ON a.id = p.account_id
+         WHERE t.id IN (SELECT q.transaction_id FROM postings q JOIN accounts b
+                        ON b.id = q.account_id WHERE b.path = ? AND q.currency = ?)
+         ORDER BY t.date, t.id, p.id",
+    )
+    .bind(path)
+    .bind(currency.to_string())
+    .fetch_all(db)
+    .await?;
+    let mut out: Vec<HeldTransaction> = Vec::new();
+    for r in rows {
+        let posting = HeldPosting {
+            id: r.posting_id,
+            amount: r.amount.parse().with_context(|| format!("posting amount {:?}", r.amount))?,
+            currency: r.currency.parse()?,
+            account: r.account,
+        };
+        match out.last_mut() {
+            Some(t) if t.id == r.transaction_id => t.postings.push(posting),
+            _ => out.push(HeldTransaction {
+                id: r.transaction_id,
+                date: r.date.parse().with_context(|| format!("transaction date {:?}", r.date))?,
+                external_ref: r.external_ref,
+                postings: vec![posting],
+            }),
+        }
+    }
+    Ok(out)
+}
+
+/// Replaces one leg of a transaction with `legs`, in place: the transaction
+/// keeps its id, date, ref and review state.
+pub async fn replace_leg(
+    db: &mut SqliteConnection,
+    labels: &Labels,
+    posting_id: i64,
+    legs: &[Posting],
+) -> Result<()> {
+    let transaction_id: i64 =
+        sqlx::query_scalar("SELECT transaction_id FROM postings WHERE id = ?")
+            .bind(posting_id)
+            .fetch_one(&mut *db)
+            .await
+            .with_context(|| format!("finding posting {posting_id}"))?;
+    sqlx::query("DELETE FROM postings WHERE id = ?").bind(posting_id).execute(&mut *db).await?;
+    for leg in legs {
+        let account_id = ensure_account(db, labels, &leg.account).await?;
+        sqlx::query(
+            "INSERT INTO postings (transaction_id, account_id, amount, currency, tags) VALUES (?, \
+             ?, ?, ?, ?)",
+        )
+        .bind(transaction_id)
+        .bind(account_id)
+        .bind(leg.amount.to_string())
+        .bind(leg.currency.to_string())
+        .bind(&leg.tags)
+        .execute(&mut *db)
+        .await
+        .with_context(|| format!("relabelling transaction {transaction_id}"))?;
+    }
+    Ok(())
+}
+
+/// The currencies `path` holds postings in, its subtree included — the ground
+/// an assertion on it covers.
+pub async fn currencies(db: &mut SqliteConnection, path: &str) -> Result<Vec<Currency>> {
+    let codes: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT p.currency FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
+         (a.path = ?1 OR a.path LIKE ?1 || ':%') ORDER BY p.currency",
+    )
+    .bind(path)
+    .fetch_all(db)
+    .await?;
+    codes.iter().map(|c| Ok(c.parse()?)).collect()
+}
+
+/// Every ref recorded under `source`, whose own scheme names them.
+pub async fn refs_of(db: &mut SqliteConnection, source: Source) -> Result<HashSet<String>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT external_ref FROM transactions WHERE source = ? AND external_ref IS NOT NULL",
+    )
+    .bind(source.to_string())
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Adds `text` to a transaction's narration, keeping what is already there: a
+/// relabelled bank line says what the bank called it and what the record did.
+pub async fn append_narration(
+    db: &mut SqliteConnection,
+    transaction_id: i64,
+    text: &str,
+) -> Result<()> {
+    sqlx::query(
+        // instr, not LIKE: a memo is text, and `%` or `_` in it would make a
+        // LIKE pattern that matches the wrong thing.
+        "UPDATE transactions SET narration = CASE WHEN coalesce(narration, '') = '' THEN ?1 ELSE \
+         narration || ' · ' || ?1 END WHERE id = ?2 AND instr(coalesce(narration, ''), ?1) = 0",
+    )
+    .bind(text)
+    .bind(transaction_id)
+    .execute(db)
+    .await
+    .with_context(|| format!("narrating transaction {transaction_id}"))?;
     Ok(())
 }

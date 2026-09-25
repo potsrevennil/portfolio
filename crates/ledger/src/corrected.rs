@@ -2,7 +2,7 @@
 //! [`Entry`] records as the native 天天記帳 exports. Only
 //! `status = active` rows count; `posted_date` is ignored.
 
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
@@ -95,6 +95,36 @@ pub fn load(path: impl AsRef<Path>) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
+/// What a freeze of this file has already taken: every record id it names,
+/// removed ones included, and the last day it covers.
+#[derive(Debug, Default)]
+pub struct Frozen {
+    pub through: Option<NaiveDate>,
+    pub ids: HashSet<String>,
+}
+
+pub fn frozen(path: impl AsRef<Path>) -> Result<Frozen> {
+    #[derive(Deserialize)]
+    struct Row {
+        date: NaiveDate,
+        source_id: String,
+    }
+    let path = path.as_ref();
+    let mut rdr = csv::ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .from_path(path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let mut frozen = Frozen::default();
+    for (i, row) in rdr.deserialize::<Row>().enumerate() {
+        let row = row.with_context(|| format!("{} record {}", path.display(), i + 1))?;
+        frozen.through = frozen.through.max(Some(row.date));
+        if !row.source_id.is_empty() {
+            frozen.ids.insert(row.source_id);
+        }
+    }
+    Ok(frozen)
+}
+
 #[cfg(test)]
 mod tests {
     use rust_decimal_macros::dec;
@@ -132,6 +162,22 @@ mod tests {
                 if *amount == dec!(-120) && id == "U1" && category == "飲食"
         ));
         assert!(matches!(&entries[2], Entry::Flow { amount, .. } if *amount == dec!(50)));
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_names_removed_records_too() -> Result<()> {
+        let file = tempfile::NamedTempFile::new()?;
+        std::fs::write(
+            file.path(),
+            format!(
+                "{HEADER}a:1,active,2024-03-02,,expense,1,,錢包,,,,飲食,,,,,app,f,U1,raw,,\na:2,\
+                 removed,2024-03-05,,expense,1,,錢包,,,,飲食,,,,,app,f,U2,removed,dup,\n"
+            ),
+        )?;
+        let frozen = frozen(file.path())?;
+        assert_eq!(frozen.through, NaiveDate::from_ymd_opt(2024, 3, 5));
+        assert_eq!(frozen.ids, HashSet::from(["U1".to_string(), "U2".to_string()]));
         Ok(())
     }
 

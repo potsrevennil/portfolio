@@ -14,12 +14,15 @@ use ledger::{
     accounts::Chart,
     model::{Source, CONVERSIONS, OPENING_EQUITY},
     names::fallback_account,
-    statements::bank::{Bank, BankStatement, StatementLine},
+    statements::bank::{Bank, BankStatement},
 };
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
-use crate::matcher::{Engine, Record};
+use crate::{
+    matcher::{Engine, Record},
+    pairing::{one_to_one, within_window, WINDOW_DAYS},
+};
 
 /// One merged statement and where it lands.
 pub struct Statement<'a> {
@@ -30,10 +33,6 @@ pub struct Statement<'a> {
     /// What the ledger holds on `account` in the statement's currency.
     pub existing: Vec<LedgerPosting>,
 }
-
-/// How far a record's date may be from the line that verifies it: the
-/// records take the bank's date when they are a week or more off.
-const VERIFY_WINDOW_DAYS: i64 = 7;
 
 /// An unverified record from a statement's last days that none of its lines
 /// verifies: the bank books it after the statement, so it moves to the day
@@ -203,31 +202,32 @@ pub fn plan(
         // with the records still unverified, for review.
         let unverified: Vec<&LedgerPosting> =
             s.existing.iter().filter(|p| p.unverified && !p.opening).collect();
-        let fits = |l: &StatementLine, p: &LedgerPosting| {
-            p.amount == l.delta() && (p.date - l.book_date).num_days().abs() <= VERIFY_WINDOW_DAYS
+        let fits = |&li: &usize, p: &&LedgerPosting| {
+            p.amount == st.lines[li].delta() && within_window(p.date, st.lines[li].book_date)
         };
         let new_lines: Vec<usize> =
             (0..st.lines.len()).filter(|&li| line_status[li] == Status::New).collect();
-        let mut ambiguous: Vec<String> = Vec::new();
-        for &li in &new_lines {
-            let l = &st.lines[li];
-            let records: Vec<&&LedgerPosting> = unverified.iter().filter(|p| fits(l, p)).collect();
-            let rivals =
-                |p: &LedgerPosting| new_lines.iter().filter(|&&o| fits(&st.lines[o], p)).count();
-            match records.as_slice() {
-                [] => {}
-                [only] if rivals(only) == 1 => {
-                    line_status[li] = Status::Verifies(only.transaction_id);
-                }
-                many => ambiguous.push(format!(
-                    "{} {} matches {} unverified records within {VERIFY_WINDOW_DAYS} days ({})",
+        let pairing = one_to_one(&new_lines, &unverified, fits);
+        for &(l, r) in &pairing.pairs {
+            line_status[new_lines[l]] = Status::Verifies(unverified[r].transaction_id);
+        }
+        let ambiguous: Vec<String> = pairing
+            .ambiguous
+            .iter()
+            .map(|(l, many)| {
+                let l = &st.lines[new_lines[*l]];
+                format!(
+                    "{} {} matches {} unverified records within {WINDOW_DAYS} days ({})",
                     l.book_date,
                     l.delta(),
                     many.len(),
-                    many.iter().map(|p| p.date.to_string()).collect::<Vec<_>>().join(", ")
-                )),
-            }
-        }
+                    many.iter()
+                        .map(|&r| unverified[r].date.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .collect();
         // A record within the window of the end may be booked on the next
         // statement; an earlier one still breaks the chain below.
         let settled = st.settled_through();
@@ -242,7 +242,7 @@ pub fn plan(
         for p in &unverified {
             let pending = p.date > opening
                 && p.date <= settled
-                && (settled - p.date).num_days() < VERIFY_WINDOW_DAYS;
+                && (settled - p.date).num_days() < WINDOW_DAYS;
             if !pending || verifying.contains(&p.transaction_id) {
                 continue;
             }

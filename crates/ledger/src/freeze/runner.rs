@@ -29,7 +29,7 @@ use crate::{
 /// Where the securities backfill lands. Every posting under it is tagged
 /// [`journal::PLACEHOLDER_TAG`] so T11 can replace it rather than add to it;
 /// read from the chart so renaming the account cannot silently drop the tag.
-fn placeholder_root(chart: &Chart) -> Result<&str> {
+pub fn placeholder_root(chart: &Chart) -> Result<&str> {
     let name = &chart.institution.settlement_app_account;
     match chart.account(name) {
         Some(mapping) => Ok(&mapping.account),
@@ -137,6 +137,34 @@ fn merge_tags(txn_tags: &Option<String>, extra: Option<String>) -> Option<String
     }
 }
 
+/// One transaction's journal rows, as freeze writes them: the inferred leg
+/// filled, a cross-currency pair plugged through `Equity:Conversions`, and the
+/// transaction's tags on every leg.
+pub fn journal_rows(
+    txn: &model::Transaction,
+    group: u64,
+    placeholder_root: &str,
+) -> Result<Vec<journal::Posting>> {
+    let tags = (!txn.tags.is_empty()).then(|| txn.tags.join(","));
+    let payee = (!txn.payee.is_empty()).then(|| txn.payee.clone());
+    let legs = balance_postings(&txn.postings, txn.date, &tags, placeholder_root)?;
+    Ok(legs
+        .into_iter()
+        .map(|leg| journal::Posting {
+            group,
+            source: txn.source,
+            date: txn.date,
+            payee: payee.clone(),
+            narration: txn.narration.clone(),
+            external_ref: txn.external_ref.clone(),
+            account: leg.account,
+            amount: leg.amount,
+            currency: leg.currency,
+            tags: leg.tags,
+        })
+        .collect())
+}
+
 /// Folds the importer's model plus the `manual.csv` transactions straight into
 /// a [`journal::Journal`], returning it with the balance assertions to check it
 /// against. Never re-decides where a posting goes; each transaction becomes one
@@ -148,22 +176,7 @@ fn reconcile(
 ) -> Result<(journal::Journal, Vec<BalanceAssertion>)> {
     let mut postings: Vec<journal::Posting> = Vec::new();
     for (group, txn) in (0u64..).zip(model.transactions().chain(manual)) {
-        let tags = (!txn.tags.is_empty()).then(|| txn.tags.join(","));
-        let payee = (!txn.payee.is_empty()).then(|| txn.payee.clone());
-        for leg in balance_postings(&txn.postings, txn.date, &tags, placeholder_root)? {
-            postings.push(journal::Posting {
-                group,
-                source: txn.source,
-                date: txn.date,
-                payee: payee.clone(),
-                narration: txn.narration.clone(),
-                external_ref: txn.external_ref.clone(),
-                account: leg.account,
-                amount: leg.amount,
-                currency: leg.currency,
-                tags: leg.tags,
-            });
-        }
+        postings.extend(journal_rows(txn, group, placeholder_root)?);
     }
 
     // The loader keys dedup on (source, external_ref), so a journal with two

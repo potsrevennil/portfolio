@@ -8,13 +8,14 @@ use std::{collections::BTreeMap, fmt};
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use ledger::accounts::Chart;
 use ledger_types::currency::Currency;
 use portfolio::broker::{accumulate, BrokerRecord};
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
 use super::{
-    assertions::{self, BalanceAssertion},
+    assertions::{self, AssertionSource, BalanceAssertion},
     broker,
     holdings::{self, HoldingAssertion},
     query::{in_subtree, AccountBalance, AccountType, LedgerData},
@@ -65,6 +66,10 @@ pub struct CheckReport {
     /// Asset and liability balances no assertion covers through their newest
     /// posting: not a failure, but nothing vouches for them as they stand.
     pub unchecked: Vec<Unchecked>,
+    /// Balances under a `[counted]` root no count has vouched for yet; filled
+    /// by [`with_counts`]. Not a failure: until the first count there is
+    /// nothing to hold them to.
+    pub uncounted: Vec<(String, Currency)>,
 }
 
 impl CheckReport {
@@ -106,6 +111,11 @@ impl fmt::Display for CheckReport {
         if !self.unchecked.is_empty() {
             let listed: Vec<String> = self.unchecked.iter().map(Unchecked::to_string).collect();
             writeln!(f, "unvouched through their newest posting: {}", listed.join(", "))?;
+        }
+        if !self.uncounted.is_empty() {
+            let listed: Vec<String> =
+                self.uncounted.iter().map(|(a, c)| format!("{a} {c}")).collect();
+            writeln!(f, "never counted (add one with `count`): {}", listed.join(", "))?;
         }
         Ok(())
     }
@@ -151,19 +161,35 @@ impl fmt::Display for Unchecked {
 
 /// Checks every recorded assertion against the postings and broker records
 /// visible on `conn`, including the caller's uncommitted writes.
-pub async fn check(conn: &mut SqliteConnection) -> Result<CheckReport> {
+pub async fn check(conn: &mut SqliteConnection) -> Result<CheckReport> { checked(conn, None).await }
+
+/// [`check`], also listing the counted accounts no count vouches for yet.
+pub async fn with_counts(conn: &mut SqliteConnection, chart: &Chart) -> Result<CheckReport> {
+    checked(conn, Some(chart)).await
+}
+
+async fn checked(conn: &mut SqliteConnection, counted: Option<&Chart>) -> Result<CheckReport> {
     let data = LedgerData::load_from(conn).await?;
     let assertions = assertions::load(conn).await?;
     let mut report = check_data(&data, &assertions);
     let records = broker::load(conn).await?;
     let holdings = holdings::load(conn).await?;
     check_holdings(&mut report, &records, &holdings);
+    if let Some(chart) = counted {
+        report.uncounted = uncounted(&data, &assertions, chart);
+    }
     Ok(report)
 }
 
 /// [`check`], failing on any mismatch with the report as the error.
-pub async fn gate(conn: &mut SqliteConnection) -> Result<CheckReport> {
-    let report = check(conn).await?;
+pub async fn gate(conn: &mut SqliteConnection) -> Result<CheckReport> { passed(check(conn).await?) }
+
+/// [`with_counts`], failing as [`gate`] does.
+pub async fn gate_with_counts(conn: &mut SqliteConnection, chart: &Chart) -> Result<CheckReport> {
+    passed(with_counts(conn, chart).await?)
+}
+
+fn passed(report: CheckReport) -> Result<CheckReport> {
     if report.ok() {
         Ok(report)
     } else {
@@ -259,6 +285,29 @@ pub fn check_holdings(
             }
         }
     }
+}
+
+/// Balances under a `[counted]` root that no counted assertion covers.
+pub fn uncounted(
+    data: &LedgerData,
+    assertions: &[BalanceAssertion],
+    chart: &Chart,
+) -> Vec<(String, Currency)> {
+    let last_posting = data.last_posting_dates();
+    data.balances_as_of(NaiveDate::MAX)
+        .into_iter()
+        .filter(|b| {
+            chart.is_counted(&b.path) && last_posting.contains_key(&(b.account_id, b.currency))
+        })
+        .filter(|b| {
+            !assertions.iter().any(|a| {
+                a.source == AssertionSource::Counted
+                    && a.currency == b.currency
+                    && in_subtree(&b.path, &a.account)
+            })
+        })
+        .map(|b| (b.path, b.currency))
+        .collect()
 }
 
 /// An assertion on an account covers its subtree, as a Beancount `balance`
