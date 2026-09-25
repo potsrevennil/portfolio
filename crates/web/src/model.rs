@@ -153,18 +153,33 @@ impl FromStr for Review {
     }
 }
 
-/// The journal filter as a URL carries it. Dates stay text, so the client
-/// needs no date type; the server parses them.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// The journal filter as a URL carries it. Every value stays as typed, so the
+/// client needs no date type and the server can refuse a bad one by name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JournalQuery {
     pub account: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub text: Option<String>,
-    pub review: Review,
+    /// A [`Review`], as text.
+    pub review: Option<String>,
     pub unverified: bool,
     /// From 1.
     pub page: u32,
+}
+
+impl Default for JournalQuery {
+    fn default() -> Self {
+        JournalQuery {
+            account: None,
+            from: None,
+            to: None,
+            text: None,
+            review: None,
+            unverified: false,
+            page: 1,
+        }
+    }
 }
 
 impl JournalQuery {
@@ -172,11 +187,14 @@ impl JournalQuery {
         JournalQuery { account: Some(path.to_string()), ..Default::default() }
     }
 
+    pub fn with_review(&self, review: Review) -> Self {
+        JournalQuery { review: Some(review.to_string()).filter(|r| !r.is_empty()), ..self.clone() }
+    }
+
     pub fn with_page(&self, page: u32) -> Self { JournalQuery { page, ..self.clone() } }
 }
 
-/// Blank form fields are no filter. Dates are kept as typed, for the server
-/// to refuse by name if they do not parse.
+/// Blank form fields are no filter.
 impl From<&ParamsMap> for JournalQuery {
     fn from(params: &ParamsMap) -> Self {
         let get =
@@ -186,7 +204,7 @@ impl From<&ParamsMap> for JournalQuery {
             from: get("from"),
             to: get("to"),
             text: get("q"),
-            review: get("review").and_then(|r| r.parse().ok()).unwrap_or_default(),
+            review: get("review"),
             unverified: get("unverified").is_some(),
             page: get("page").and_then(|p| p.parse().ok()).unwrap_or(1),
         }
@@ -196,14 +214,13 @@ impl From<&ParamsMap> for JournalQuery {
 /// The query string, `?` included; empty when nothing is filtered.
 impl fmt::Display for JournalQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let review = self.review.to_string();
         let page = self.page.to_string();
         let fields = [
             ("account", self.account.as_deref()),
             ("from", self.from.as_deref()),
             ("to", self.to.as_deref()),
             ("q", self.text.as_deref()),
-            ("review", Some(review.as_str()).filter(|r| !r.is_empty())),
+            ("review", self.review.as_deref()),
             ("unverified", self.unverified.then_some("1")),
             ("page", (self.page > 1).then_some(page.as_str())),
         ];

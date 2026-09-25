@@ -57,10 +57,11 @@ pub fn JournalFilter(
     accounts: Vec<AccountChoice>,
 ) -> impl IntoView {
     let chosen = query.account.clone();
-    let current = query.review;
+    let current = query.review.clone().unwrap_or_default();
     let review = move |value: Review, text: &'static str| {
+        let value = value.to_string();
         view! {
-            <option value=value.to_string() selected=current == value>
+            <option value=value.clone() selected=current == value>
                 {text}
             </option>
         }

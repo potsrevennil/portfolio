@@ -354,7 +354,7 @@ async fn text_matches_payee_or_narration_literally() {
 #[tokio::test]
 async fn review_and_verification_are_separate_filters() {
     let (_dir, pool) = ledger().await;
-    let review = |review| JournalQuery { review, ..Default::default() };
+    let review = |review| JournalQuery::default().with_review(review);
     let unreviewed = journal_page(&pool, review(Review::Unreviewed)).await;
     assert_eq!(narrations(&unreviewed), [JUICE, "晚餐 <script>alert(1)</script>"]);
     assert_eq!(journal_page(&pool, review(Review::Reviewed)).await.total, 65);
@@ -363,6 +363,11 @@ async fn review_and_verification_are_separate_filters() {
     let unverified = journal_page(&pool, unverified).await;
     assert_eq!(narrations(&unverified), [JUICE]);
     assert!(unverified.entries[0].unverified && !unverified.entries[0].reviewed);
+
+    // A state the app never writes is refused by name, as a bad date is.
+    let bad = JournalQuery { review: Some("unreviwed".into()), ..Default::default() };
+    let error = load(&pool, bad).await.unwrap_err().to_string();
+    assert!(error.contains("不明的確認狀態：unreviwed"), "{error}");
 }
 
 #[tokio::test]
@@ -389,7 +394,7 @@ fn a_query_survives_the_url() {
         from: Some("2024-01-01".into()),
         to: None,
         text: Some("晚餐 & 100%".into()),
-        review: Review::Unreviewed,
+        review: Some(Review::Unreviewed.to_string()),
         unverified: true,
         page: 3,
     };
@@ -403,7 +408,7 @@ fn a_query_survives_the_url() {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    assert_eq!(JournalQuery::from(&blank), JournalQuery { page: 1, ..Default::default() });
+    assert_eq!(JournalQuery::from(&blank), JournalQuery::default());
 }
 
 // --- Through the router ----------------------------------------------------

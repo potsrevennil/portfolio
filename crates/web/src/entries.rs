@@ -1,7 +1,7 @@
 //! Builds the journal page from `db::journal`: the filter parsed from the URL,
 //! one page of transactions, and legs named by their standalone labels.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Error as E, Result};
 use db::{
     chart::standalone_labels,
     journal::{self, Filter},
@@ -26,7 +26,7 @@ impl TryFrom<&JournalQuery> for Filter {
             from: date(&q.from)?,
             to: date(&q.to)?,
             text: q.text.clone(),
-            reviewed: match q.review {
+            reviewed: match q.review.as_deref().unwrap_or_default().parse().map_err(E::msg)? {
                 Review::Any => None,
                 Review::Reviewed => Some(true),
                 Review::Unreviewed => Some(false),
@@ -77,7 +77,7 @@ pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Re
     let mut shown: Vec<_> =
         accounts.iter().filter(|a| a.account_type != AccountType::Equity).collect();
     // Sections in balance-sheet order, as Fava lists them; paths within.
-    shown.sort_by_key(|a| (section(a.account_type), a.path.as_str()));
+    shown.sort_by_key(|a| (a.account_type, a.path.as_str()));
     let choices = shown
         .into_iter()
         .map(|a| AccountChoice {
@@ -95,14 +95,4 @@ pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Re
         total,
         pages,
     })
-}
-
-fn section(account_type: AccountType) -> u8 {
-    match account_type {
-        AccountType::Asset => 0,
-        AccountType::Liability => 1,
-        AccountType::Equity => 2,
-        AccountType::Income => 3,
-        AccountType::Expense => 4,
-    }
 }

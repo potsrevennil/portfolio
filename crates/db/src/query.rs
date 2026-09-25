@@ -42,8 +42,20 @@ use strum_macros::{Display, EnumIter, EnumString};
 /// The string form is the schema's `accounts.type` CHECK vocabulary; strum
 /// generates the parse/display so the DB round-trip needs no hand-written
 /// match.
+/// Ordered as the balance sheet lists them.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, EnumIter,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    Display,
+    EnumString,
+    EnumIter,
 )]
 #[strum(serialize_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
