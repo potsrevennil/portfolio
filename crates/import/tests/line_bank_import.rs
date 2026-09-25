@@ -12,9 +12,9 @@ use anyhow::Result;
 use chrono::NaiveDate;
 use db::{
     import::{insert_deduped, InsertOutcome, Transaction},
-    load,
+    load, pairing,
 };
-use import::bank::{import, Report};
+use import::bank::{import, import_all, Report};
 use ledger::{
     accounts::Chart, args::Args as BuildArgs, freeze, journal, labels::Labels, model::Source,
     statements::bank::Bank,
@@ -534,6 +534,54 @@ async fn an_ambiguous_statement_leaves_the_record_unverified() -> Result<()> {
     let err = f.import(&pool, Bank::LineBank, &paths).await.expect_err("two lines of 20");
     assert!(format!("{err:#}").contains("ambiguously"), "{err:#}");
     assert_eq!(unverified_count(&pool).await?, 2);
+    Ok(())
+}
+
+/// The refused lines wait in the review queue; once a person picks the
+/// record for one, the next import verifies it and books the other line.
+#[tokio::test]
+async fn a_picked_pairing_lets_the_import_through() -> Result<()> {
+    let f = Fixture::new()?;
+    let pool = frozen(&f, "picked.db").await?;
+    let paths =
+        march(&f, "2026.03.04 消費 -$20 $235 範例店\n2026.03.06 消費 -$20 $215 範例店\n", "$215")
+            .await?;
+    let merged = Bank::LineBank.load_merged(&paths)?;
+    import_all(&pool, &f.chart, Bank::LineBank, &merged, &[]).await.expect_err("two lines of 20");
+    let record: i64 = sqlx::query_scalar("SELECT id FROM transactions WHERE reviewed = 0")
+        .fetch_one(&pool)
+        .await?;
+    let choices = pairing::open(&pool).await?;
+    let lines: Vec<_> = choices
+        .iter()
+        .map(|c| (c.ambiguity.date.to_string(), c.ambiguity.candidates.clone(), c.chosen))
+        .collect();
+    assert_eq!(lines, [
+        ("2026-03-06".to_string(), vec![record], None),
+        ("2026-03-04".to_string(), vec![record], None),
+    ]);
+
+    // Refused again, the lines are not recorded twice.
+    import_all(&pool, &f.chart, Bank::LineBank, &merged, &[]).await.expect_err("no pick yet");
+    assert_eq!(pairing::open(&pool).await?.len(), 2);
+
+    pairing::choose(&pool, choices[0].id, record).await?;
+    // One line verifies one record.
+    let twice = pairing::choose(&pool, choices[1].id, record).await.expect_err("taken");
+    assert!(twice.to_string().contains("已配給另一筆"), "{twice}");
+
+    let report = import_all(&pool, &f.chart, Bank::LineBank, &merged, &[]).await?;
+    assert_eq!((report.counts.verified, report.inserted), (1, 1), "{report}");
+    assert_eq!(date_of(&pool, record).await?, "2026-03-06");
+    assert_eq!(unverified_count(&pool).await?, 0);
+    assert!(pairing::open(&pool).await?.is_empty());
+    let paired: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM transaction_events WHERE transaction_id = ? AND kind = 'paired'",
+    )
+    .bind(record)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(paired, 1);
     Ok(())
 }
 
