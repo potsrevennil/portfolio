@@ -1,7 +1,7 @@
 //! Builds the journal page from `db::journal`: the filter parsed from the URL,
 //! one page of transactions, and legs named by their standalone labels.
 
-use anyhow::{Context, Error as E, Result};
+use anyhow::{Context, Result};
 use db::{
     chart::standalone_labels,
     journal::{self, Filter},
@@ -26,7 +26,13 @@ impl TryFrom<&JournalQuery> for Filter {
             from: date(&q.from)?,
             to: date(&q.to)?,
             text: q.text.clone(),
-            reviewed: match q.review.as_deref().unwrap_or_default().parse().map_err(E::msg)? {
+            reviewed: match q
+                .review
+                .as_deref()
+                .unwrap_or_default()
+                .parse()
+                .map_err(anyhow::Error::msg)?
+            {
                 Review::Any => None,
                 Review::Reviewed => Some(true),
                 Review::Unreviewed => Some(false),
