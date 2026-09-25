@@ -30,7 +30,7 @@ use ledger::{
     interim::{self, Booked, Booking, StatementLeg},
     journal::UNVERIFIED_TAG,
     labels::Labels,
-    model,
+    model::{self, Source},
     statements::bank::Bank,
 };
 use ledger_types::currency::Currency;
@@ -69,8 +69,6 @@ pub struct Counts {
     pub records: usize,
     /// Named in the frozen records.
     pub frozen: usize,
-    /// Dated within the frozen history but not in it: entered late.
-    pub late: usize,
     pub known: usize,
     /// New, but zero on both sides.
     pub empty: usize,
@@ -87,6 +85,10 @@ pub struct Counts {
 #[derive(Debug)]
 pub struct Report {
     pub counts: Counts,
+    /// Records dated within the frozen history that it does not hold: entered
+    /// in the app after the freeze read it, so only `corrected/` can take
+    /// them.
+    pub late: Vec<(String, NaiveDate)>,
     pub frozen_through: Option<NaiveDate>,
     /// First and last day of what was inserted or paired.
     pub span: Option<(NaiveDate, NaiveDate)>,
@@ -99,11 +101,18 @@ impl fmt::Display for Report {
         let c = &self.counts;
         writeln!(f, "imported 天天記帳 records: {} in the exports", c.records)?;
         let through = self.frozen_through.map(|d| d.to_string()).unwrap_or_default();
-        writeln!(
-            f,
-            "  {} frozen, {} late (dated through {through}), not imported",
-            c.frozen, c.late
-        )?;
+        writeln!(f, "  {} already frozen (through {through}), not imported", c.frozen)?;
+        if !self.late.is_empty() {
+            writeln!(
+                f,
+                "  {} dated inside the frozen history but not in it — add them to corrected/ \
+                 transactions.csv and re-freeze, or leave them out on purpose:",
+                self.late.len()
+            )?;
+            for (id, date) in &self.late {
+                writeln!(f, "    {date} {id}")?;
+            }
+        }
         writeln!(f, "  {} already held, {} moving nothing", c.known, c.empty)?;
         writeln!(
             f,
@@ -166,8 +175,12 @@ pub async fn import(
     files: Files<'_>,
 ) -> Result<Report> {
     let mut counts = Counts { records: entries.len(), ..Counts::default() };
-    let known = import_batch::refs(db, "").await?;
+    // Both forms the ledger may already hold this record under: the
+    // importer's namespaced ref, and the bare UUID the frozen journal uses.
+    let imported = import_batch::refs(db, interim::REF_PREFIX).await?;
+    let frozen_refs = import_batch::refs_of(db, Source::Tiantian).await?;
     let mut fresh: Vec<Entry> = Vec::new();
+    let mut late: Vec<(String, NaiveDate)> = Vec::new();
     for entry in entries {
         let id = match entry {
             Entry::Flow { id, .. } | Entry::Transfer { id, .. } => id.as_str(),
@@ -175,8 +188,8 @@ pub async fn import(
         if frozen.ids.contains(id) {
             counts.frozen += 1;
         } else if frozen.through.is_some_and(|through| entry.date() <= through) {
-            counts.late += 1;
-        } else if known.contains(&interim::external_ref(id)) || known.contains(id) {
+            late.push((id.to_string(), entry.date()));
+        } else if imported.contains(&interim::external_ref(id)) || frozen_refs.contains(id) {
             counts.known += 1;
         } else {
             fresh.push(entry.clone());
@@ -276,7 +289,7 @@ pub async fn import(
 
     let labels = Labels::from(chart);
     let placeholder = placeholder_root(chart)?;
-    let mut batches: HashMap<bool, i64> = HashMap::new();
+    let (mut income_expense_batch, mut transfers_batch): (Option<i64>, Option<i64>) = (None, None);
     let mut span: Option<(NaiveDate, NaiveDate)> = None;
     for (i, Booked { date, transfer, booking, .. }) in records.into_iter().enumerate() {
         let (mut transaction, leg) = match booking {
@@ -296,6 +309,10 @@ pub async fn import(
                 let external_ref = transaction.external_ref.clone().expect("booked with its ref");
                 let far = far_legs(&transaction, &leg, placeholder)?;
                 import_batch::replace_leg(db, &labels, fallback_posting, &far).await?;
+                if !transaction.narration.is_empty() {
+                    import_batch::append_narration(db, transaction_id, &transaction.narration)
+                        .await?;
+                }
                 import_batch::add_ref(db, transaction_id, &external_ref).await?;
                 counts.paired += 1;
                 continue;
@@ -308,14 +325,13 @@ pub async fn import(
             (Some(_), None) => unreachable!("every statement leg has a fate"),
             (None, _) => {}
         }
-        let batch = match batches.get(&transfer) {
+        let (batch, file) = match transfer {
+            true => (&mut transfers_batch, files.transfers),
+            false => (&mut income_expense_batch, files.income_expense),
+        };
+        let batch = match batch {
             Some(id) => *id,
-            None => {
-                let file = if transfer { files.transfers } else { files.income_expense };
-                let id = import_batch::create(db, SOURCE, file).await?;
-                batches.insert(transfer, id);
-                id
-            }
+            None => *batch.insert(import_batch::create(db, SOURCE, file).await?),
         };
         let row = to_row(&transaction, Some(batch), placeholder)?;
         match insert_deduped(db, &labels, &row).await.context("inserting a record")? {
@@ -328,7 +344,7 @@ pub async fn import(
     }
 
     let check = check::gate_with_counts(db, chart).await?;
-    Ok(Report { counts, frozen_through: frozen.through, span, unmapped, check })
+    Ok(Report { counts, late, frozen_through: frozen.through, span, unmapped, check })
 }
 
 /// A statement line imported with no record behind it: two legs, one on

@@ -5,7 +5,11 @@ use std::{collections::HashSet, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
-use ledger::{journal::UNVERIFIED_TAG, labels::Labels, model::OPENING_EQUITY};
+use ledger::{
+    journal::UNVERIFIED_TAG,
+    labels::Labels,
+    model::{Source, OPENING_EQUITY},
+};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
@@ -290,14 +294,45 @@ pub async fn replace_leg(
     Ok(())
 }
 
-/// The currencies `path` itself holds postings in.
+/// The currencies `path` holds postings in, its subtree included — the ground
+/// an assertion on it covers.
 pub async fn currencies(db: &mut SqliteConnection, path: &str) -> Result<Vec<Currency>> {
     let codes: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT p.currency FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
-         a.path = ? ORDER BY p.currency",
+         (a.path = ?1 OR a.path LIKE ?1 || ':%') ORDER BY p.currency",
     )
     .bind(path)
     .fetch_all(db)
     .await?;
     codes.iter().map(|c| Ok(c.parse()?)).collect()
+}
+
+/// Every ref recorded under `source`, whose own scheme names them.
+pub async fn refs_of(db: &mut SqliteConnection, source: Source) -> Result<HashSet<String>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT external_ref FROM transactions WHERE source = ? AND external_ref IS NOT NULL",
+    )
+    .bind(source.to_string())
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Adds `text` to a transaction's narration, keeping what is already there: a
+/// relabelled bank line says what the bank called it and what the record did.
+pub async fn append_narration(
+    db: &mut SqliteConnection,
+    transaction_id: i64,
+    text: &str,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE transactions SET narration = iif(coalesce(narration, '') = '', ?1, narration || ' \
+         · ' || ?1) WHERE id = ?2 AND coalesce(narration, '') NOT LIKE '%' || ?1 || '%'",
+    )
+    .bind(text)
+    .bind(transaction_id)
+    .execute(db)
+    .await
+    .with_context(|| format!("narrating transaction {transaction_id}"))?;
+    Ok(())
 }

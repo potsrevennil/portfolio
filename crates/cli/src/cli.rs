@@ -69,9 +69,10 @@ struct Check {
     #[command(flatten)]
     database: Database,
 
-    /// Its `[counted]` roots name the accounts to list when never counted.
-    #[arg(long, default_value = "ledger/mapping.toml")]
-    mapping: PathBuf,
+    /// Directory holding mapping.toml, whose `[counted]` roots name the
+    /// accounts to list when never counted.
+    #[arg(long, default_value = "ledger")]
+    ledger_dir: PathBuf,
 }
 
 #[derive(Parser, Debug)]
@@ -116,11 +117,12 @@ impl Cli {
             Some(Command::Check(args)) => {
                 let pool = db::open_db(&args.database.database_url).await?;
                 let mut conn = pool.acquire().await?;
-                let report = if args.mapping.exists() {
-                    let chart = ledger::accounts::Chart::load(&args.mapping)?;
+                let mapping = args.ledger_dir.join("mapping.toml");
+                let report = if mapping.exists() {
+                    let chart = ledger::accounts::Chart::load(&mapping)?;
                     db::check::with_counts(&mut conn, &chart).await?
                 } else {
-                    println!("no {}: counted accounts not listed", args.mapping.display());
+                    println!("no {}: counted accounts not listed", mapping.display());
                     db::check::check(&mut conn).await?
                 };
                 print!("{report}");

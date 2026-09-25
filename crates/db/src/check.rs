@@ -161,9 +161,7 @@ impl fmt::Display for Unchecked {
 
 /// Checks every recorded assertion against the postings and broker records
 /// visible on `conn`, including the caller's uncommitted writes.
-pub async fn check(conn: &mut SqliteConnection) -> Result<CheckReport> {
-    checked(conn, None).await
-}
+pub async fn check(conn: &mut SqliteConnection) -> Result<CheckReport> { checked(conn, None).await }
 
 /// [`check`], also listing the counted accounts no count vouches for yet.
 pub async fn with_counts(conn: &mut SqliteConnection, chart: &Chart) -> Result<CheckReport> {

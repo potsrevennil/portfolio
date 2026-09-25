@@ -71,7 +71,11 @@ const TRANSFER_HEADER: &str =
     "日期,從帳戶,轉出金額,幣別,到帳戶,轉入金額,幣別,標籤,備註,上次更新,UUID\n";
 
 fn flow(date: &str, amount: u32, account: &str, id: &str) -> String {
-    format!("{date},飲食,食食,{amount},TWD,自己,{account},,,支,{date},{id}\n")
+    memoed(date, amount, account, id, "")
+}
+
+fn memoed(date: &str, amount: u32, account: &str, id: &str, memo: &str) -> String {
+    format!("{date},飲食,食食,{amount},TWD,自己,{account},,{memo},支,{date},{id}\n")
 }
 
 /// A later export: the frozen records, one entered late (U4), and three new:
@@ -84,11 +88,11 @@ fn export() -> (String, String) {
         flow("20260106", 50, "現金", "U3"),
         flow("20260105", 30, "現金", "U4"),
         flow("20260108", 20, "現金", "U5"),
-        flow("20260120", 200, "國泰", "U6"),
+        memoed("20260120", 200, "國泰", "U6", "咖啡"),
     ]
     .concat();
     let transfers = format!(
-        "{TRANSFER_HEADER}20260121,國泰,300,TWD,現金,300,TWD,,,x,U7\n20260122,國泰,320,TWD,\
+        "{TRANSFER_HEADER}20260121,國泰,300,TWD,現金,300,TWD,,領現,x,U7\n20260122,國泰,320,TWD,\
          外幣帳戶,10,USD,,,x,U8\n"
     );
     (income_expense, transfers)
@@ -103,7 +107,7 @@ const THROUGH_JANUARY: &[Line] = &[
     ("2026/01/02", "存入", "", "1000", "1000", ""),
     ("2026/01/05", "消費", "100", "", "900", ""),
     ("2026/01/20", "消費", "200", "", "700", ""),
-    ("2026/01/21", "自行提款", "300", "", "400", ""),
+    ("2026/01/21", "自行提款", "300", "", "400", "無卡提款"),
     ("2026/01/22", "網銀外存", "320", "", "80", "222222222222"),
 ];
 
@@ -243,7 +247,9 @@ async fn an_overlapping_export_inserts_only_the_new_records_once() -> Result<()>
     let before = f.transactions().await?;
 
     let report = f.import_tiantian().await?;
-    assert_eq!((report.counts.frozen, report.counts.late), (3, 1), "{report}");
+    assert_eq!(report.counts.frozen, 3, "{report}");
+    // The late record is named, so the user knows what to add to corrected/.
+    assert_eq!(report.late, [("U4".to_string(), "2026-01-05".parse()?)], "{report}");
     assert_eq!(report.counts.left_to_statements, 1, "{report}");
     assert_eq!((report.counts.standalone, report.counts.unverified), (1, 2), "{report}");
     assert!(report.check.ok(), "{report}");

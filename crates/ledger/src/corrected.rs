@@ -103,7 +103,6 @@ pub struct Frozen {
     pub ids: HashSet<String>,
 }
 
-/// [`Frozen`] for `path`.
 pub fn frozen(path: impl AsRef<Path>) -> Result<Frozen> {
     #[derive(Deserialize)]
     struct Row {
