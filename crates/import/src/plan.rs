@@ -18,12 +18,15 @@ use ledger::{
     accounts::Chart,
     model::{Source, CONVERSIONS, OPENING_EQUITY},
     names::fallback_account,
-    statements::bank::{Bank, BankStatement, StatementLine},
+    statements::bank::{Bank, BankStatement},
 };
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
-use crate::matcher::{Engine, Record};
+use crate::{
+    matcher::{Engine, Record},
+    pairing::{one_to_one, within_window, WINDOW_DAYS},
+};
 
 /// One merged statement and where it lands.
 pub struct Statement<'a> {
@@ -53,7 +56,7 @@ impl fmt::Display for Ambiguous {
         for a in &self.0 {
             write!(
                 f,
-                "\n  {} {}: {} {} matches {} unverified records within {VERIFY_WINDOW_DAYS} days",
+                "\n  {} {}: {} {} matches {} unverified records within {WINDOW_DAYS} days",
                 a.account,
                 a.currency,
                 a.date,
@@ -66,10 +69,6 @@ impl fmt::Display for Ambiguous {
 }
 
 impl std::error::Error for Ambiguous {}
-
-/// How far a record's date may be from the line that verifies it: the
-/// records take the bank's date when they are a week or more off.
-const VERIFY_WINDOW_DAYS: i64 = 7;
 
 /// An unverified record from a statement's last days that none of its lines
 /// verifies: the bank books it after the statement, so it moves to the day
@@ -261,31 +260,27 @@ pub fn plan(
         }
         let unverified: Vec<&LedgerPosting> =
             unverified.into_iter().filter(|p| !picked.contains(&p.transaction_id)).collect();
-        let fits = |l: &StatementLine, p: &LedgerPosting| {
-            p.amount == l.delta() && (p.date - l.book_date).num_days().abs() <= VERIFY_WINDOW_DAYS
+        let fits = |&li: &usize, p: &&LedgerPosting| {
+            p.amount == st.lines[li].delta() && within_window(p.date, st.lines[li].book_date)
         };
         let new_lines: Vec<usize> =
             (0..st.lines.len()).filter(|&li| line_status[li] == Status::New).collect();
-        for &li in &new_lines {
-            let l = &st.lines[li];
-            let records: Vec<&&LedgerPosting> = unverified.iter().filter(|p| fits(l, p)).collect();
-            let rivals =
-                |p: &LedgerPosting| new_lines.iter().filter(|&&o| fits(&st.lines[o], p)).count();
-            match records.as_slice() {
-                [] => {}
-                [only] if rivals(only) == 1 => {
-                    line_status[li] = Status::Verifies(only.transaction_id);
-                }
-                many => ambiguous.push(Ambiguity {
-                    account: s.account.clone(),
-                    currency: st.currency,
-                    statement_ref: refs[si][li].clone(),
-                    date: l.book_date,
-                    amount: l.delta(),
-                    description: l.description.clone(),
-                    candidates: many.iter().map(|p| p.transaction_id).collect(),
-                }),
-            }
+        let pairing = one_to_one(&new_lines, &unverified, fits);
+        for &(l, r) in &pairing.pairs {
+            line_status[new_lines[l]] = Status::Verifies(unverified[r].transaction_id);
+        }
+        for (l, many) in &pairing.ambiguous {
+            let li = new_lines[*l];
+            let line = &st.lines[li];
+            ambiguous.push(Ambiguity {
+                account: s.account.clone(),
+                currency: st.currency,
+                statement_ref: refs[si][li].clone(),
+                date: line.book_date,
+                amount: line.delta(),
+                description: line.description.clone(),
+                candidates: many.iter().map(|&r| unverified[r].transaction_id).collect(),
+            });
         }
         // A record within the window of the end may be booked on the next
         // statement; an earlier one still breaks the chain below.
@@ -301,7 +296,7 @@ pub fn plan(
         for p in &unverified {
             let pending = p.date > opening
                 && p.date <= settled
-                && (settled - p.date).num_days() < VERIFY_WINDOW_DAYS;
+                && (settled - p.date).num_days() < WINDOW_DAYS;
             if !pending || verifying.contains(&p.transaction_id) {
                 continue;
             }

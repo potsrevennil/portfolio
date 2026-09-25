@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use super::{accounts, daily, model, names::fallback_account, writer};
+use super::{accounts, daily, journal, model, names::fallback_account, writer};
 
 /// A per-record correction, when mapping.toml names this record.
 ///
@@ -147,110 +147,149 @@ pub(super) fn emit_daily_accounts(
 ) -> (Vec<model::Directive>, usize) {
     let mut out: Vec<model::Directive> = Vec::new();
     let mut count = 0;
-    // A transaction plus the blank line the format puts after each one; keeping
-    // it here mirrors the old `push_str` + `push('\n')` so the render is exact.
-    let mut push = |txn: model::Transaction| {
-        out.push(model::Directive::Transaction(txn));
-        out.push(model::Directive::Blank);
-        count += 1;
-    };
-
     for entry in entries {
         if entry.accounts().iter().any(|a| statement_pools.contains(a)) {
             continue;
         }
-        match entry {
-            daily::Entry::Flow { date, account, amount, currency, category, memo, id } => {
-                if amount.is_zero() {
-                    continue;
-                }
-                let asset = resolve_account(chart, account, used_accounts, unmapped);
-                // A named correction wins over the category. The app allows one
-                // category per record, so an event it can only file as 投資 or
-                // 其他 is described here instead.
-                let (contra, tags) = match corrected(chart, id, used_overrides) {
-                    Some((account, tags)) => {
-                        used_accounts.insert(account.clone());
-                        (account, tags)
-                    }
-                    None => match chart.category(category, amount.is_sign_positive()) {
-                        Some(m) => {
-                            used_accounts.insert(m.account.to_string());
-                            (
-                                m.account.to_string(),
-                                m.tags.iter().map(|t| writer::tag_name(t)).collect::<Vec<_>>(),
-                            )
-                        }
-                        None => {
-                            unmapped.insert(category.clone());
-                            let fallback = if amount.is_sign_positive() {
-                                &chart.fallback.income
-                            } else {
-                                &chart.fallback.expense
-                            };
-                            used_accounts.insert(fallback.to_string());
-                            (fallback.to_string(), Vec::new())
-                        }
-                    },
-                };
-                let mut tags = tags;
-                with_trip_tags(chart, *date, id, &contra, &mut tags);
-                let narration = narration_for(chart, id, memo);
-                push(model::Transaction {
-                    date: *date,
-                    payee: category.clone(),
-                    narration: narration.to_string(),
-                    tags,
-                    postings: vec![
-                        writer::Posting::new(asset, *amount, *currency),
-                        writer::Posting::new(contra, -amount, *currency),
-                    ],
-                    source: model::Source::Tiantian,
-                    // The record's own UUID is its stable id for later dedup.
-                    external_ref: (!id.is_empty()).then(|| id.clone()),
-                });
-            }
-            daily::Entry::Transfer {
-                date,
-                from,
-                out: sent,
-                out_currency,
-                to,
-                inn,
-                in_currency,
-                memo,
-                id,
-            } => {
-                if sent.is_zero() && inn.is_zero() {
-                    continue;
-                }
-                let source = resolve_account(chart, from, used_accounts, unmapped);
-                let target = resolve_account(chart, to, used_accounts, unmapped);
-                // Cross-currency legs cannot balance on their own, so the
-                // receiving side states what it is worth in the sending
-                // currency. Both totals are known, so no rate rounding is
-                // involved and the transaction balances exactly.
-                let credit = writer::Posting::new(target, *inn, *in_currency);
-                let credit = if out_currency != in_currency {
-                    credit.worth(sent.abs(), *out_currency)
-                } else {
-                    credit
-                };
-                push(model::Transaction {
-                    date: *date,
-                    payee: "轉帳".to_string(),
-                    narration: memo.clone(),
-                    tags: Vec::new(),
-                    postings: vec![writer::Posting::new(source, -sent, *out_currency), credit],
-                    source: model::Source::Tiantian,
-                    // One transaction per 轉帳 row, so the row's id is its key.
-                    external_ref: (!id.is_empty()).then(|| id.clone()),
-                });
-            }
+        if let Some(txn) = daily_transaction(chart, entry, used_accounts, unmapped, used_overrides)
+        {
+            // A transaction plus the blank line the format puts after each one.
+            out.push(model::Directive::Transaction(txn));
+            out.push(model::Directive::Blank);
+            count += 1;
         }
     }
-
     (out, count)
+}
+
+/// One record touching no statement account, taken as written; `None` for a
+/// record that moves nothing.
+pub(crate) fn daily_transaction(
+    chart: &accounts::Chart,
+    entry: &daily::Entry,
+    used_accounts: &mut BTreeSet<String>,
+    unmapped: &mut BTreeSet<String>,
+    used_overrides: &mut BTreeSet<String>,
+) -> Option<model::Transaction> {
+    match entry {
+        daily::Entry::Flow { date, account, amount, currency, category, memo, id } => {
+            if amount.is_zero() {
+                return None;
+            }
+            let asset = resolve_account(chart, account, used_accounts, unmapped);
+            // A named correction wins over the category. The app allows one
+            // category per record, so an event it can only file as 投資 or
+            // 其他 is described here instead.
+            let (contra, tags) = match corrected(chart, id, used_overrides) {
+                Some((account, tags)) => {
+                    used_accounts.insert(account.clone());
+                    (account, tags)
+                }
+                None => match chart.category(category, amount.is_sign_positive()) {
+                    Some(m) => {
+                        used_accounts.insert(m.account.to_string());
+                        (
+                            m.account.to_string(),
+                            m.tags.iter().map(|t| writer::tag_name(t)).collect::<Vec<_>>(),
+                        )
+                    }
+                    None => {
+                        unmapped.insert(category.clone());
+                        let fallback = if amount.is_sign_positive() {
+                            &chart.fallback.income
+                        } else {
+                            &chart.fallback.expense
+                        };
+                        used_accounts.insert(fallback.to_string());
+                        (fallback.to_string(), Vec::new())
+                    }
+                },
+            };
+            let mut tags = tags;
+            with_trip_tags(chart, *date, id, &contra, &mut tags);
+            let narration = narration_for(chart, id, memo);
+            Some(model::Transaction {
+                date: *date,
+                payee: category.clone(),
+                narration: narration.to_string(),
+                tags,
+                postings: vec![
+                    writer::Posting::new(asset, *amount, *currency),
+                    writer::Posting::new(contra, -amount, *currency),
+                ],
+                source: model::Source::Tiantian,
+                // The record's own UUID is its stable id for later dedup.
+                external_ref: (!id.is_empty()).then(|| id.clone()),
+            })
+        }
+        daily::Entry::Transfer {
+            date,
+            from,
+            out: sent,
+            out_currency,
+            to,
+            inn,
+            in_currency,
+            memo,
+            id,
+        } => {
+            if sent.is_zero() && inn.is_zero() {
+                return None;
+            }
+            let source = resolve_account(chart, from, used_accounts, unmapped);
+            let target = resolve_account(chart, to, used_accounts, unmapped);
+            // Cross-currency legs cannot balance on their own, so the
+            // receiving side states what it is worth in the sending
+            // currency. Both totals are known, so no rate rounding is
+            // involved and the transaction balances exactly.
+            let credit = writer::Posting::new(target, *inn, *in_currency);
+            let credit = if out_currency != in_currency {
+                credit.worth(sent.abs(), *out_currency)
+            } else {
+                credit
+            };
+            Some(model::Transaction {
+                date: *date,
+                payee: "轉帳".to_string(),
+                narration: memo.clone(),
+                tags: Vec::new(),
+                postings: vec![writer::Posting::new(source, -sent, *out_currency), credit],
+                source: model::Source::Tiantian,
+                // One transaction per 轉帳 row, so the row's id is its key.
+                external_ref: (!id.is_empty()).then(|| id.clone()),
+            })
+        }
+    }
+}
+
+/// A record booked straight onto `near` — its statement account, or the
+/// fallback when a statement line should have explained it — rather than
+/// matched to a line. Tagged [`journal::UNVERIFIED_TAG`] when `unverified`.
+pub(crate) fn record_on(
+    chart: &accounts::Chart,
+    event: &daily::AppEvent,
+    near: &str,
+    payee: String,
+    unverified: bool,
+    unmapped: &mut BTreeSet<String>,
+    used_overrides: &mut BTreeSet<String>,
+) -> model::Transaction {
+    let (target, mut tags) = resolve(chart, event, "", unmapped, used_overrides);
+    if unverified {
+        tags.push(journal::UNVERIFIED_TAG.to_string());
+    }
+    model::Transaction {
+        date: event.date,
+        payee,
+        narration: narration_for(chart, event.correction_id(), &event.memo).to_string(),
+        tags,
+        postings: vec![
+            contra_posting(target, event),
+            writer::Posting::new(near, event.delta, event.currency),
+        ],
+        source: model::Source::Tiantian,
+        external_ref: (!event.id.is_empty()).then(|| event.id.clone()),
+    }
 }
 
 #[cfg(test)]

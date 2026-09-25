@@ -23,4 +23,4 @@
 mod manual;
 mod runner;
 
-pub use runner::{run, FreezeArgs, Mismatch, Negative, Report};
+pub use runner::{journal_rows, placeholder_root, run, FreezeArgs, Mismatch, Negative, Report};
