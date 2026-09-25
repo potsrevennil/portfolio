@@ -68,7 +68,7 @@ pub fn AccountsPage() -> impl IntoView {
                             }
                                 .into_any()
                         }
-                        Err(e) => view! { <p class="note error">{crate::error::load_failed(&e)}</p> }.into_any(),
+                        Err(e) => view! { <crate::error::LoadFailed error=e /> }.into_any(),
                     }
                 })}
             </Transition>

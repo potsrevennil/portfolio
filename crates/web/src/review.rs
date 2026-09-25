@@ -146,7 +146,7 @@ pub fn ReviewPage() -> impl IntoView {
                         }
                             .into_any()
                     }
-                    Err(e) => view! { <p class="note error">{crate::error::load_failed(&e)}</p> }.into_any(),
+                    Err(e) => view! { <crate::error::LoadFailed error=e /> }.into_any(),
                 }
             })}
         </Transition>
@@ -265,7 +265,7 @@ pub fn EditPage() -> impl IntoView {
             {move || Suspend::new(async move {
                 match editing.await {
                     Ok(editing) => view! { <Editor editing /> }.into_any(),
-                    Err(e) => view! { <p class="note error">{crate::error::load_failed(&e)}</p> }.into_any(),
+                    Err(e) => view! { <crate::error::LoadFailed error=e /> }.into_any(),
                 }
             })}
         </Transition>

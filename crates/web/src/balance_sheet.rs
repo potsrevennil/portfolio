@@ -6,7 +6,10 @@ use std::collections::BTreeSet;
 use leptos::{prelude::*, web_sys::HtmlDetailsElement};
 use leptos_meta::Title;
 
-use crate::model::{BalanceSheet, Converted, JournalQuery, Money, Node, Section, Unpriced};
+use crate::{
+    error::LoadFailed,
+    model::{BalanceSheet, Converted, JournalQuery, Money, Node, Section, Unpriced},
+};
 
 /// Where the open groups are remembered across visits, per browser.
 const OPEN_KEY: &str = "balance-sheet-open";
@@ -32,7 +35,7 @@ pub fn BalanceSheetPage() -> impl IntoView {
             {move || Suspend::new(async move {
                 match sheet.await {
                     Ok(sheet) => view! { <SheetView sheet /> }.into_any(),
-                    Err(e) => view! { <p class="note error">{crate::error::load_failed(&e)}</p> }.into_any(),
+                    Err(e) => view! { <LoadFailed error=e /> }.into_any(),
                 }
             })}
         </Suspense>

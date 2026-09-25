@@ -55,7 +55,7 @@ pub fn ManualPage() -> impl IntoView {
             {move || Suspend::new(async move {
                 match form.await {
                     Ok(form) => view! { <ManualEntry form /> }.into_any(),
-                    Err(e) => view! { <p class="note error">{crate::error::load_failed(&e)}</p> }.into_any(),
+                    Err(e) => view! { <crate::error::LoadFailed error=e /> }.into_any(),
                 }
             })}
         </Suspense>
