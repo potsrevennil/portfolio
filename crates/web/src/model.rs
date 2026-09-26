@@ -266,6 +266,7 @@ impl fmt::Display for AccountKind {
 /// An account the journal can be filtered to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountChoice {
+    pub path: String,
     /// Its ancestors' labels from the root down, then its own.
     pub trail: Vec<String>,
 }

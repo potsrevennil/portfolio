@@ -222,16 +222,6 @@ fn render_filter(
         .with(|| view! { <JournalFilter action="/journal" query chosen accounts tree /> }.to_html())
 }
 
-/// The names the account picker offers, in the order it offers them.
-fn offered(html: &str) -> Vec<String> {
-    let list = &html[position(html, "<datalist")..];
-    list[..position(list, "</datalist>")]
-        .split(r#"<option value=""#)
-        .skip(1)
-        .map(|option| option.split('"').next().unwrap().to_string())
-        .collect()
-}
-
 /// Each entry's visible text, newest first.
 fn entries(html: &str) -> Vec<String> {
     html.split(r#"<li class="entry"#)
@@ -241,6 +231,21 @@ fn entries(html: &str) -> Vec<String> {
             visible(entry.split("</ol>").next().unwrap())
         })
         .collect()
+}
+
+/// The names the picker searches over, in the order it lists them.
+fn offered(html: &str) -> Vec<String> {
+    let list = &html[position(html, r#"<ul class="matches"#)..];
+    list[..position(list, "</ul>")]
+        .split(r#"class="pick">"#)
+        .skip(1)
+        .map(|row| row.split('<').next().unwrap().to_string())
+        .collect()
+}
+
+/// Every `<summary>` in the markup, with its contents.
+fn summaries(html: &str) -> Vec<&str> {
+    html.split("<summary").skip(1).map(|s| s.split("</summary>").next().unwrap()).collect()
 }
 
 fn narrations(journal: &Page) -> Vec<String> {
@@ -500,6 +505,31 @@ async fn the_tree_starts_at_the_kinds_and_opens_a_level_at_a_time() {
 }
 
 #[tokio::test]
+async fn a_fold_holds_nothing_to_click_but_itself() {
+    let (_dir, pool) = ledger().await;
+    let journal = journal_page(&pool, JournalQuery::default()).await;
+    let html = render_filter(
+        journal.query.clone(),
+        journal.chosen.clone(),
+        journal.accounts,
+        journal.tree,
+    );
+    // A link inside a <summary> is followed by some browsers and swallowed by
+    // the fold in others, so a branch's own row picks nothing: 全部 inside it
+    // does. Every branch offers one.
+    for summary in summaries(&html) {
+        assert!(!summary.contains("<a "), "a link inside a fold: {summary}");
+    }
+    let branches = html.matches("<details class=\"group\"").count();
+    assert_eq!(html.matches(r#"class="pick all""#).count(), branches, "{html}");
+    // The branch's own 全部 filters to the branch, not to everything.
+    assert!(
+        html.contains(r#"<a href="/journal?account=Assets%3ABank" class="pick all">全部"#),
+        "{html}"
+    );
+}
+
+#[tokio::test]
 async fn the_tree_arrives_open_at_the_filtered_account_and_keeps_the_other_filters() {
     let (_dir, pool) = ledger().await;
     let query = JournalQuery {
@@ -562,13 +592,20 @@ async fn the_chosen_account_survives_the_round_trip() {
 #[test]
 fn an_account_name_is_escaped_where_the_picker_offers_it() {
     let label = r#"<b>甲 & "乙"</b>"#;
-    let choice = AccountChoice { trail: vec!["支出".into(), label.into()] };
+    let choice = AccountChoice {
+        path: "Expenses:Quoted".into(),
+        trail: vec!["支出".into(), label.into()],
+    };
     let chosen = Some(choice.to_string());
     let html = render_filter(JournalQuery::default(), chosen, vec![choice], Vec::new());
-    assert!(!html.contains("<b>甲"), "{html}");
+    // Once in the box's value, once in the list it is searched from.
     assert_eq!(html.matches("&lt;b&gt;").count(), 2, "{html}");
-    assert!(html.contains("&amp;"), "{html}");
-    assert!(!html.contains(r#""乙""#), "{html}");
+    assert!(!html.contains("<b>甲"), "{html}");
+    // The quotes are escaped where they would end the attribute.
+    assert!(
+        html.contains(r#"value="支出 › &lt;b&gt;甲 &amp; &quot;乙&quot;&lt;/b&gt;""#),
+        "{html}"
+    );
 }
 
 #[test]

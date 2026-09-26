@@ -49,7 +49,7 @@ fn trail(path: &str, kind: Option<AccountKind>, tree: &BTreeMap<&str, &str>) -> 
             *root = kind.to_string();
         }
     }
-    AccountChoice { trail }
+    AccountChoice { path: path.to_string(), trail }
 }
 
 /// How many segments `path` has.

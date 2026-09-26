@@ -498,14 +498,29 @@ details.group > summary.row.section {
 }
 
 .journal .filter .tree,
-.journal .filter .tree ul {
+.journal .filter .tree ul,
+.journal .filter .matches {
   list-style: none;
   margin: 0;
   padding: 0 0 0 1.1rem;
 }
 
-/* The dropped tree: over the page, never wider than it. */
-.journal .filter .tree {
+.journal .filter .matches,
+.journal .filter .panel > .tree {
+  padding-left: 0.2rem;
+}
+
+.hidden {
+  display: none;
+}
+
+/* A branch's own row: the whole of it, set apart from the accounts under it. */
+.journal .filter a.pick.all {
+  color: var(--muted);
+}
+
+/* The dropped panel: over the page, never wider than it. */
+.journal .filter .panel {
   position: absolute;
   z-index: 10;
   top: 100%;
