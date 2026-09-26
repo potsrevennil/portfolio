@@ -261,25 +261,26 @@ impl fmt::Display for AccountKind {
 /// An account the journal can be filtered to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountChoice {
-    /// Standalone, so it reads without the tree around it.
-    pub label: String,
-    pub kind: AccountKind,
+    /// Its ancestors' labels from the root down, then its own.
+    pub trail: Vec<String>,
 }
 
 /// The name the account box offers, holds once a reader picks it, and matches
-/// on while they type. The kind rides inside the value rather than in an
-/// `<option label>`, which browsers draw as they please — some in place of the
-/// value, which would leave the whole list reading as four names. It also
-/// tells apart the accounts a bare label alone cannot: 收入 and 支出 share
-/// names for the same thing going each way.
+/// on while they type. It carries the whole trail, as Fava's filter carries a
+/// full account path: a reader can type any ancestor to narrow the list, and
+/// every row says where it sits without a tree to expand. It also tells apart
+/// the accounts a bare label cannot — 收入 and 支出 name the same thing going
+/// each way.
 impl fmt::Display for AccountChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = self.kind.to_string();
-        match self.label == kind {
-            // A root is its own kind; 資產（資產） says it twice.
-            true => f.write_str(&self.label),
-            false => write!(f, "{}（{kind}）", self.label),
+        let mut trail = self.trail.iter();
+        if let Some(first) = trail.next() {
+            f.write_str(first)?;
         }
+        for name in trail {
+            write!(f, " › {name}")?;
+        }
+        Ok(())
     }
 }
 

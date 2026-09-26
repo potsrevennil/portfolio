@@ -32,6 +32,29 @@ impl TryFrom<AccountType> for AccountKind {
     }
 }
 
+/// An account's ancestors' labels from the root down, then its own. Inside a
+/// trail each parent gives the context, so the plain tree label is enough —
+/// the standalone label would repeat the parent it already follows. A chart
+/// that leaves a root unlabelled would read `Assets`; its kind names it
+/// instead, since no page may fall back to English.
+fn trail(path: &str, kind: Option<AccountKind>, tree: &BTreeMap<&str, &str>) -> AccountChoice {
+    let leaf = |prefix: &str| prefix.rsplit(':').next().unwrap_or(prefix).to_string();
+    let mut trail: Vec<String> = prefixes(path)
+        .map(|prefix| tree.get(prefix).map(|l| l.to_string()).unwrap_or_else(|| leaf(prefix)))
+        .collect();
+    if let (Some(root), Some(kind)) = (trail.first_mut(), kind) {
+        if *root == leaf(path.split(':').next().unwrap_or(path)) {
+            *root = kind.to_string();
+        }
+    }
+    AccountChoice { trail }
+}
+
+/// Every path from the root down to `path` itself.
+fn prefixes(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices(':').map(|(i, _)| &path[..i]).chain(std::iter::once(path))
+}
+
 /// What a name the reader typed turned out to mean.
 enum Named {
     Account(String),
@@ -44,7 +67,7 @@ enum Named {
 pub struct Chart {
     /// Path → the label that reads on its own, outside the tree.
     labels: BTreeMap<String, String>,
-    /// Path → the name the picker offers it under, kind included.
+    /// Path → the trail the picker offers it under.
     full: BTreeMap<String, String>,
     choices: Vec<AccountChoice>,
     /// Every text the box may hold, and what it names.
@@ -54,27 +77,31 @@ pub struct Chart {
 impl Chart {
     pub async fn load(pool: &SqlitePool) -> Result<Self> {
         let accounts = journal::accounts(pool).await?;
-        let tree = accounts.iter().map(|a| (a.path.as_str(), a.label.as_str())).collect();
+        let tree: BTreeMap<&str, &str> =
+            accounts.iter().map(|a| (a.path.as_str(), a.label.as_str())).collect();
         let labels = standalone_labels(&tree);
         let label = |path: &str| labels.get(path).cloned().unwrap_or_else(|| path.to_string());
 
         let mut offered: Vec<_> = accounts
             .iter()
             .filter_map(|a| match AccountKind::try_from(a.account_type) {
-                Ok(kind) => Some((a, AccountChoice { label: label(&a.path), kind })),
+                Ok(kind) => Some((a, trail(&a.path, Some(kind), &tree))),
                 Err(_) => None,
             })
             .collect();
         // Sections in balance-sheet order, as Fava lists them; paths within.
         offered.sort_by_key(|(a, _)| (a.account_type, a.path.as_str()));
 
-        // An account the box never offers keeps its bare label as its full
-        // name: a leg still links to it, so it still has to resolve.
-        let mut full: BTreeMap<String, String> =
-            accounts.iter().map(|a| (a.path.clone(), label(&a.path))).collect();
-        for (account, choice) in &offered {
-            full.insert(account.path.clone(), choice.to_string());
-        }
+        // Every account has a full name, not only the offered ones: a leg
+        // links to the loader's own accounts too, so they still have to
+        // resolve.
+        let full: BTreeMap<String, String> = accounts
+            .iter()
+            .map(|a| {
+                let kind = AccountKind::try_from(a.account_type).ok();
+                (a.path.clone(), trail(&a.path, kind, &tree).to_string())
+            })
+            .collect();
 
         let mut found: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
         for account in &accounts {

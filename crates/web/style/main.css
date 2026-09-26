@@ -317,6 +317,10 @@ details.group > summary.row.section {
   gap: 0.4rem;
   align-items: center;
   color: var(--muted);
+  /* The field may shrink; its name may not break in two. A flex item will not
+     shrink below its content unless it is told it may. */
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .journal .filter select,
@@ -326,9 +330,10 @@ details.group > summary.row.section {
   max-width: 100%;
 }
 
-/* Wide enough for an account's name and its kind after it. */
+/* Wide enough for a deep account's whole trail, and narrower where it must. */
 .journal .filter input[name="account"] {
-  width: 14rem;
+  flex: 1 1 18rem;
+  min-width: 0;
 }
 
 .journal .filter a,

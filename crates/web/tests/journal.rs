@@ -22,7 +22,7 @@ use sqlx::SqlitePool;
 use tempfile::TempDir;
 use web::{
     journal::{load_journal, JournalFilter, JournalList},
-    model::{AccountChoice, AccountKind, Journal as Page, JournalQuery, Review},
+    model::{AccountChoice, Journal as Page, JournalQuery, Review},
     server,
 };
 
@@ -350,7 +350,8 @@ async fn an_account_filters_to_its_subtree() {
 async fn a_typed_name_and_a_linked_path_reach_the_same_account() {
     let (_dir, pool) = ledger().await;
     // The name the picker offers, the bare label, and the path a link carries.
-    for typed in ["甲公司分帳（資產）", "甲公司分帳", "Assets:Split:Alpha:Tab"] {
+    for typed in ["資產 › 分帳 › 甲公司 › 分帳", "甲公司分帳", "Assets:Split:Alpha:Tab"]
+    {
         let page = journal_page(&pool, JournalQuery::account(typed)).await;
         assert_eq!(page.query.account.as_deref(), Some("Assets:Split:Alpha:Tab"), "{typed}");
         assert_eq!(page.account.as_deref(), Some("甲公司分帳"), "{typed}");
@@ -369,8 +370,8 @@ async fn a_name_no_one_account_answers_to_is_refused_by_name() {
     // 銀行 stands under two roots: the picker's own names tell them apart, so
     // the refusal offers them rather than falling back to every account.
     let clash = refused("銀行").await;
-    assert!(clash.contains("帳戶名重複：銀行（收入）、銀行（資產）"), "{clash}");
-    for (typed, path) in [("銀行（資產）", "Assets:Bank"), ("銀行（收入）", "Income:Bank")]
+    assert!(clash.contains("帳戶名重複：收入 › 銀行、資產 › 銀行"), "{clash}");
+    for (typed, path) in [("資產 › 銀行", "Assets:Bank"), ("收入 › 銀行", "Income:Bank")]
     {
         let page = journal_page(&pool, JournalQuery::account(typed)).await;
         assert_eq!(page.query.account.as_deref(), Some(path), "{typed}");
@@ -431,26 +432,26 @@ async fn the_picker_offers_every_account_by_kind_and_no_equity_one() {
     let (_dir, pool) = ledger().await;
     let journal = journal_page(&pool, JournalQuery::default()).await;
     let html = render_filter(journal.query.clone(), journal.chosen.clone(), journal.accounts);
-    // Sections in balance-sheet order, paths within; a root is its own kind,
-    // so it is not named twice over.
+    // Sections in balance-sheet order, paths within, each account under the
+    // trail that leads to it.
     assert_eq!(offered(&html), [
         "資產",
-        "銀行（資產）",
-        "外幣（資產）",
-        "活存（資產）",
-        "現金（資產）",
-        "分帳（資產）",
-        "甲公司（資產）",
-        "甲公司分帳（資產）",
-        "乙公司（資產）",
-        "乙公司分帳（資產）",
+        "資產 › 銀行",
+        "資產 › 銀行 › 外幣",
+        "資產 › 銀行 › 活存",
+        "資產 › 現金",
+        "資產 › 分帳",
+        "資產 › 分帳 › 甲公司",
+        "資產 › 分帳 › 甲公司 › 分帳",
+        "資產 › 分帳 › 乙公司",
+        "資產 › 分帳 › 乙公司 › 分帳",
         "負債",
-        "信用卡（負債）",
+        "負債 › 信用卡",
         "收入",
-        "銀行（收入）",
-        "利息（收入）",
+        "收入 › 銀行",
+        "收入 › 銀行 › 利息",
         "支出",
-        "食食（支出）",
+        "支出 › 食食",
     ]);
     // 權益 is the loader's own; nobody files under it.
     assert!(!html.contains("權益") && !html.contains("起鼓") && !html.contains("匯兌"), "{html}");
@@ -464,13 +465,13 @@ async fn the_chosen_account_survives_the_round_trip() {
     let (_dir, pool) = ledger().await;
     // A leg's link carries the path; the box comes back holding the name.
     let linked = journal_page(&pool, JournalQuery::account("Assets:Split:Alpha:Tab")).await;
-    assert_eq!(linked.chosen.as_deref(), Some("甲公司分帳（資產）"));
+    assert_eq!(linked.chosen.as_deref(), Some("資產 › 分帳 › 甲公司 › 分帳"));
     let html = render_filter(linked.query.clone(), linked.chosen.clone(), linked.accounts.clone());
-    assert!(html.contains(r#"value="甲公司分帳（資產）""#), "{html}");
+    assert!(html.contains(r#"value="資產 › 分帳 › 甲公司 › 分帳""#), "{html}");
 
     // Submitting that name again lands on the same account, and the links the
     // page leaves behind still carry the path.
-    let typed = journal_page(&pool, JournalQuery::account("甲公司分帳（資產）")).await;
+    let typed = journal_page(&pool, JournalQuery::account("資產 › 分帳 › 甲公司 › 分帳")).await;
     assert_eq!(typed.query.account.as_deref(), Some("Assets:Split:Alpha:Tab"));
     assert_eq!(typed.chosen, linked.chosen);
     assert_eq!(narrations(&typed), narrations(&linked));
@@ -479,7 +480,7 @@ async fn the_chosen_account_survives_the_round_trip() {
 #[test]
 fn an_account_name_is_escaped_where_the_picker_offers_it() {
     let label = r#"<b>甲 & "乙"</b>"#;
-    let choice = AccountChoice { label: label.into(), kind: AccountKind::Expense };
+    let choice = AccountChoice { trail: vec!["支出".into(), label.into()] };
     let chosen = Some(choice.to_string());
     let html = render_filter(JournalQuery::default(), chosen, vec![choice]);
     assert!(!html.contains("<b>甲"), "{html}");
@@ -529,8 +530,8 @@ async fn the_journal_route_renders_with_its_filter() {
     let html = site.page("/journal?account=Assets%3ASplit&review=unreviewed").await;
     assert!(html.contains("日記帳 · 帳簿"), "{html}");
     // The box holds the name; the list the browser filters holds every other.
-    assert!(html.contains(r#"value="分帳（資產）""#), "{html}");
-    assert!(offered(&html).contains(&"甲公司分帳（資產）".to_string()), "{html}");
+    assert!(html.contains(r#"value="資產 › 分帳""#), "{html}");
+    assert!(offered(&html).contains(&"資產 › 分帳 › 甲公司 › 分帳".to_string()), "{html}");
     assert!(!html.contains("起鼓"), "{html}");
     let text = visible(&html);
     position(&text, "查無交易");
