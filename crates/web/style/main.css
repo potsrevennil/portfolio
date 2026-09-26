@@ -505,18 +505,44 @@ details.group > summary.row.section {
   padding: 0 0 0 1.1rem;
 }
 
-.journal .filter .matches,
-.journal .filter .panel > .tree {
+.journal .filter .matches {
   padding-left: 0.2rem;
+}
+
+/* Room for the triangles, which hang to the left of the names they fold. */
+.journal .filter .panel > .tree {
+  padding-left: 1.3rem;
 }
 
 .hidden {
   display: none;
 }
 
-/* A branch's own row: the whole of it, set apart from the accounts under it. */
-.journal .filter a.pick.all {
+/* A branch: its name picks the whole of it, the triangle beside it folds. */
+.journal .filter .tree li.branch {
+  position: relative;
+}
+
+.journal .filter .tree li.branch > .fold > summary {
+  position: absolute;
+  left: -1.1rem;
+  top: 0;
+  width: 1.1rem;
+  cursor: pointer;
+  list-style: none;
   color: var(--muted);
+}
+
+.journal .filter .tree li.branch > .fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal .filter .tree .fold > summary .marker::before {
+  content: "▸";
+}
+
+.journal .filter .tree .fold[open] > summary .marker::before {
+  content: "▾";
 }
 
 /* The dropped panel: over the page, never wider than it. */

@@ -247,33 +247,29 @@ pub fn JournalFilter(
     }
 }
 
-/// One account in the picker's tree. A branch's own name only folds it open:
-/// a link inside a `<summary>` is followed in some browsers and swallowed by
-/// the fold in others, so the row that picks the branch itself sits inside it,
-/// where 全部 means the whole of it.
+/// One account in the picker's tree: a link that filters to it, and — for a
+/// branch — a fold beside it holding what files under it. The fold holds only
+/// its own triangle: a link inside a `<summary>` is followed by some browsers
+/// and swallowed by the fold in others.
 fn branch(row: Row) -> AnyView {
+    let name = view! {
+        <a class="pick" href=row.href>
+            {row.name}
+        </a>
+    };
     if row.children.is_empty() {
-        return view! {
-            <li>
-                <a class="pick" href=row.href>
-                    {row.name}
-                </a>
-            </li>
-        }
-        .into_any();
+        return view! { <li class="leaf">{name}</li> }.into_any();
     }
     let children = row.children.into_iter().map(branch).collect_view();
     view! {
-        <li>
-            <details class="group" open=row.open>
+        <li class="branch">
+            {name}
+            <details class="fold" open=row.open>
                 <summary>
                     <span class="marker" aria-hidden="true"></span>
-                    <span class="name">{row.name}</span>
+                    <span class="sr-only">"展開"</span>
                 </summary>
-                <ul>
-                    <li><a class="pick all" href=row.href>"全部"</a></li>
-                    {children}
-                </ul>
+                <ul>{children}</ul>
             </details>
         </li>
     }

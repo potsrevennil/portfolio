@@ -505,7 +505,7 @@ async fn the_tree_starts_at_the_kinds_and_opens_a_level_at_a_time() {
 }
 
 #[tokio::test]
-async fn a_fold_holds_nothing_to_click_but_itself() {
+async fn a_branch_is_picked_by_its_own_name_and_folded_by_its_triangle() {
     let (_dir, pool) = ledger().await;
     let journal = journal_page(&pool, JournalQuery::default()).await;
     let html = render_filter(
@@ -515,18 +515,17 @@ async fn a_fold_holds_nothing_to_click_but_itself() {
         journal.tree,
     );
     // A link inside a <summary> is followed by some browsers and swallowed by
-    // the fold in others, so a branch's own row picks nothing: 全部 inside it
-    // does. Every branch offers one.
+    // the fold in others, so a fold holds nothing but its own triangle.
     for summary in summaries(&html) {
         assert!(!summary.contains("<a "), "a link inside a fold: {summary}");
     }
-    let branches = html.matches("<details class=\"group\"").count();
-    assert_eq!(html.matches(r#"class="pick all""#).count(), branches, "{html}");
-    // The branch's own 全部 filters to the branch, not to everything.
-    assert!(
-        html.contains(r#"<a href="/journal?account=Assets%3ABank" class="pick all">全部"#),
-        "{html}"
-    );
+    // A branch's name filters to the whole of it; no extra row says so.
+    assert!(html.contains(r#"href="/journal?account=Assets%3ABank" class="pick">銀行"#), "{html}");
+    let tree =
+        &html[position(&html, r#"<ul class="tree""#)..position(&html, r#"<ul class="matches"#)];
+    // One row per account, and one more to clear the filter.
+    let accounts = journal_page(&pool, JournalQuery::default()).await.accounts.len();
+    assert_eq!(tree.matches(r#"class="pick""#).count(), accounts + 1, "{tree}");
 }
 
 #[tokio::test]
