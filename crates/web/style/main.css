@@ -317,6 +317,10 @@ details.group > summary.row.section {
   gap: 0.4rem;
   align-items: center;
   color: var(--muted);
+  /* The field may shrink; its name may not break in two. A flex item will not
+     shrink below its content unless it is told it may. */
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .journal .filter select,
@@ -324,6 +328,12 @@ details.group > summary.row.section {
 .journal .filter button {
   font: inherit;
   max-width: 100%;
+}
+
+/* Wide enough for a deep account's whole trail, and narrower where it must. */
+.journal .filter input[name="account"] {
+  flex: 1 1 18rem;
+  min-width: 0;
 }
 
 .journal .filter a,
@@ -428,4 +438,153 @@ details.group > summary.row.section {
 
 .pager a[rel="next"] {
   margin-left: auto;
+}
+
+/* The account box and its tree are one control: typing narrows the browser's
+   own list, and ▾ drops the tree over the page rather than pushing it down. */
+.journal .filter .combo {
+  position: relative;
+  display: flex;
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.journal .filter .combo input[name="account"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 1.6rem;
+}
+
+/* Chrome draws its own arrow for a list-backed input, which would sit beside
+   ours and open a second, flat menu. Ours opens the tree; typing still brings
+   the browser's suggestions up. */
+.journal .filter .combo input[name="account"]::-webkit-calendar-picker-indicator {
+  display: none !important;
+}
+
+.journal .filter .picker > summary {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 0.4rem;
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+}
+
+.journal .filter .picker > summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal .filter .picker > summary .marker::before {
+  content: "▾";
+}
+
+.journal .filter .picker[open] > summary .marker::before {
+  content: "▴";
+}
+
+/* Named for a screen reader; the arrow says it to everyone else. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.journal .filter .tree,
+.journal .filter .tree ul,
+.journal .filter .matches {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 1.1rem;
+}
+
+.journal .filter .matches {
+  padding-left: 0.2rem;
+}
+
+/* Room for the triangles, which hang to the left of the names they fold. */
+.journal .filter .panel > .tree {
+  padding-left: 1.3rem;
+}
+
+.hidden {
+  display: none;
+}
+
+/* A branch: its name picks the whole of it, the triangle beside it folds. */
+.journal .filter .tree li.branch {
+  position: relative;
+}
+
+.journal .filter .tree li.branch > .fold > summary {
+  position: absolute;
+  left: -1.1rem;
+  top: 0;
+  width: 1.1rem;
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+}
+
+.journal .filter .tree li.branch > .fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal .filter .tree .fold > summary .marker::before {
+  content: "▸";
+}
+
+.journal .filter .tree .fold[open] > summary .marker::before {
+  content: "▾";
+}
+
+/* The dropped panel: over the page, never wider than it. */
+.journal .filter .panel {
+  position: absolute;
+  z-index: 10;
+  top: 100%;
+  left: 0;
+  /* As wide as the deepest row it shows, within the window. */
+  width: max-content;
+  min-width: 100%;
+  max-width: calc(100vw - 2rem);
+  max-height: 22rem;
+  overflow: auto;
+  padding: 0.4rem 0.8rem 0.4rem 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.3rem;
+  box-shadow: 0 0.4rem 1rem rgb(0 0 0 / 18%);
+  white-space: nowrap;
+}
+
+.journal .filter .tree summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.2rem;
+}
+
+.journal .filter .tree summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal .filter .tree a.pick {
+  color: var(--fg);
+  text-decoration: none;
+  padding: 0.15rem 0;
+  display: inline-block;
+}
+
+.journal .filter .tree a.pick:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }

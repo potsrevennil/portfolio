@@ -192,6 +192,11 @@ impl JournalQuery {
     }
 
     pub fn with_page(&self, page: u32) -> Self { JournalQuery { page, ..self.clone() } }
+
+    /// Another account, every other filter kept, back at the first page.
+    pub fn with_account(&self, account: Option<&str>) -> Self {
+        JournalQuery { account: account.map(str::to_string), page: 1, ..self.clone() }
+    }
 }
 
 /// Blank form fields are no filter.
@@ -237,13 +242,64 @@ impl fmt::Display for JournalQuery {
     }
 }
 
+/// Which of the four kinds an account belongs to. 權益 is not among them: the
+/// loader's own accounts are nobody's filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountKind {
+    Asset,
+    Liability,
+    Income,
+    Expense,
+}
+
+impl fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            AccountKind::Asset => "資產",
+            AccountKind::Liability => "負債",
+            AccountKind::Income => "收入",
+            AccountKind::Expense => "支出",
+        })
+    }
+}
+
 /// An account the journal can be filtered to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountChoice {
     pub path: String,
-    /// Standalone, so it reads without the tree around it.
+    /// Its ancestors' labels from the root down, then its own.
+    pub trail: Vec<String>,
+}
+
+/// The name the account box offers, holds once a reader picks it, and matches
+/// on while they type. It carries the whole trail, as Fava's filter carries a
+/// full account path: a reader can type any ancestor to narrow the list, and
+/// every row says where it sits without a tree to expand. It also tells apart
+/// the accounts a bare label cannot — 收入 and 支出 name the same thing going
+/// each way.
+impl fmt::Display for AccountChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut trail = self.trail.iter();
+        if let Some(first) = trail.next() {
+            f.write_str(first)?;
+        }
+        for name in trail {
+            write!(f, " › {name}")?;
+        }
+        Ok(())
+    }
+}
+
+/// One account in the tree the picker browses: its own label, since the row
+/// above gives the context, and whatever files under it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountNode {
+    pub path: String,
     pub label: String,
-    pub depth: usize,
+    /// Open on arrival: the filtered account's ancestors, so a reader lands
+    /// looking at where they are.
+    pub open: bool,
+    pub children: Vec<AccountNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -273,7 +329,12 @@ pub struct Journal {
     pub query: JournalQuery,
     /// The filtered account's label, when there is one.
     pub account: Option<String>,
+    /// The same account under the name the picker offers it by: what the
+    /// account box holds, so submitting the form again finds it again.
+    pub chosen: Option<String>,
     pub accounts: Vec<AccountChoice>,
+    /// The same accounts to browse a level at a time.
+    pub tree: Vec<AccountNode>,
     pub entries: Vec<Entry>,
     pub total: u64,
     pub pages: u32,
