@@ -70,10 +70,6 @@ pub fn JournalFilter(
             </option>
         }
     };
-    let review_option = {
-        let current = current.clone();
-        move |value: Review, text| option(current.clone(), value.to_string(), text)
-    };
     let source = query.source.clone().unwrap_or_default();
     let source_option = move |value: Option<Source>, text| {
         option(source.clone(), value.map(|s| s.to_string()).unwrap_or_default(), text)
@@ -120,24 +116,32 @@ pub fn JournalFilter(
                 </label>
                 {review
                     .then(|| {
+                        let unreviewed = Review::Unreviewed.to_string();
                         view! {
-                            <label>
-                                "確認"
-                                <select name="review">
-                                    {review_option(Review::Any, "全部")}
-                                    {review_option(Review::Reviewed, "已確認")}
-                                    {review_option(Review::Unreviewed, "未確認")}
-                                </select>
+                            <label title=UNREVIEWED_HINT>
+                                <input
+                                    type="checkbox"
+                                    name="review"
+                                    value=unreviewed.clone()
+                                    checked=current == unreviewed
+                                />
+                                "只看未確認"
                             </label>
                         }
                     })}
-                <label>
+                <label title=UNVERIFIED_HINT>
                     <input type="checkbox" name="unverified" value="1" checked=query.unverified />
                     "只看未對帳"
                 </label>
                 <button type="submit">"篩選"</button>
                 <a href=action>"清除"</a>
             </div>
+            <p class="legend">
+                <span class="badge unreviewed">"未確認"</span>
+                "你還沒看過、要確認分類的紀錄（都在「待確認」）。 "
+                <span class="badge unverified">"未對帳"</span>
+                "記了但銀行對帳單還沒出現的；匯入下一期對帳單時會自動對上，不用處理。"
+            </p>
         </Form>
     }
 }
@@ -175,13 +179,27 @@ pub fn JournalList(
     }
 }
 
+/// What the two badges mean, on hover.
+pub const UNREVIEWED_HINT: &str = "你還沒看過這筆：確認分類沒錯後按「確認」。";
+pub const UNVERIFIED_HINT: &str =
+    "銀行對帳單還沒出現這筆；匯入下一期對帳單時會自動對上，不用處理。";
+
 fn entry(e: Entry, review: bool) -> impl IntoView {
     let id = e.id;
+    let controls = match review {
+        true => view! { <ReviewControls id /> }.into_any(),
+        false => view! {
+            <div class="actions">
+                <a href=format!("/review/{id}")>"修改"</a>
+            </div>
+        }
+        .into_any(),
+    };
     view! {
         <li class="entry" class:unverified=e.unverified class:unreviewed=!e.reviewed>
             <EntryHead entry=e.clone() source=review />
             <EntryLegs legs=e.legs />
-            {review.then(|| view! { <ReviewControls id /> })}
+            {controls}
         </li>
     }
 }
@@ -209,8 +227,23 @@ pub fn EntryHead(
             {e.payee.map(|p| view! { <span class="payee">{p}</span> })}
             {e.narration.map(|n| view! { <span class="narration">{n}</span> })}
             {source}
-            {e.unverified.then(|| view! { <span class="badge unverified">"未對帳"</span> })}
-            {(!e.reviewed).then(|| view! { <span class="badge unreviewed">"未確認"</span> })}
+            {e
+                .unverified
+                .then(|| {
+                    view! {
+                        <span class="badge unverified" title=UNVERIFIED_HINT>
+                            "未對帳"
+                        </span>
+                    }
+                })}
+            {(!e.reviewed)
+                .then(|| {
+                    view! {
+                        <span class="badge unreviewed" title=UNREVIEWED_HINT>
+                            "未確認"
+                        </span>
+                    }
+                })}
         </div>
     }
 }

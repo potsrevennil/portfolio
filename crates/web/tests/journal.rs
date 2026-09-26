@@ -209,15 +209,27 @@ fn render(journal: Page) -> String {
     Owner::new().with(|| view! { <JournalList action="/journal" journal /> }.to_html())
 }
 
-/// Each entry's visible text, newest first.
+/// Each entry's visible text, newest first, without the 修改 link every
+/// row ends with.
 fn entries(html: &str) -> Vec<String> {
     html.split(r#"<li class="entry"#)
         .skip(1)
         .map(|entry| {
             let entry = &entry[entry.find('>').unwrap() + 1..];
+            let entry = entry.split(r#"<div class="actions">"#).next().unwrap();
             visible(entry.split("</ol>").next().unwrap())
         })
         .collect()
+}
+
+#[tokio::test]
+async fn every_entry_opens_in_the_editor() {
+    let (_dir, pool) = ledger().await;
+    let journal = journal_page(&pool, JournalQuery::default()).await;
+    let first = journal.entries[0].id;
+    let html = render(journal);
+    assert_eq!(html.matches(">修改</a>").count(), 50, "{html}");
+    assert!(html.contains(&format!(r#"href="/review/{first}""#)), "{html}");
 }
 
 fn narrations(journal: &Page) -> Vec<String> {

@@ -143,7 +143,7 @@ fn push_unverified(q: &mut QueryBuilder<'_, Sqlite>) {
 }
 
 fn push_conditions<'a>(q: &mut QueryBuilder<'a, Sqlite>, filter: &'a Filter) {
-    q.push(" WHERE 1 = 1");
+    q.push(" WHERE t.deleted_at IS NULL");
     if let Some(account) = &filter.account {
         q.push(
             " AND EXISTS (SELECT 1 FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
@@ -224,7 +224,7 @@ pub async fn by_ids(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<Entry>> {
         return Ok(Vec::new());
     }
     let mut page = select();
-    page.push(" WHERE t.id IN (");
+    page.push(" WHERE t.deleted_at IS NULL AND t.id IN (");
     let mut list = page.separated(", ");
     for id in ids {
         list.push_bind(*id);

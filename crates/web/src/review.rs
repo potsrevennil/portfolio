@@ -64,6 +64,19 @@ pub async fn save_entry(
     Ok(())
 }
 
+/// Takes a transaction out of the ledger, once the reader ticked that they
+/// mean it; then the journal is where they go next.
+#[server]
+pub async fn delete_entry(id: i64, sure: Option<String>) -> Result<(), ServerFnError> {
+    if sure.is_none() {
+        return Err(ServerFnError::new("要先勾「確定刪除這筆」"));
+    }
+    let pool = expect_context::<db::SqlitePool>();
+    db::review::delete(&pool, id).await.map_err(failed)?;
+    leptos_axum::redirect("/journal");
+    Ok(())
+}
+
 #[server]
 pub async fn choose_pairing(choice: i64, record: Option<i64>) -> Result<(), ServerFnError> {
     let pool = expect_context::<db::SqlitePool>();
@@ -82,6 +95,7 @@ pub struct Actions {
     pub confirm: ServerAction<ConfirmEntry>,
     pub save: ServerAction<SaveEntry>,
     pub choose: ServerAction<ChoosePairing>,
+    pub delete: ServerAction<DeleteEntry>,
 }
 
 impl Actions {
@@ -90,12 +104,16 @@ impl Actions {
             confirm: ServerAction::new(),
             save: ServerAction::new(),
             choose: ServerAction::new(),
+            delete: ServerAction::new(),
         }
     }
 
     /// Changes whenever one of them completes.
     pub fn version(&self) -> usize {
-        self.confirm.version().get() + self.save.version().get() + self.choose.version().get()
+        self.confirm.version().get()
+            + self.save.version().get()
+            + self.choose.version().get()
+            + self.delete.version().get()
     }
 }
 
@@ -276,7 +294,7 @@ pub fn EditPage() -> impl IntoView {
 /// so the page works before the script loads.
 #[component]
 pub fn Editor(editing: Editing) -> impl IntoView {
-    let save = expect_context::<Actions>().save;
+    let Actions { save, delete, .. } = expect_context::<Actions>();
     let Editing { entry, accounts, history } = editing;
     let id = entry.id;
     let currency = entry.legs.first().map(|l| l.money.currency.to_string()).unwrap_or_default();
@@ -334,10 +352,19 @@ pub fn Editor(editing: Editing) -> impl IntoView {
                         "同時確認"
                     </label>
                     <button type="submit">"儲存"</button>
-                    <a href="/review">"返回"</a>
+                    <a href=if reviewed { "/journal" } else { "/review" }>"返回"</a>
                 </div>
             </ActionForm>
             <ActionError result=save.value() />
+            <ActionForm action=delete attr:class="delete">
+                <input type="hidden" name="id" value=id />
+                <label>
+                    <input type="checkbox" name="sure" value="1" />
+                    "確定刪除這筆"
+                </label>
+                <button type="submit">"刪除"</button>
+            </ActionForm>
+            <ActionError result=delete.value() />
             {(!history.is_empty())
                 .then(|| {
                     view! {
@@ -353,6 +380,7 @@ pub fn Editor(editing: Editing) -> impl IntoView {
                                             "split" => "拆開",
                                             "confirmed" => "確認",
                                             "paired" => "選為配對",
+                                            "deleted" => "刪除",
                                             other => other,
                                         }
                                         .to_string();

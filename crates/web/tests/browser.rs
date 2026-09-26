@@ -358,6 +358,22 @@ async fn enter_cash_by_hand() {
             .await
             .unwrap();
     assert_eq!((source.as_str(), reviewed), ("manual", true));
+
+    // Found again in the journal, opened, and deleted.
+    j.open("/journal").await;
+    j.row("豆漿").await.find(Locator::LinkText("修改")).await.unwrap().click().await.unwrap();
+    j.hydrated().await;
+    j.find(r#"form.delete input[name="sure"]"#).await.click().await.unwrap();
+    j.find("form.delete button").await.click().await.unwrap();
+    j.until_count("li.entry", 10).await;
+    assert!(j.browser.current_url().await.unwrap().path().ends_with("/journal"));
+    assert!(!j.text().await.contains("豆漿"));
+    let deleted: Option<String> =
+        sqlx::query_scalar("SELECT deleted_at FROM transactions WHERE narration = '豆漿'")
+            .fetch_one(&j.pool)
+            .await
+            .unwrap();
+    assert!(deleted.is_some());
     j.close().await;
 }
 

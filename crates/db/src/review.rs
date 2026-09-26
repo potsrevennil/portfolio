@@ -190,6 +190,7 @@ async fn refusal(db: &mut SqliteConnection, m: &Mismatch) -> Result<String> {
 pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
     let mut db = pool.begin().await?;
     let before_check = baseline(&mut db).await?;
+    live(&mut db, id).await?;
     let before = events::snapshot(&mut db, id).await?;
     let rows: Vec<PostingRow> = sqlx::query_as(
         "SELECT p.id, a.path, p.amount, p.currency FROM postings p
@@ -282,6 +283,43 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
     gated(db, before_check).await
 }
 
+/// Refuses a transaction that is not there to change.
+async fn live(db: &mut SqliteConnection, id: i64) -> Result<()> {
+    let deleted: Option<Option<String>> =
+        sqlx::query_scalar("SELECT deleted_at FROM transactions WHERE id = ?")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    match deleted {
+        None => bail!("查無交易 {id}"),
+        Some(Some(_)) => bail!("這筆已經刪除了"),
+        Some(None) => Ok(()),
+    }
+}
+
+/// Takes a transaction out of the ledger: its legs are removed, so it
+/// counts toward nothing, and it leaves every list. The row stays, with the
+/// event holding what it was, so its source still knows it and it can be put
+/// back by hand. Held to the same balances as an edit.
+pub async fn delete(pool: &SqlitePool, id: i64) -> Result<()> {
+    let mut db = pool.begin().await?;
+    let before_check = baseline(&mut db).await?;
+    live(&mut db, id).await?;
+    let before = events::snapshot(&mut db, id).await?;
+    sqlx::query("DELETE FROM postings WHERE transaction_id = ?").bind(id).execute(&mut *db).await?;
+    sqlx::query(
+        "UPDATE transactions SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at = \
+         strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&mut *db)
+    .await?;
+    let after = events::snapshot(&mut db, id).await?;
+    events::record(&mut db, id, EventKind::Deleted, &Change { before: Some(before), after })
+        .await?;
+    gated(db, before_check).await
+}
+
 /// Marks a transaction reviewed as it stands. Confirming a reviewed one
 /// changes nothing and records nothing.
 pub async fn confirm(pool: &SqlitePool, id: i64) -> Result<()> {
@@ -292,6 +330,7 @@ pub async fn confirm(pool: &SqlitePool, id: i64) -> Result<()> {
 }
 
 async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
+    live(db, id).await?;
     let before = events::snapshot(db, id).await?;
     if before.reviewed {
         return Ok(());

@@ -627,3 +627,27 @@ input.currency {
   gap: 0.3rem;
   align-items: center;
 }
+
+/* What 未確認 and 未對帳 mean, once, under the filter. */
+.journal .legend {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0.4rem 0;
+}
+
+.journal .legend .badge {
+  margin-right: 0.3rem;
+}
+
+.edit form.delete {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  margin-top: 1.5rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.edit form.delete button {
+  color: var(--negative);
+}

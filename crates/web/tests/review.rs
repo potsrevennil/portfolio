@@ -22,8 +22,8 @@ use web::{
     manual::enter_manual,
     model::{Editing, JournalQuery, LegInput, Origin, Queue, Source as TxnSource},
     review::{
-        choose_pairing, confirm_entry, load_entry, load_queue, review_count, save_entry, Actions,
-        Editor, SPARE_ROWS,
+        choose_pairing, confirm_entry, delete_entry, load_entry, load_queue, review_count,
+        save_entry, Actions, Editor, SPARE_ROWS,
     },
     server,
 };
@@ -571,6 +571,57 @@ async fn a_late_record_supersedes_a_tiantian_closing() {
     // before it (tested with its message in the manual-entry test).
 }
 
+/// An entry made by mistake can be deleted: it leaves every list and every
+/// balance, and its history keeps what it was.
+#[tokio::test]
+async fn an_entry_can_be_deleted() {
+    let (_dir, pool) = ledger().await;
+    let id = call(&pool, || {
+        enter_manual(
+            "2024-03-05".into(),
+            "85".into(),
+            "TWD".into(),
+            "Assets:Cash".into(),
+            Some("Expenses:Food".into()),
+            None,
+            Some("打錯".into()),
+        )
+    })
+    .await
+    .unwrap();
+    let cash = || async {
+        call(&pool, || load_journal(JournalQuery::account("Assets:Cash"))).await.unwrap()
+    };
+    let before = cash().await.total;
+
+    // Not without ticking that it is meant.
+    let unsure = call(&pool, || delete_entry(id, None)).await.unwrap_err().to_string();
+    assert!(unsure.contains("確定刪除這筆"), "{unsure}");
+
+    call(&pool, || delete_entry(id, Some("1".into()))).await.unwrap();
+    assert_eq!(cash().await.total, before - 1);
+    assert!(legs(&pool, id).await.is_empty());
+    let kinds = events_kinds(&pool, id).await;
+    assert_eq!(kinds, ["entered", "deleted"]);
+    let deleted = &events(&pool, id).await[1].1;
+    assert_eq!(deleted["before"]["legs"][1]["account"], "Expenses:Food");
+    assert_eq!(deleted["after"]["legs"], Value::Array(vec![]));
+    // Gone from the editor, and nothing more can be done to it.
+    let gone = call(&pool, || load_entry(id)).await.unwrap_err().to_string();
+    assert!(gone.contains(&format!("查無交易 {id}")), "{gone}");
+    let again = call(&pool, || delete_entry(id, Some("1".into()))).await.unwrap_err();
+    assert!(again.to_string().contains("已經刪除"), "{again}");
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(db::check::check(&mut conn).await.unwrap().ok());
+
+    // A line a statement or count vouches for stays: deleting it would
+    // break that balance.
+    let fee = id_of(&pool, FEE).await;
+    let held = call(&pool, || delete_entry(fee, Some("1".into()))).await.unwrap_err();
+    assert!(held.to_string().contains("「活存」2024-02-29"), "{held}");
+    assert_eq!(legs(&pool, fee).await.len(), 2);
+}
+
 /// A figure the ledger already disagreed with holds up nothing else: a write
 /// is refused only for a balance it breaks.
 #[tokio::test]
@@ -681,7 +732,13 @@ async fn the_review_pages_render() {
     position(&text, "共 3 筆");
     let source = &queue[position(&queue, r#"<select name="source""#)..];
     assert!(source.contains(r#"<option value="tiantian" selected"#), "{source}");
-    assert!(!queue.contains(r#"<select name="review""#), "{queue}");
+    assert!(!queue.contains(r#"name="review""#), "{queue}");
+    // Both states explained where they are filtered.
+    position(&text, "未確認 你還沒看過");
+    position(&text, "未對帳 記了但銀行對帳單還沒出現");
+    let journal = site.page("/journal").await;
+    assert!(journal.contains(r#"type="checkbox" name="review" value="unreviewed""#), "{journal}");
+    position(&visible(&journal), "只看未確認 只看未對帳");
 
     let edit = visible(&site.page("/review/6").await);
     position(&edit, "修改 · 帳簿");

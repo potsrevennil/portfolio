@@ -25,6 +25,8 @@ pub enum EventKind {
     Confirmed,
     /// Chosen as the record a statement line verifies.
     Paired,
+    /// Taken out of the ledger: its legs are gone, `after` has none.
+    Deleted,
 }
 
 /// A whole transaction as it stood: what `before` and `after` hold.
