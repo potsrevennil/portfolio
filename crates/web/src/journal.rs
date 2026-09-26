@@ -1,7 +1,7 @@
 //! 日記帳: every transaction, newest first, with its legs. The filter and the
 //! list are components of their own so T9's review queue can reuse them.
 
-use leptos::prelude::*;
+use leptos::{prelude::*, web_sys::HtmlDetailsElement};
 use leptos_meta::Title;
 use leptos_router::{components::Form, hooks::use_query_map};
 
@@ -68,6 +68,10 @@ pub fn JournalFilter(
         let query = query.clone();
         move |path: Option<&str>| format!("{action}{}", query.with_account(path))
     };
+    // Picking an account renders this filter again, and the panel it was
+    // picked from closes with it. The attribute is bound rather than written
+    // once, so the fresh `false` reaches a `<details>` the reader opened.
+    let dropped = RwSignal::new(false);
     let current = query.review.clone().unwrap_or_default();
     let review = move |value: Review, text: &'static str| {
         let value = value.to_string();
@@ -92,7 +96,16 @@ pub fn JournalFilter(
                             placeholder="全部"
                             value=chosen.unwrap_or_default()
                         />
-                        <details class="picker">
+                        <details
+                            class="picker"
+                            open=move || dropped.get()
+                            on:toggle=move |ev| {
+                                let now = event_target::<HtmlDetailsElement>(&ev).open();
+                                if dropped.get_untracked() != now {
+                                    dropped.set(now);
+                                }
+                            }
+                        >
                             <summary>
                                 <span class="marker" aria-hidden="true"></span>
                                 <span class="sr-only">"帳戶目錄"</span>
