@@ -153,6 +153,55 @@ impl FromStr for Review {
     }
 }
 
+/// Which pipeline a transaction came from: the `transactions.source` words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Source {
+    /// A bank statement.
+    Import,
+    /// A 天天記帳 record.
+    Tiantian,
+    /// Entered by hand.
+    Manual,
+}
+
+impl Source {
+    pub const ALL: [Source; 3] = [Source::Import, Source::Tiantian, Source::Manual];
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Source::Import => "import",
+            Source::Tiantian => "tiantian",
+            Source::Manual => "manual",
+        })
+    }
+}
+
+impl FromStr for Source {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Source::ALL
+            .into_iter()
+            .find(|source| source.to_string() == s)
+            .ok_or_else(|| format!("不明的來源：{s}"))
+    }
+}
+
+/// How a machine chose a leg's account; `None` on a leg where none did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Origin {
+    /// From the 天天記帳 record the line was matched to.
+    Tiantian,
+    /// A mapping.toml description rule.
+    Rule,
+    /// No rule matched: the uncategorised account.
+    Fallback,
+    /// A person chose it.
+    Manual,
+}
+
 /// The journal filter as a URL carries it. Every value stays as typed, so the
 /// client needs no date type and the server can refuse a bad one by name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +213,8 @@ pub struct JournalQuery {
     /// A [`Review`], as text.
     pub review: Option<String>,
     pub unverified: bool,
+    /// A [`Source`], as text.
+    pub source: Option<String>,
     /// From 1.
     pub page: u32,
 }
@@ -177,6 +228,7 @@ impl Default for JournalQuery {
             text: None,
             review: None,
             unverified: false,
+            source: None,
             page: 1,
         }
     }
@@ -206,6 +258,7 @@ impl From<&ParamsMap> for JournalQuery {
             text: get("q"),
             review: get("review"),
             unverified: get("unverified").is_some(),
+            source: get("source"),
             page: get("page").and_then(|p| p.parse().ok()).unwrap_or(1),
         }
     }
@@ -222,6 +275,7 @@ impl fmt::Display for JournalQuery {
             ("q", self.text.as_deref()),
             ("review", self.review.as_deref()),
             ("unverified", self.unverified.then_some("1")),
+            ("source", self.source.as_deref()),
             ("page", (self.page > 1).then_some(page.as_str())),
         ];
         let mut query = form_urlencoded::Serializer::new(String::new());
@@ -237,23 +291,73 @@ impl fmt::Display for JournalQuery {
     }
 }
 
-/// An account the journal can be filtered to.
+/// The four roots a person files under; equity is the loader's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountKind {
+    Asset,
+    Liability,
+    Income,
+    Expense,
+}
+
+/// An account the journal can be filtered to, or a leg posted to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountChoice {
     pub path: String,
     /// Standalone, so it reads without the tree around it.
     pub label: String,
     pub depth: usize,
+    pub kind: AccountKind,
+    pub closed: bool,
+}
+
+/// An account with the accounts under it, as the 帳戶 page folds them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountNode {
+    pub account: AccountChoice,
+    pub children: Vec<AccountNode>,
+}
+
+/// The chart as a forest of roots.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccountTree(pub Vec<AccountNode>);
+
+/// From accounts listed parents first, as the chart sorts them.
+impl FromIterator<AccountChoice> for AccountTree {
+    fn from_iter<I: IntoIterator<Item = AccountChoice>>(accounts: I) -> Self {
+        fn place(nodes: &mut Vec<AccountNode>, account: AccountChoice) {
+            let parent = nodes.last_mut().filter(|last| {
+                account
+                    .path
+                    .strip_prefix(last.account.path.as_str())
+                    .is_some_and(|r| r.starts_with(':'))
+            });
+            match parent {
+                Some(parent) => place(&mut parent.children, account),
+                None => nodes.push(AccountNode { account, children: Vec::new() }),
+            }
+        }
+        let mut roots = Vec::new();
+        for account in accounts {
+            place(&mut roots, account);
+        }
+        AccountTree(roots)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Leg {
+    /// The posting's id: what an edit names it by.
+    pub id: i64,
     /// Links the leg to its account's journal; never shown.
     pub path: String,
     pub label: String,
     pub money: Money,
+    /// The amount as stored, for the editor to start from.
+    pub exact: Decimal,
     /// On the account the journal is filtered to, or below it.
     pub focus: bool,
+    pub origin: Option<Origin>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,6 +366,7 @@ pub struct Entry {
     pub date: String,
     pub payee: Option<String>,
     pub narration: Option<String>,
+    pub source: Source,
     pub reviewed: bool,
     /// Booked after the account's last statement: nothing has checked it.
     pub unverified: bool,
@@ -277,6 +382,75 @@ pub struct Journal {
     pub entries: Vec<Entry>,
     pub total: u64,
     pub pages: u32,
+}
+
+/// A statement line the importer would not pair alone, and the unverified
+/// records it fits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Choice {
+    pub id: i64,
+    pub date: String,
+    pub account: String,
+    pub money: Money,
+    pub description: String,
+    pub candidates: Vec<Entry>,
+    /// The record picked, waiting for the next import.
+    pub chosen: Option<i64>,
+}
+
+/// 待確認: the journal held to unreviewed records, and the lines waiting to
+/// be paired.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Queue {
+    pub journal: Journal,
+    pub choices: Vec<Choice>,
+}
+
+/// One change the app recorded on a transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Change {
+    pub at: String,
+    /// The `transaction_events.kind` word.
+    pub kind: String,
+}
+
+/// A transaction as the editor opens it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Editing {
+    pub entry: Entry,
+    /// Where a leg may post: open accounts, and each leg's own.
+    pub accounts: Vec<AccountChoice>,
+    pub history: Vec<Change>,
+}
+
+/// One leg as the editor's form sends it. Text, so the server can refuse a
+/// bad amount by name; a row with no account is a blank one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LegInput {
+    /// The posting's id; blank for a leg the edit adds.
+    #[serde(default)]
+    pub posting: String,
+    #[serde(default)]
+    pub account: String,
+    #[serde(default)]
+    pub amount: String,
+    #[serde(default)]
+    pub currency: String,
+}
+
+/// 記一筆 as its form sends it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ManualInput {
+    pub date: String,
+    pub amount: String,
+    pub currency: String,
+    pub account: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub counter: String,
+    #[serde(default)]
+    pub note: String,
 }
 
 #[cfg(test)]
@@ -302,6 +476,39 @@ mod tests {
         let dust = money(dec!(-0.001), Currency::TWD);
         assert_eq!(dust.to_string(), "0 TWD");
         assert!(!dust.is_negative());
+    }
+
+    #[test]
+    fn accounts_nest_under_their_parents_only() {
+        let choice = |path: &str| AccountChoice {
+            path: path.into(),
+            label: path.into(),
+            depth: path.matches(':').count(),
+            kind: AccountKind::Asset,
+            closed: false,
+        };
+        let tree: AccountTree =
+            ["Assets", "Assets:Bank", "Assets:Bank:FX", "Assets:Banker", "Liabilities"]
+                .into_iter()
+                .map(choice)
+                .collect();
+        let shape: Vec<(String, Vec<String>)> = tree
+            .0
+            .iter()
+            .flat_map(|root| &root.children)
+            .map(|n| {
+                (
+                    n.account.path.clone(),
+                    n.children.iter().map(|c| c.account.path.clone()).collect(),
+                )
+            })
+            .collect();
+        // A shared prefix is not a parent.
+        assert_eq!(shape, [
+            ("Assets:Bank".to_string(), vec!["Assets:Bank:FX".to_string()]),
+            ("Assets:Banker".to_string(), vec![]),
+        ]);
+        assert_eq!(tree.0.len(), 2);
     }
 
     #[test]

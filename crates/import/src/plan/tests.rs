@@ -62,6 +62,7 @@ fn run(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
         statement: st,
         files: vec![0; st.lines.len()],
         existing,
+        chosen: HashMap::new(),
     };
     plan(&chart(), &[s], &HashSet::new(), &[])
 }
@@ -129,11 +130,20 @@ fn unverified(d: u32, amount: Decimal, id: i64) -> LedgerPosting {
 }
 
 fn with(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
+    picked(st, existing, HashMap::new())
+}
+
+fn picked(
+    st: &BankStatement,
+    existing: Vec<LedgerPosting>,
+    chosen: HashMap<String, i64>,
+) -> Result<Plan> {
     let s = Statement {
         account: "Assets:Bank:Savings".into(),
         statement: st,
         files: vec![0; st.lines.len()],
         existing,
+        chosen,
     };
     plan(&chart(), &[s], &HashSet::new(), &[])
 }
@@ -170,6 +180,64 @@ fn an_ambiguous_pairing_verifies_nothing() {
     let existing =
         vec![held(1, dec!(100), true), unverified(9, dec!(-150), 1), unverified(11, dec!(-150), 2)];
     assert!(with(&st, existing).is_err());
+}
+
+/// The refusal names each line and the records it fits, for the queue.
+#[test]
+fn an_ambiguity_names_its_lines_and_records() {
+    let st = statement(&[(10, dec!(-150), dec!(-50))]);
+    let existing =
+        vec![held(1, dec!(100), true), unverified(9, dec!(-150), 1), unverified(11, dec!(-150), 2)];
+    let err = with(&st, existing).expect_err("one line, two records");
+    let Ambiguous(lines) = err.downcast_ref::<Ambiguous>().expect("typed");
+    assert_eq!(lines, &[Ambiguity {
+        account: "Assets:Bank:Savings".into(),
+        currency: Currency::TWD,
+        statement_ref: st.dedup_refs()[0].clone(),
+        date: day(10),
+        amount: dec!(-150),
+        description: String::new(),
+        candidates: vec![1, 2],
+    }]);
+}
+
+/// A person's pick settles it: the picked record is verified, the other
+/// stays unverified, and the second line pairs with the one record left.
+#[test]
+fn a_pick_pairs_what_the_amounts_could_not() -> Result<()> {
+    let st = statement(&[(10, dec!(-150), dec!(-50)), (11, dec!(-150), dec!(-200))]);
+    let existing = vec![
+        held(1, dec!(100), true),
+        unverified(9, dec!(-150), 41),
+        unverified(10, dec!(-150), 42),
+    ];
+    let refs = st.dedup_refs();
+    let p = picked(&st, existing, HashMap::from([(refs[0].clone(), 42)]))?;
+    let verified: Vec<_> =
+        p.verified.iter().map(|v| (v.statement_ref.as_str(), v.transaction_id)).collect();
+    assert_eq!(verified, [(refs[0].as_str(), 42), (refs[1].as_str(), 41)]);
+    assert_eq!((p.counts.verified, p.transactions.len()), (2, 0));
+
+    // A pick naming a record no longer unverified is no pick.
+    let existing = vec![
+        held(1, dec!(100), true),
+        unverified(9, dec!(-150), 41),
+        unverified(10, dec!(-150), 42),
+    ];
+    let stale = picked(&st, existing, HashMap::from([(refs[0].clone(), 99)]));
+    assert!(stale.expect_err("still ambiguous").downcast_ref::<Ambiguous>().is_some());
+    Ok(())
+}
+
+/// Uncategorised lines say how their other leg was chosen.
+#[test]
+fn a_fallback_leg_carries_its_origin() -> Result<()> {
+    let st = statement(&[(2, dec!(-100), dec!(400))]);
+    let p = run(&st, vec![])?;
+    let line = &p.transactions[1].1;
+    assert_eq!(line.postings[1].origin, Some(Origin::Fallback));
+    assert_eq!(line.postings[0].origin, None);
+    Ok(())
 }
 
 /// A record whose amount disagrees verifies nothing and breaks the chain.

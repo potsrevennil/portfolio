@@ -18,7 +18,7 @@ use chrono::NaiveDate;
 use db::{
     assertions::{self, AssertionSource},
     check,
-    import::{insert_deduped, InsertOutcome, Posting, Transaction},
+    import::{insert_deduped, InsertOutcome, Origin, Posting, Transaction},
     import_batch::{self, HeldTransaction},
     SqliteConnection,
 };
@@ -307,7 +307,11 @@ pub async fn import(
         match (leg, fates.remove(&i)) {
             (Some(leg), Some(Fate::Pairs { transaction_id, fallback_posting })) => {
                 let external_ref = transaction.external_ref.clone().expect("booked with its ref");
-                let far = far_legs(&transaction, &leg, placeholder)?;
+                // The bank line's category now comes from the record.
+                let far: Vec<Posting> = far_legs(&transaction, &leg, placeholder)?
+                    .into_iter()
+                    .map(|p| p.with_origin(Origin::Tiantian))
+                    .collect();
                 import_batch::replace_leg(db, &labels, fallback_posting, &far).await?;
                 if !transaction.narration.is_empty() {
                     import_batch::append_narration(db, transaction_id, &transaction.narration)
@@ -400,6 +404,7 @@ fn to_row(
             amount: p.amount,
             currency: p.currency,
             tags: p.tags,
+            origin: None,
         })
         .collect();
     Ok(Transaction {

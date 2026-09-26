@@ -113,3 +113,13 @@ jobs:
           cargo build --workspace
           cargo test --workspace
           cargo leptos build
+      # The browser journeys need the client `cargo leptos build` just made.
+      # Linux only: nixpkgs builds chromium for Linux, not for Darwin.
+      - name: Browser journeys
+        if: matrix.name == 'aarch64-linux'
+        shell: nix develop .#browser -c bash -e {0}
+        env:
+          WEB_BROWSER_TESTS: "1"
+        run: |
+          export CHROME="$(command -v chromium)"
+          cargo test -p web --test browser -- --nocapture

@@ -2,13 +2,17 @@
 //! statement lines the ledger already holds, how the new ones pair up, and
 //! whether the result chains onto the ledger's balances day by day.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt,
+};
 
 use anyhow::{bail, Result};
 use chrono::NaiveDate;
 use db::{
-    import::{Posting, Transaction},
+    import::{Origin, Posting, Transaction},
     import_batch::{LedgerPosting, Verification},
+    pairing::Ambiguity,
 };
 use ledger::{
     accounts::Chart,
@@ -32,7 +36,39 @@ pub struct Statement<'a> {
     pub files: Vec<usize>,
     /// What the ledger holds on `account` in the statement's currency.
     pub existing: Vec<LedgerPosting>,
+    /// The record a person picked for a line, by the line's ref, where the
+    /// line alone fit more than one.
+    pub chosen: HashMap<String, i64>,
 }
+
+/// Lines that pair with unverified records only by a choice nobody has made
+/// yet. Nothing is imported; the caller records them for a person to pick.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Ambiguous(pub Vec<Ambiguity>);
+
+impl fmt::Display for Ambiguous {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "lines and unverified records pair ambiguously; pick each line's record in the review \
+             queue, then import again. Nothing was imported."
+        )?;
+        for a in &self.0 {
+            write!(
+                f,
+                "\n  {} {}: {} {} matches {} unverified records within {WINDOW_DAYS} days",
+                a.account,
+                a.currency,
+                a.date,
+                a.amount,
+                a.candidates.len()
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for Ambiguous {}
 
 /// An unverified record from a statement's last days that none of its lines
 /// verifies: the bank books it after the statement, so it moves to the day
@@ -119,6 +155,12 @@ pub fn plan(
     let from_a_statement = |p: &LedgerPosting| {
         p.refs.iter().any(|r| Bank::ALL.iter().any(|bank| r.starts_with(bank.ref_prefix())))
     };
+    let fallback_origin =
+        |description: &str| match chart.fallback.descriptions.contains_key(description) {
+            true => Origin::Rule,
+            false => Origin::Fallback,
+        };
+    let mut ambiguous: Vec<Ambiguity> = Vec::new();
 
     // --- what the ledger already holds ---
     let mut openings: Vec<NaiveDate> = Vec::with_capacity(statements.len());
@@ -199,9 +241,25 @@ pub fn plan(
         // A new line verifies an unverified record of its amount within the
         // window, but only one-to-one: with two candidates either way (two
         // lunches of the same price) nothing chooses, and the import stops
-        // with the records still unverified, for review.
+        // with the records still unverified, until a person picks. A pick
+        // takes its line and record out of the running for the rest.
         let unverified: Vec<&LedgerPosting> =
             s.existing.iter().filter(|p| p.unverified && !p.opening).collect();
+        let mut picked: HashSet<i64> = HashSet::new();
+        for li in 0..st.lines.len() {
+            if line_status[li] != Status::New {
+                continue;
+            }
+            let pick = s.chosen.get(&refs[si][li]).copied().filter(|id| {
+                unverified.iter().any(|p| p.transaction_id == *id) && !picked.contains(id)
+            });
+            if let Some(id) = pick {
+                picked.insert(id);
+                line_status[li] = Status::Verifies(id);
+            }
+        }
+        let unverified: Vec<&LedgerPosting> =
+            unverified.into_iter().filter(|p| !picked.contains(&p.transaction_id)).collect();
         let fits = |&li: &usize, p: &&LedgerPosting| {
             p.amount == st.lines[li].delta() && within_window(p.date, st.lines[li].book_date)
         };
@@ -211,23 +269,19 @@ pub fn plan(
         for &(l, r) in &pairing.pairs {
             line_status[new_lines[l]] = Status::Verifies(unverified[r].transaction_id);
         }
-        let ambiguous: Vec<String> = pairing
-            .ambiguous
-            .iter()
-            .map(|(l, many)| {
-                let l = &st.lines[new_lines[*l]];
-                format!(
-                    "{} {} matches {} unverified records within {WINDOW_DAYS} days ({})",
-                    l.book_date,
-                    l.delta(),
-                    many.len(),
-                    many.iter()
-                        .map(|&r| unverified[r].date.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })
-            .collect();
+        for (l, many) in &pairing.ambiguous {
+            let li = new_lines[*l];
+            let line = &st.lines[li];
+            ambiguous.push(Ambiguity {
+                account: s.account.clone(),
+                currency: st.currency,
+                statement_ref: refs[si][li].clone(),
+                date: line.book_date,
+                amount: line.delta(),
+                description: line.description.clone(),
+                candidates: many.iter().map(|&r| unverified[r].transaction_id).collect(),
+            });
+        }
         // A record within the window of the end may be booked on the next
         // statement; an earlier one still breaks the chain below.
         let settled = st.settled_through();
@@ -262,15 +316,6 @@ pub fn plan(
             plan.deferred.push(Deferred { transaction_id: p.transaction_id, date: after });
             plan.counts.deferred += 1;
         }
-        if !ambiguous.is_empty() {
-            bail!(
-                "{} {}: lines and unverified records pair ambiguously; review them, then import \
-                 again. Nothing was imported.\n  {}",
-                s.account,
-                st.currency,
-                ambiguous.join("\n  ")
-            );
-        }
         for s in &line_status {
             match s {
                 Status::PredatesOpening => plan.counts.predate_opening += 1,
@@ -281,6 +326,10 @@ pub fn plan(
             }
         }
         status.push(line_status);
+    }
+
+    if !ambiguous.is_empty() {
+        return Err(Ambiguous(ambiguous).into());
     }
 
     // --- how the new lines pair up, as the freeze pairs them ---
@@ -427,19 +476,22 @@ pub fn plan(
                 plan.counts.matched += 1;
                 let mut ps = vec![own];
                 for (ci, amount) in consumed {
-                    ps.push((&candidates[*ci].account, -*amount, currency).into());
+                    let leg: Posting = (&candidates[*ci].account, -*amount, currency).into();
+                    ps.push(leg.with_origin(Origin::Tiantian));
                 }
                 let residual: Decimal = ps.iter().map(|p| p.amount).sum();
                 if !residual.is_zero() {
                     let fallback = fallback_account(chart, &l.description, residual);
-                    ps.push((&**fallback, -residual, currency).into());
+                    let leg: Posting = (&**fallback, -residual, currency).into();
+                    ps.push(leg.with_origin(fallback_origin(&l.description)));
                 }
                 ps
             }
             Shape::Fallback => {
                 plan.counts.uncategorised += 1;
                 let fallback = fallback_account(chart, &l.description, l.delta());
-                vec![own, (&**fallback, -l.delta(), currency).into()]
+                let leg: Posting = (&**fallback, -l.delta(), currency).into();
+                vec![own, leg.with_origin(fallback_origin(&l.description))]
             }
         };
         let payee = match &shape[&at] {
