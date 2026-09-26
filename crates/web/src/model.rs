@@ -192,6 +192,11 @@ impl JournalQuery {
     }
 
     pub fn with_page(&self, page: u32) -> Self { JournalQuery { page, ..self.clone() } }
+
+    /// Another account, every other filter kept, back at the first page.
+    pub fn with_account(&self, account: Option<&str>) -> Self {
+        JournalQuery { account: account.map(str::to_string), page: 1, ..self.clone() }
+    }
 }
 
 /// Blank form fields are no filter.
@@ -284,6 +289,18 @@ impl fmt::Display for AccountChoice {
     }
 }
 
+/// One account in the tree the picker browses: its own label, since the row
+/// above gives the context, and whatever files under it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountNode {
+    pub path: String,
+    pub label: String,
+    /// Open on arrival: the filtered account's ancestors, so a reader lands
+    /// looking at where they are.
+    pub open: bool,
+    pub children: Vec<AccountNode>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Leg {
     /// Links the leg to its account's journal; never shown.
@@ -315,6 +332,8 @@ pub struct Journal {
     /// account box holds, so submitting the form again finds it again.
     pub chosen: Option<String>,
     pub accounts: Vec<AccountChoice>,
+    /// The same accounts to browse a level at a time.
+    pub tree: Vec<AccountNode>,
     pub entries: Vec<Entry>,
     pub total: u64,
     pub pages: u32,

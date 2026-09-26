@@ -12,7 +12,9 @@ use db::{
 };
 use ledger_types::currency::Currency;
 
-use crate::model::{AccountChoice, AccountKind, Entry, Journal, JournalQuery, Leg, Money, Review};
+use crate::model::{
+    AccountChoice, AccountKind, AccountNode, Entry, Journal, JournalQuery, Leg, Money, Review,
+};
 
 pub const PAGE_SIZE: u32 = 50;
 
@@ -50,6 +52,9 @@ fn trail(path: &str, kind: Option<AccountKind>, tree: &BTreeMap<&str, &str>) -> 
     AccountChoice { trail }
 }
 
+/// How many segments `path` has.
+fn depth(path: &str) -> usize { path.matches(':').count() + 1 }
+
 /// Every path from the root down to `path` itself.
 fn prefixes(path: &str) -> impl Iterator<Item = &str> {
     path.match_indices(':').map(|(i, _)| &path[..i]).chain(std::iter::once(path))
@@ -67,9 +72,13 @@ enum Named {
 pub struct Chart {
     /// Path → the label that reads on its own, outside the tree.
     labels: BTreeMap<String, String>,
+    /// Path → the label a tree shows, where the row above gives the context.
+    tree: BTreeMap<String, String>,
     /// Path → the trail the picker offers it under.
     full: BTreeMap<String, String>,
     choices: Vec<AccountChoice>,
+    /// The paths the picker offers, in the order it offers them.
+    branches: Vec<String>,
     /// Every text the box may hold, and what it names.
     names: BTreeMap<String, Named>,
 }
@@ -121,8 +130,10 @@ impl Chart {
             })
             .collect();
 
+        let branches = offered.iter().map(|(a, _)| a.path.clone()).collect();
+        let tree = tree.iter().map(|(p, l)| (p.to_string(), l.to_string())).collect();
         let choices = offered.into_iter().map(|(_, choice)| choice).collect();
-        Ok(Chart { labels, full, choices, names })
+        Ok(Chart { labels, tree, full, choices, names, branches })
     }
 
     pub fn label(&self, path: &str) -> String {
@@ -133,6 +144,27 @@ impl Chart {
     /// that submitting the form again resolves back to this same account.
     pub fn full_name(&self, path: &str) -> String {
         self.full.get(path).cloned().unwrap_or_else(|| path.to_string())
+    }
+
+    /// The offered accounts as a tree to browse one level at a time. The
+    /// filtered account's ancestors arrive open, so a reader lands looking at
+    /// where they are rather than at four folded roots.
+    pub fn nodes(&self, filtered: Option<&str>) -> Vec<AccountNode> { self.branch(None, filtered) }
+
+    fn branch(&self, parent: Option<&str>, filtered: Option<&str>) -> Vec<AccountNode> {
+        self.branches
+            .iter()
+            .filter(|path| match parent {
+                Some(parent) => in_subtree(path, parent) && depth(path) == depth(parent) + 1,
+                None => depth(path) == 1,
+            })
+            .map(|path| AccountNode {
+                label: self.tree.get(path).cloned().unwrap_or_else(|| self.label(path)),
+                open: filtered.is_some_and(|under| under != path && in_subtree(under, path)),
+                children: self.branch(Some(path), filtered),
+                path: path.clone(),
+            })
+            .collect()
     }
 
     /// The account a typed name — or a path a link carried — means. A name
@@ -224,6 +256,7 @@ pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Re
         query: JournalQuery { account: filter.account.clone(), ..query.with_page(page) },
         account: filter.account.as_deref().map(|p| chart.label(p)),
         chosen: filter.account.as_deref().map(|p| chart.full_name(p)),
+        tree: chart.nodes(filter.account.as_deref()),
         accounts: chart.choices,
         entries,
         total,

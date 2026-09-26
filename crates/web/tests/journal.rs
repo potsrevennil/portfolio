@@ -22,7 +22,7 @@ use sqlx::SqlitePool;
 use tempfile::TempDir;
 use web::{
     journal::{load_journal, JournalFilter, JournalList},
-    model::{AccountChoice, Journal as Page, JournalQuery, Review},
+    model::{AccountChoice, AccountNode, Journal as Page, JournalQuery, Review},
     server,
 };
 
@@ -216,9 +216,10 @@ fn render_filter(
     query: JournalQuery,
     chosen: Option<String>,
     accounts: Vec<AccountChoice>,
+    tree: Vec<AccountNode>,
 ) -> String {
     Owner::new()
-        .with(|| view! { <JournalFilter action="/journal" query chosen accounts /> }.to_html())
+        .with(|| view! { <JournalFilter action="/journal" query chosen accounts tree /> }.to_html())
 }
 
 /// The names the account picker offers, in the order it offers them.
@@ -431,7 +432,12 @@ async fn review_and_verification_are_separate_filters() {
 async fn the_picker_offers_every_account_by_kind_and_no_equity_one() {
     let (_dir, pool) = ledger().await;
     let journal = journal_page(&pool, JournalQuery::default()).await;
-    let html = render_filter(journal.query.clone(), journal.chosen.clone(), journal.accounts);
+    let html = render_filter(
+        journal.query.clone(),
+        journal.chosen.clone(),
+        journal.accounts,
+        journal.tree,
+    );
     // Sections in balance-sheet order, paths within, each account under the
     // trail that leads to it.
     assert_eq!(offered(&html), [
@@ -460,13 +466,89 @@ async fn the_picker_offers_every_account_by_kind_and_no_equity_one() {
     assert!(html.contains(r#"value="""#), "{html}");
 }
 
+/// The labels of the tree's top level: what a reader is offered first.
+fn roots(tree: &[AccountNode]) -> Vec<&str> { tree.iter().map(|n| n.label.as_str()).collect() }
+
+#[tokio::test]
+async fn the_tree_starts_at_the_kinds_and_opens_a_level_at_a_time() {
+    let (_dir, pool) = ledger().await;
+    let journal = journal_page(&pool, JournalQuery::default()).await;
+    // The first choice is four kinds, not 17 accounts.
+    assert_eq!(roots(&journal.tree), ["資產", "負債", "收入", "支出"]);
+    let assets = &journal.tree[0];
+    assert_eq!(roots(&assets.children), ["銀行", "現金", "分帳"]);
+    // Inside the tree a row carries its own label; the row above places it.
+    let split = assets.children.iter().find(|n| n.label == "分帳").unwrap();
+    assert_eq!(roots(&split.children), ["甲公司", "乙公司"]);
+    assert_eq!(roots(&split.children[0].children), ["分帳"]);
+    // 權益 is the loader's own.
+    assert!(!journal.tree.iter().any(|n| n.path.starts_with("Equity")));
+
+    let html = render_filter(
+        journal.query.clone(),
+        journal.chosen.clone(),
+        journal.accounts,
+        journal.tree,
+    );
+    // Nothing is open on arrival, so no level shows until it is asked for.
+    assert!(!html.contains("<details open"), "{html}");
+    // Every row filters to its own account, its subtree included.
+    assert!(html.contains(r#"href="/journal?account=Assets%3ASplit""#), "{html}");
+    assert!(html.contains(r#"href="/journal?account=Assets%3ASplit%3AAlpha%3ATab""#), "{html}");
+    // And one row clears the filter again.
+    assert!(html.contains(r#"<a href="/journal" class="pick">全部"#), "{html}");
+}
+
+#[tokio::test]
+async fn the_tree_arrives_open_at_the_filtered_account_and_keeps_the_other_filters() {
+    let (_dir, pool) = ledger().await;
+    let query = JournalQuery {
+        text: Some("分帳".into()),
+        page: 2,
+        ..JournalQuery::account("Assets:Split:Alpha:Tab")
+    };
+    let journal = journal_page(&pool, query).await;
+    let open: Vec<_> = |tree: &[AccountNode]| -> Vec<String> {
+        fn walk(nodes: &[AccountNode], out: &mut Vec<String>) {
+            for node in nodes {
+                if node.open {
+                    out.push(node.path.clone());
+                }
+                walk(&node.children, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(tree, &mut out);
+        out
+    }(&journal.tree);
+    assert_eq!(open, ["Assets", "Assets:Split", "Assets:Split:Alpha"]);
+
+    let html = render_filter(
+        journal.query.clone(),
+        journal.chosen.clone(),
+        journal.accounts,
+        journal.tree,
+    );
+    assert_eq!(html.matches("<details open").count(), 3, "{html}");
+    // Picking another account keeps the search and starts its listing afresh.
+    assert!(
+        html.contains(r#"href="/journal?account=Assets%3ACash&amp;q=%E5%88%86%E5%B8%B3""#),
+        "{html}"
+    );
+}
+
 #[tokio::test]
 async fn the_chosen_account_survives_the_round_trip() {
     let (_dir, pool) = ledger().await;
     // A leg's link carries the path; the box comes back holding the name.
     let linked = journal_page(&pool, JournalQuery::account("Assets:Split:Alpha:Tab")).await;
     assert_eq!(linked.chosen.as_deref(), Some("資產 › 分帳 › 甲公司 › 分帳"));
-    let html = render_filter(linked.query.clone(), linked.chosen.clone(), linked.accounts.clone());
+    let html = render_filter(
+        linked.query.clone(),
+        linked.chosen.clone(),
+        linked.accounts.clone(),
+        linked.tree.clone(),
+    );
     assert!(html.contains(r#"value="資產 › 分帳 › 甲公司 › 分帳""#), "{html}");
 
     // Submitting that name again lands on the same account, and the links the
@@ -482,7 +564,7 @@ fn an_account_name_is_escaped_where_the_picker_offers_it() {
     let label = r#"<b>甲 & "乙"</b>"#;
     let choice = AccountChoice { trail: vec!["支出".into(), label.into()] };
     let chosen = Some(choice.to_string());
-    let html = render_filter(JournalQuery::default(), chosen, vec![choice]);
+    let html = render_filter(JournalQuery::default(), chosen, vec![choice], Vec::new());
     assert!(!html.contains("<b>甲"), "{html}");
     assert_eq!(html.matches("&lt;b&gt;").count(), 2, "{html}");
     assert!(html.contains("&amp;"), "{html}");

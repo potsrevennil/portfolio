@@ -8,7 +8,7 @@ use leptos_router::{components::Form, hooks::use_query_map};
 use crate::{
     balance_sheet::MoneyText,
     error::LoadFailed,
-    model::{AccountChoice, Entry, Journal, JournalQuery, Review},
+    model::{AccountChoice, AccountNode, Entry, Journal, JournalQuery, Review},
 };
 
 #[server]
@@ -38,6 +38,7 @@ pub fn JournalPage() -> impl IntoView {
                                     query=journal.query.clone()
                                     chosen=journal.chosen.clone()
                                     accounts=journal.accounts.clone()
+                                    tree=journal.tree.clone()
                                 />
                                 <JournalList action="/journal" journal />
                             </div>
@@ -60,7 +61,13 @@ pub fn JournalFilter(
     /// account by, or nothing while every account is listed.
     chosen: Option<String>,
     accounts: Vec<AccountChoice>,
+    /// The same accounts to browse a level at a time.
+    tree: Vec<AccountNode>,
 ) -> impl IntoView {
+    let pick = {
+        let query = query.clone();
+        move |path: Option<&str>| format!("{action}{}", query.with_account(path))
+    };
     let current = query.review.clone().unwrap_or_default();
     let review = move |value: Review, text: &'static str| {
         let value = value.to_string();
@@ -91,6 +98,18 @@ pub fn JournalFilter(
                             .collect_view()}
                     </datalist>
                 </label>
+                // For a reader who would rather look than type: one level at a
+                // time, so the first choice is four kinds, not every account.
+                <details class="picker">
+                    <summary>
+                        <span class="marker" aria-hidden="true"></span>
+                        "帳戶目錄"
+                    </summary>
+                    <ul class="tree">
+                        <li><a class="pick" href=pick(None)>"全部"</a></li>
+                        {tree.into_iter().map(|node| branch(node, &pick)).collect_view()}
+                    </ul>
+                </details>
                 <label>
                     "從" <input type="date" name="from" value=query.from.clone().unwrap_or_default() />
                 </label>
@@ -117,6 +136,32 @@ pub fn JournalFilter(
             </div>
         </Form>
     }
+}
+
+/// One account in the picker's tree: a link that filters to it, and — where
+/// anything files under it — a fold holding those.
+fn branch(node: AccountNode, pick: &impl Fn(Option<&str>) -> String) -> AnyView {
+    let row = view! {
+        <a class="pick" href=pick(Some(&node.path))>
+            {node.label.clone()}
+        </a>
+    };
+    if node.children.is_empty() {
+        return view! { <li>{row}</li> }.into_any();
+    }
+    let children = node.children.into_iter().map(|child| branch(child, pick)).collect_view();
+    view! {
+        <li>
+            <details class="group" open=node.open>
+                <summary>
+                    <span class="marker" aria-hidden="true"></span>
+                    {row}
+                </summary>
+                <ul>{children}</ul>
+            </details>
+        </li>
+    }
+    .into_any()
 }
 
 /// One page of transactions and the links to the pages around it.
