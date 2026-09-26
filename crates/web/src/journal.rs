@@ -82,15 +82,27 @@ pub fn JournalFilter(
             <div class="filter">
                 <label>
                     "帳戶"
-                    // A native list: the browser narrows it down as the reader
-                    // types, with no script of ours to go wrong.
-                    <input
-                        type="search"
-                        name="account"
-                        list="accounts"
-                        placeholder="全部"
-                        value=chosen.unwrap_or_default()
-                    />
+                    // One control, two ways in: type and the browser narrows
+                    // the list, or open the tree and walk down it.
+                    <span class="combo">
+                        <input
+                            type="search"
+                            name="account"
+                            list="accounts"
+                            placeholder="全部"
+                            value=chosen.unwrap_or_default()
+                        />
+                        <details class="picker">
+                            <summary>
+                                <span class="marker" aria-hidden="true"></span>
+                                <span class="sr-only">"帳戶目錄"</span>
+                            </summary>
+                            <ul class="tree">
+                                <li><a class="pick" href=pick(None)>"全部"</a></li>
+                                {tree.into_iter().map(|node| branch(node, &pick)).collect_view()}
+                            </ul>
+                        </details>
+                    </span>
                     <datalist id="accounts">
                         {accounts
                             .into_iter()
@@ -98,18 +110,6 @@ pub fn JournalFilter(
                             .collect_view()}
                     </datalist>
                 </label>
-                // For a reader who would rather look than type: one level at a
-                // time, so the first choice is four kinds, not every account.
-                <details class="picker">
-                    <summary>
-                        <span class="marker" aria-hidden="true"></span>
-                        "帳戶目錄"
-                    </summary>
-                    <ul class="tree">
-                        <li><a class="pick" href=pick(None)>"全部"</a></li>
-                        {tree.into_iter().map(|node| branch(node, &pick)).collect_view()}
-                    </ul>
-                </details>
                 <label>
                     "從" <input type="date" name="from" value=query.from.clone().unwrap_or_default() />
                 </label>

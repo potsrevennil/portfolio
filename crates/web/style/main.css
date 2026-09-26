@@ -440,20 +440,61 @@ details.group > summary.row.section {
   margin-left: auto;
 }
 
-/* The account tree: folded to its four kinds, one level opening at a time. */
-.journal .filter .picker {
-  flex-basis: 100%;
+/* The account box and its tree are one control: typing narrows the browser's
+   own list, and ▾ drops the tree over the page rather than pushing it down. */
+.journal .filter .combo {
+  position: relative;
+  display: flex;
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.journal .filter .combo input[name="account"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 1.6rem;
+}
+
+/* Chrome draws its own arrow for a list-backed input, which would sit beside
+   ours and open a second, flat menu. Ours opens the tree; typing still brings
+   the browser's suggestions up. */
+.journal .filter .combo input[name="account"]::-webkit-calendar-picker-indicator {
+  display: none !important;
 }
 
 .journal .filter .picker > summary {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 0.4rem;
   cursor: pointer;
   list-style: none;
-  color: var(--accent);
-  padding: 0.2rem 0;
+  color: var(--muted);
 }
 
 .journal .filter .picker > summary::-webkit-details-marker {
   display: none;
+}
+
+.journal .filter .picker > summary .marker::before {
+  content: "▾";
+}
+
+.journal .filter .picker[open] > summary .marker::before {
+  content: "▴";
+}
+
+/* Named for a screen reader; the arrow says it to everyone else. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .journal .filter .tree,
@@ -463,10 +504,23 @@ details.group > summary.row.section {
   padding: 0 0 0 1.1rem;
 }
 
+/* The dropped tree: over the page, never wider than it. */
 .journal .filter .tree {
+  position: absolute;
+  z-index: 10;
+  top: 100%;
+  left: 0;
+  /* As wide as the deepest row it shows, within the window. */
+  width: max-content;
+  min-width: 100%;
+  max-width: calc(100vw - 2rem);
   max-height: 22rem;
-  overflow-y: auto;
-  padding-left: 0;
+  overflow: auto;
+  padding: 0.4rem 0.8rem 0.4rem 0.4rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.3rem;
+  box-shadow: 0 0.4rem 1rem rgb(0 0 0 / 18%);
   white-space: nowrap;
 }
 
