@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
-use ledger::{accounts::in_subtree, model::Source};
+use ledger::{accounts::in_subtree, journal::UNVERIFIED_TAG, model::Source};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::{SqliteConnection, SqlitePool};
@@ -346,6 +346,26 @@ async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
     events::record(db, id, EventKind::Confirmed, &Change { before: Some(before), after }).await
 }
 
+/// Whether a leg on `path` dated `date` is one a bank statement will show
+/// but has not yet: the account has statements, and the newest ends before
+/// `date`. Such a leg waits as 未對帳, as an imported 天天記帳 record does,
+/// for the next statement import to verify it; untagged, that import would
+/// book the bank's line a second time. A leg dated inside a statement is
+/// held to it by the balance check instead.
+async fn awaits_statement(db: &mut SqliteConnection, path: &str, date: NaiveDate) -> Result<bool> {
+    let through: Option<String> = sqlx::query_scalar(
+        "SELECT max(b.period_end) FROM balance_assertion b JOIN accounts a ON a.id = b.account_id \
+         WHERE b.source = 'statement' AND b.superseded_at IS NULL AND (a.path = ?1 OR substr(?1, \
+         1, length(a.path) + 1) = a.path || ':')",
+    )
+    .bind(path)
+    .fetch_one(db)
+    .await?;
+    let through: Option<NaiveDate> =
+        through.map(|d| d.parse()).transpose().context("statement period end")?;
+    Ok(through.is_some_and(|through| date > through))
+}
+
 /// Books a hand-entered transaction, reviewed. Returns its id.
 pub async fn enter(pool: &SqlitePool, m: &Manual) -> Result<i64> {
     let mut db = pool.begin().await?;
@@ -391,15 +411,18 @@ pub async fn enter(pool: &SqlitePool, m: &Manual) -> Result<i64> {
     .execute(&mut *db)
     .await?
     .last_insert_rowid();
-    for (account_id, amount) in [(from.id, flow), (other.id, -flow)] {
+    let counter = m.category.as_ref().or(m.counter.as_ref()).expect("checked above");
+    for (path, account_id, amount) in [(&m.account, from.id, flow), (counter, other.id, -flow)] {
+        let tags = awaits_statement(&mut db, path, m.date).await?.then_some(UNVERIFIED_TAG);
         sqlx::query(
-            "INSERT INTO postings (transaction_id, account_id, amount, currency, origin) VALUES \
-             (?, ?, ?, ?, ?)",
+            "INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(account_id)
         .bind(amount.to_string())
         .bind(m.currency.to_string())
+        .bind(tags)
         .bind(Origin::Manual.to_string())
         .execute(&mut *db)
         .await?;

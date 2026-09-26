@@ -522,6 +522,33 @@ async fn the_next_statement_verifies_an_unverified_record() -> Result<()> {
     Ok(())
 }
 
+/// A spend entered by hand after the last statement waits as 未對帳, and the
+/// next statement's line verifies it rather than booking it a second time.
+#[tokio::test]
+async fn the_next_statement_verifies_a_hand_entry() -> Result<()> {
+    let f = Fixture::new()?;
+    let pool = frozen(&f, "hand.db").await?;
+    let entered = db::review::enter(&pool, &db::review::Manual {
+        date: NaiveDate::from_ymd_opt(2026, 3, 8).expect("date"),
+        amount: dec!(30),
+        currency: Currency::TWD,
+        account: "Assets:LineBank".into(),
+        category: Some("Expenses:Food".into()),
+        counter: None,
+        note: Some("午餐".into()),
+    })
+    .await?;
+    let paths =
+        march(&f, "2026.03.06 消費 -$20 $235 範例店\n2026.03.08 消費 -$30 $205 範例店\n", "$205")
+            .await?;
+    let report = f.import(&pool, Bank::LineBank, &paths).await?;
+    assert!(report.check.ok(), "{report}");
+    assert_eq!((report.counts.verified, report.inserted), (2, 0), "{report}");
+    assert_eq!(unverified_count(&pool).await?, 0);
+    assert_eq!(date_of(&pool, entered).await?, "2026-03-08");
+    Ok(())
+}
+
 /// Two lines of the unverified record's amount within the window: nothing
 /// chooses, nothing is imported, and the record stays unverified.
 #[tokio::test]

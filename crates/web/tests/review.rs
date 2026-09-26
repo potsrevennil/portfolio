@@ -571,6 +571,63 @@ async fn a_late_record_supersedes_a_tiantian_closing() {
     // before it (tested with its message in the manual-entry test).
 }
 
+/// `(account, tags)` of every leg, in posting order.
+async fn posting_tags(pool: &SqlitePool, id: i64) -> Vec<(String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT a.path, p.tags FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
+         p.transaction_id = ? ORDER BY p.id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Spent from a bank account after its last statement: the bank leg waits
+/// as 未對帳 for the next statement, as an imported record does. Cash, which
+/// no statement covers, does not.
+#[tokio::test]
+async fn a_hand_entry_on_a_bank_account_waits_for_its_statement() {
+    let (_dir, pool) = ledger().await;
+    sqlx::query(
+        "INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) SELECT \
+         id, 'TWD', 'statement', '2024-02-29', '12300' FROM accounts WHERE path = \
+         'Assets:Bank:Savings'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let enter = |account: &str, date: &str| {
+        let (account, date) = (account.to_string(), date.to_string());
+        call(&pool, move || {
+            enter_manual(
+                date,
+                "90".into(),
+                "TWD".into(),
+                account,
+                Some("Expenses:Food".into()),
+                None,
+                None,
+            )
+        })
+    };
+
+    let bank = enter("Assets:Bank:Savings", "2024-03-10").await.unwrap();
+    assert_eq!(posting_tags(&pool, bank).await, [
+        ("Assets:Bank:Savings".to_string(), Some("unverified".to_string())),
+        ("Expenses:Food".to_string(), None),
+    ]);
+    let waiting = JournalQuery { unverified: true, ..Default::default() };
+    let waiting = call(&pool, || load_journal(waiting)).await.unwrap();
+    assert!(waiting.entries.iter().any(|e| e.id == bank && e.unverified && e.reviewed));
+
+    let cash = enter("Assets:Cash", "2024-03-10").await.unwrap();
+    assert!(posting_tags(&pool, cash).await.iter().all(|(_, t)| t.is_none()));
+    // Inside the statement, the statement's balance decides instead.
+    let covered = enter("Assets:Bank:Savings", "2024-02-20").await.unwrap_err().to_string();
+    assert!(covered.contains("日期該在 2024-02-29 之後"), "{covered}");
+}
+
 /// An entry made by mistake can be deleted: it leaves every list and every
 /// balance, and its history keeps what it was.
 #[tokio::test]
