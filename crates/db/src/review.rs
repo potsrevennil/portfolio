@@ -4,11 +4,15 @@
 //! statement, 天天記帳 or a count vouches for. Refusals are worded for the page
 //! that shows them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
-use ledger::{accounts::in_subtree, journal::UNVERIFIED_TAG, model::Source};
+use ledger::{
+    accounts::{in_subtree, Chart},
+    journal::UNVERIFIED_TAG,
+    model::Source,
+};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::{SqliteConnection, SqlitePool};
@@ -188,7 +192,12 @@ async fn refusal(db: &mut SqliteConnection, m: &Mismatch) -> Result<String> {
 }
 
 /// Rewrites a transaction's legs and note in place.
-pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
+pub async fn edit(
+    pool: &SqlitePool,
+    statements: &StatementAccounts,
+    id: i64,
+    edit: &Edit,
+) -> Result<()> {
     let mut db = pool.begin().await?;
     let before_check = baseline(&mut db).await?;
     live(&mut db, id).await?;
@@ -269,7 +278,7 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
     for r in rows.iter().filter(|r| !kept.contains(&r.id)) {
         sqlx::query("DELETE FROM postings WHERE id = ?").bind(r.id).execute(&mut *db).await?;
     }
-    remark_unverified(&mut db, id, &moved).await?;
+    remark_unverified(&mut db, statements, id, &moved).await?;
     sqlx::query(
         "UPDATE transactions SET narration = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', \
          'now') WHERE id = ?",
@@ -393,14 +402,52 @@ async fn statements_through(db: &mut SqliteConnection, path: &str) -> Result<Opt
     through.map(|d| d.parse()).transpose().context("statement period end")
 }
 
+/// The accounts bank statements post to, as the chart names them: where the
+/// 天天記帳 importer marks a record 未對帳 until a statement shows it, even on
+/// an account whose first statement is still to come.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StatementAccounts(BTreeSet<String>);
+
+impl From<&Chart> for StatementAccounts {
+    fn from(chart: &Chart) -> Self {
+        let i = &chart.institution;
+        i.accounts.values().chain([&i.primary, &i.settlement]).map(|a| &**a).collect()
+    }
+}
+
+impl<'a> FromIterator<&'a str> for StatementAccounts {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
+        Self(iter.into_iter().filter(|a| !a.is_empty()).map(str::to_string).collect())
+    }
+}
+
+/// Whether statements post to the account at `path`, and the last day those
+/// imported so far cover. One with statements imported is one whatever the
+/// chart says.
+async fn statement_account(
+    db: &mut SqliteConnection,
+    statements: &StatementAccounts,
+    path: &str,
+) -> Result<(bool, Option<NaiveDate>)> {
+    let through = statements_through(db, path).await?;
+    let named = statements.0.iter().any(|root| in_subtree(path, root));
+    Ok((named || through.is_some(), through))
+}
+
 /// Whether a leg on `path` dated `date` is one a bank statement will show
-/// but has not yet: the account has statements, and the newest ends before
+/// but has not yet: statements post to the account, and none imported covers
 /// `date`. Such a leg waits as 未對帳, as an imported 天天記帳 record does,
 /// for the next statement import to verify it; untagged, that import would
 /// book the bank's line a second time. A leg dated inside a statement is
 /// held to it by the balance check instead.
-async fn awaits_statement(db: &mut SqliteConnection, path: &str, date: NaiveDate) -> Result<bool> {
-    Ok(statements_through(db, path).await?.is_some_and(|through| date > through))
+async fn awaits_statement(
+    db: &mut SqliteConnection,
+    statements: &StatementAccounts,
+    path: &str,
+    date: NaiveDate,
+) -> Result<bool> {
+    let (on_statements, through) = statement_account(db, statements, path).await?;
+    Ok(on_statements && through.is_none_or(|through| date > through))
 }
 
 async fn tag_unverified(db: &mut SqliteConnection, posting_id: i64, on: bool) -> Result<()> {
@@ -418,17 +465,15 @@ async fn tag_unverified(db: &mut SqliteConnection, posting_id: i64, on: bool) ->
     Ok(())
 }
 
-/// Re-marks 未對帳 after an edit. Legs left on their account keep their
-/// mark, whatever the edit: only a statement clears it. A leg moved onto an
-/// account statements cover is marked as 記一筆 would mark it. A leg moved to
-/// an account no statement covers yet drops a mark it had only for the
-/// statements of the account it left, and otherwise keeps it: the account
-/// may be a bank whose first statement is still to come, as the 天天記帳
-/// importer, which knows the banks, marked it for. The other legs of a
-/// record carry its mark with the bank's; once no asset or liability leg is
-/// marked, nothing is left to verify, and theirs go too.
+/// Re-marks 未對帳 after an edit. A leg left on its account keeps its mark,
+/// whatever the edit: only a statement clears it. A leg moved onto an account
+/// statements post to is marked as 記一筆 would mark it; one moved elsewhere
+/// keeps what it had. The record's other legs carry its mark along with the
+/// bank's, so once a leg leaves a statement account and no leg on one is
+/// marked, nothing is left to verify and no leg keeps it.
 async fn remark_unverified(
     db: &mut SqliteConnection,
+    statements: &StatementAccounts,
     id: i64,
     moved: &HashMap<i64, Option<&str>>,
 ) -> Result<()> {
@@ -444,29 +489,33 @@ async fn remark_unverified(
     .bind(id)
     .fetch_all(&mut *db)
     .await?;
+    let mut left_statements = false;
     for (pid, path) in &legs {
         let Some(left) = moved.get(pid) else { continue };
-        match statements_through(db, path).await? {
-            Some(through) => tag_unverified(db, *pid, date > through).await?,
-            None => {
-                if let Some(left) = left {
-                    if statements_through(db, left).await?.is_some() {
-                        tag_unverified(db, *pid, false).await?;
-                    }
-                }
-            }
+        if let Some(left) = left {
+            left_statements |= statement_account(db, statements, left).await?.0;
+        }
+        if statement_account(db, statements, path).await?.0 {
+            let awaits = awaits_statement(db, statements, path, date).await?;
+            tag_unverified(db, *pid, awaits).await?;
         }
     }
-    let marked: Vec<(String,)> = sqlx::query_as(
-        "SELECT a.type FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
+    if !left_statements {
+        return Ok(());
+    }
+    let marked: Vec<String> = sqlx::query_scalar(
+        "SELECT a.path FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
          p.transaction_id = ? AND instr(',' || coalesce(p.tags, '') || ',', ',' || ? || ',') > 0",
     )
     .bind(id)
     .bind(UNVERIFIED_TAG)
     .fetch_all(&mut *db)
     .await?;
-    let verifiable = |t: &str| matches!(t.parse(), Ok(AccountType::Asset | AccountType::Liability));
-    if !marked.iter().any(|(t,)| verifiable(t)) {
+    let mut waits = false;
+    for path in &marked {
+        waits |= statement_account(db, statements, path).await?.0;
+    }
+    if !waits {
         for (pid, _) in &legs {
             tag_unverified(db, *pid, false).await?;
         }
@@ -475,7 +524,7 @@ async fn remark_unverified(
 }
 
 /// Books a hand-entered transaction, reviewed. Returns its id.
-pub async fn enter(pool: &SqlitePool, m: &Manual) -> Result<i64> {
+pub async fn enter(pool: &SqlitePool, statements: &StatementAccounts, m: &Manual) -> Result<i64> {
     let mut db = pool.begin().await?;
     let before = baseline(&mut db).await?;
     if m.amount.is_zero() {
@@ -521,7 +570,8 @@ pub async fn enter(pool: &SqlitePool, m: &Manual) -> Result<i64> {
     .last_insert_rowid();
     let counter = m.category.as_ref().or(m.counter.as_ref()).expect("checked above");
     for (path, account_id, amount) in [(&m.account, from.id, flow), (counter, other.id, -flow)] {
-        let tags = awaits_statement(&mut db, path, m.date).await?.then_some(UNVERIFIED_TAG);
+        let tags =
+            awaits_statement(&mut db, statements, path, m.date).await?.then_some(UNVERIFIED_TAG);
         sqlx::query(
             "INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin) \
              VALUES (?, ?, ?, ?, ?, ?)",

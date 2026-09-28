@@ -63,7 +63,8 @@ pub async fn save_entry(
     let pool = expect_context::<db::SqlitePool>();
     let confirm = confirm.is_some();
     let edit = crate::queue::edit(narration, &legs, confirm).map_err(failed)?;
-    db::review::edit(&pool, id, &edit).await.map_err(failed)?;
+    let statements = expect_context::<db::review::StatementAccounts>();
+    db::review::edit(&pool, &statements, id, &edit).await.map_err(failed)?;
     if confirm {
         leptos_axum::redirect("/review");
     }

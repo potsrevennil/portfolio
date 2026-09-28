@@ -9,7 +9,10 @@ use common::{
     page::{position, visible, Site},
     queue::{ledger, COFFEE, FEE, LUNCH, TAXI},
 };
-use db::pairing::{self, Ambiguity};
+use db::{
+    pairing::{self, Ambiguity},
+    review::StatementAccounts,
+};
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use leptos::{prelude::*, reactive::computed::ScopedFuture};
@@ -36,9 +39,16 @@ where
     let owner = Owner::new();
     let call = owner.with(|| {
         provide_context(pool.clone());
+        provide_context(statement_accounts());
         ScopedFuture::new(f())
     });
     call.await
+}
+
+/// What the chart would name: the savings account, and a card whose first
+/// statement is still to come. Cash is neither.
+fn statement_accounts() -> StatementAccounts {
+    ["Assets:Bank:Savings", "Liabilities:Card"].into_iter().collect()
 }
 
 async fn queue(pool: &SqlitePool, query: JournalQuery) -> Queue {
@@ -121,7 +131,7 @@ async fn site() -> Site {
     Site::new(|| async {
         let (dir, pool) = ledger().await;
         let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default()), dir)
+        (server::router(options, pool, AtCost::default(), statement_accounts()), dir)
     })
     .await
 }
@@ -783,34 +793,97 @@ async fn an_edit_moves_the_unverified_mark_with_the_account() {
 }
 
 /// A 天天記帳 record on a bank whose first statement hasn't come: the
-/// importer marked it 未對帳, knowing the bank, and no edit short of moving
-/// it where a statement says otherwise takes that away, or the first
-/// statement would book its line a second time.
+/// importer marked it 未對帳, and an edit keeps it so on any account a
+/// statement will post to, or that first statement would book its line a
+/// second time. Only moving it off, to cash, takes the mark away.
 #[tokio::test]
-async fn an_edit_keeps_the_mark_of_a_record_awaiting_a_first_statement() {
+async fn a_record_awaiting_a_first_statement_stays_marked() {
     let (_dir, pool) = ledger().await;
+    // Savings has statements through February; the card has none yet.
+    sqlx::query(
+        "INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) SELECT \
+         id, 'TWD', 'statement', '2024-02-29', '12300' FROM accounts WHERE path = \
+         'Assets:Bank:Savings'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let coffee = id_of(&pool, COFFEE).await;
     let ids: Vec<i64> = legs(&pool, coffee).await.into_iter().map(|(p, ..)| p).collect();
     let marked = || async {
         let tags = posting_tags(&pool, coffee).await;
-        tags.iter().all(|(_, t)| t.as_deref() == Some("unverified"))
+        (tags.iter().filter(|(_, t)| t.as_deref() == Some("unverified")).count(), tags)
     };
-    let edit = |category: &str, bank: &str| {
-        vec![leg(Some(ids[0]), category, "150"), leg(Some(ids[1]), bank, "-150")]
+    let edit = |category: &str, paid_from: &str| {
+        vec![leg(Some(ids[0]), category, "150"), leg(Some(ids[1]), paid_from, "-150")]
     };
 
     save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Assets:Bank:Savings"), true).await.unwrap();
-    assert!(marked().await, "{:?}", posting_tags(&pool, coffee).await);
+    assert_eq!(marked().await.0, 2, "{:?}", marked().await.1);
     save(&pool, coffee, "拿鐵", edit("Expenses:Uncategorized", "Assets:Bank:Savings"), false)
         .await
         .unwrap();
-    assert!(marked().await, "{:?}", posting_tags(&pool, coffee).await);
-    // Nothing says Cash isn't a bank still to send its first statement.
-    save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Assets:Cash"), false).await.unwrap();
-    assert!(marked().await, "{:?}", posting_tags(&pool, coffee).await);
+    assert_eq!(marked().await.0, 2, "{:?}", marked().await.1);
+    // From a bank with statements to a card with none yet.
+    save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Liabilities:Card"), false).await.unwrap();
+    assert_eq!(marked().await.0, 2, "{:?}", marked().await.1);
     let waiting = JournalQuery { unverified: true, ..Default::default() };
-    let waiting = call(&pool, || load_journal(waiting)).await.unwrap();
-    assert!(waiting.entries.iter().any(|e| e.id == coffee));
+    let listed = call(&pool, || load_journal(waiting.clone())).await.unwrap();
+    assert!(listed.entries.iter().any(|e| e.id == coffee));
+
+    // Cash: no statement will show it.
+    save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Assets:Cash"), false).await.unwrap();
+    assert_eq!(marked().await.0, 0, "{:?}", marked().await.1);
+    let listed = call(&pool, || load_journal(waiting)).await.unwrap();
+    assert!(!listed.entries.iter().any(|e| e.id == coffee));
+
+    // Entered by hand on the card, it waits for the first statement too.
+    let card = call(&pool, || {
+        enter_manual(
+            "2024-03-10".into(),
+            "90".into(),
+            "TWD".into(),
+            "Liabilities:Card".into(),
+            Some("Expenses:Food".into()),
+            None,
+            None,
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(posting_tags(&pool, card).await, [
+        ("Liabilities:Card".to_string(), Some("unverified".to_string())),
+        ("Expenses:Food".to_string(), None),
+    ]);
+}
+
+/// The chart names the statement accounts: each numbered account, and where
+/// the app's pooled account and its settlement post. No mapping, none.
+#[test]
+fn statement_accounts_come_from_the_chart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mapping = dir.path().join("mapping.toml");
+    assert_eq!(server::statement_accounts(&mapping).unwrap(), StatementAccounts::default());
+    std::fs::write(
+        &mapping,
+        r#"
+        [institution.accounts]
+        "111111111111" = "Assets:Bank:Savings"
+        [institution]
+        app_account = "銀行"
+        primary = "Assets:Bank:Main"
+        settlement = "Assets:Bank:Settlement"
+        settlement_app_account = "交割"
+        clearing = "Assets:Bank:Clearing"
+        [fallback]
+        income = "Income:Uncategorized"
+        expense = "Expenses:Uncategorized"
+        "#,
+    )
+    .unwrap();
+    let expected: StatementAccounts =
+        ["Assets:Bank:Savings", "Assets:Bank:Main", "Assets:Bank:Settlement"].into_iter().collect();
+    assert_eq!(server::statement_accounts(&mapping).unwrap(), expected);
 }
 
 /// An entry made by mistake can be deleted: it leaves every list and every

@@ -43,7 +43,8 @@ pub async fn enter_manual(
         note: note.unwrap_or_default(),
     };
     let manual = db::review::Manual::try_from(&input).map_err(crate::review::failed)?;
-    db::review::enter(&pool, &manual).await.map_err(crate::review::failed)
+    let statements = expect_context::<db::review::StatementAccounts>();
+    db::review::enter(&pool, &statements, &manual).await.map_err(crate::review::failed)
 }
 
 #[component]

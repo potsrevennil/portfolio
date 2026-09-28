@@ -528,7 +528,7 @@ async fn the_next_statement_verifies_an_unverified_record() -> Result<()> {
 async fn the_next_statement_verifies_a_hand_entry() -> Result<()> {
     let f = Fixture::new()?;
     let pool = frozen(&f, "hand.db").await?;
-    let entered = db::review::enter(&pool, &db::review::Manual {
+    let entered = db::review::enter(&pool, &Default::default(), &db::review::Manual {
         date: NaiveDate::from_ymd_opt(2026, 3, 8).expect("date"),
         amount: dec!(30),
         currency: Currency::TWD,
