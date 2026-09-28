@@ -654,6 +654,75 @@ async fn a_hand_entry_on_a_bank_account_waits_for_its_statement() {
     assert!(covered.contains("日期該在 2024-02-29 之後"), "{covered}");
 }
 
+/// 未對帳 follows a leg's account through an edit: moved onto a bank account
+/// after its last statement, the leg waits for the statement, so the next
+/// import verifies it instead of booking the line twice; moved off, the mark
+/// goes, from every leg once none is left for a statement to vouch for.
+#[tokio::test]
+async fn an_edit_moves_the_unverified_mark_with_the_account() {
+    let (_dir, pool) = ledger().await;
+    sqlx::query(
+        "INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) SELECT \
+         id, 'TWD', 'statement', '2024-02-29', '12300' FROM accounts WHERE path = \
+         'Assets:Bank:Savings'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let id = call(&pool, || {
+        enter_manual(
+            "2024-03-10".into(),
+            "90".into(),
+            "TWD".into(),
+            "Assets:Cash".into(),
+            Some("Expenses:Food".into()),
+            None,
+            None,
+        )
+    })
+    .await
+    .unwrap();
+    let ids: Vec<i64> = legs(&pool, id).await.into_iter().map(|(p, ..)| p).collect();
+    let paid_from = |account: &str| {
+        vec![leg(Some(ids[0]), account, "-90"), leg(Some(ids[1]), "Expenses:Food", "90")]
+    };
+    let unverified = |tag: bool| tag.then(|| "unverified".to_string());
+
+    save(&pool, id, "", paid_from("Assets:Bank:Savings"), false).await.unwrap();
+    assert_eq!(posting_tags(&pool, id).await, [
+        ("Assets:Bank:Savings".to_string(), unverified(true)),
+        ("Expenses:Food".to_string(), None),
+    ]);
+    let (_, payload) = events(&pool, id).await.pop().unwrap();
+    assert_eq!(payload["after"]["legs"][0]["tags"], Value::from("unverified"), "{payload}");
+
+    save(&pool, id, "", paid_from("Assets:Cash"), false).await.unwrap();
+    assert!(posting_tags(&pool, id).await.iter().all(|(_, t)| t.is_none()));
+
+    // An imported record marks every leg; taking its bank leg off the bank
+    // clears them all, and the journal stops listing it as 未對帳.
+    save(&pool, id, "", paid_from("Assets:Bank:Savings"), false).await.unwrap();
+    sqlx::query("UPDATE postings SET tags = 'unverified' WHERE transaction_id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    save(&pool, id, "", paid_from("Assets:Cash"), false).await.unwrap();
+    assert!(posting_tags(&pool, id).await.iter().all(|(_, t)| t.is_none()));
+    let waiting = JournalQuery { unverified: true, ..Default::default() };
+    let waiting = call(&pool, || load_journal(waiting)).await.unwrap();
+    assert!(!waiting.entries.iter().any(|e| e.id == id));
+
+    // A category change leaves the bank leg's mark alone.
+    save(&pool, id, "", paid_from("Assets:Bank:Savings"), false).await.unwrap();
+    let recategorised = vec![
+        leg(Some(ids[0]), "Assets:Bank:Savings", "-90"),
+        leg(Some(ids[1]), "Expenses:Uncategorized", "90"),
+    ];
+    save(&pool, id, "", recategorised, false).await.unwrap();
+    assert_eq!(posting_tags(&pool, id).await[0].1, unverified(true));
+}
+
 /// An entry made by mistake can be deleted: it leaves every list and every
 /// balance, and its history keeps what it was.
 #[tokio::test]

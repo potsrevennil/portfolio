@@ -32,7 +32,8 @@ pub struct LegEdit {
 }
 
 /// A transaction's legs and note as they should stand. Legs it leaves out
-/// are removed; the rest keep their row, tags and, if unchanged, origin.
+/// are removed; the rest keep their row, tags and, if unchanged, origin,
+/// but for 未對帳, which follows the leg's account.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Edit {
     pub narration: Option<String>,
@@ -211,6 +212,7 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
         }
     }
 
+    let mut moved = HashSet::new();
     for leg in &edit.legs {
         let unchanged = leg.posting_id.and_then(|pid| held.get(&pid)).is_some_and(|r| {
             r.path == leg.account
@@ -241,9 +243,12 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
                 .bind(pid)
                 .execute(&mut *db)
                 .await?;
+                if !same_account {
+                    moved.insert(pid);
+                }
             }
             None => {
-                sqlx::query(
+                let pid = sqlx::query(
                     "INSERT INTO postings (transaction_id, account_id, amount, currency, origin) \
                      VALUES (?, ?, ?, ?, ?)",
                 )
@@ -253,13 +258,16 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
                 .bind(leg.currency.to_string())
                 .bind(Origin::Manual.to_string())
                 .execute(&mut *db)
-                .await?;
+                .await?
+                .last_insert_rowid();
+                moved.insert(pid);
             }
         }
     }
     for r in rows.iter().filter(|r| !kept.contains(&r.id)) {
         sqlx::query("DELETE FROM postings WHERE id = ?").bind(r.id).execute(&mut *db).await?;
     }
+    remark_unverified(&mut db, id, &moved).await?;
     sqlx::query(
         "UPDATE transactions SET narration = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', \
          'now') WHERE id = ?",
@@ -369,13 +377,9 @@ async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
     events::record(db, id, EventKind::Confirmed, &Change { before: Some(before), after }).await
 }
 
-/// Whether a leg on `path` dated `date` is one a bank statement will show
-/// but has not yet: the account has statements, and the newest ends before
-/// `date`. Such a leg waits as 未對帳, as an imported 天天記帳 record does,
-/// for the next statement import to verify it; untagged, that import would
-/// book the bank's line a second time. A leg dated inside a statement is
-/// held to it by the balance check instead.
-async fn awaits_statement(db: &mut SqliteConnection, path: &str, date: NaiveDate) -> Result<bool> {
+/// The last day the statements of the account at `path` cover, or `None` for
+/// an account no statement covers.
+async fn statements_through(db: &mut SqliteConnection, path: &str) -> Result<Option<NaiveDate>> {
     let through: Option<String> = sqlx::query_scalar(
         "SELECT max(b.period_end) FROM balance_assertion b JOIN accounts a ON a.id = b.account_id \
          WHERE b.source = 'statement' AND b.superseded_at IS NULL AND (a.path = ?1 OR substr(?1, \
@@ -384,9 +388,65 @@ async fn awaits_statement(db: &mut SqliteConnection, path: &str, date: NaiveDate
     .bind(path)
     .fetch_one(db)
     .await?;
-    let through: Option<NaiveDate> =
-        through.map(|d| d.parse()).transpose().context("statement period end")?;
-    Ok(through.is_some_and(|through| date > through))
+    through.map(|d| d.parse()).transpose().context("statement period end")
+}
+
+/// Whether a leg on `path` dated `date` is one a bank statement will show
+/// but has not yet: the account has statements, and the newest ends before
+/// `date`. Such a leg waits as 未對帳, as an imported 天天記帳 record does,
+/// for the next statement import to verify it; untagged, that import would
+/// book the bank's line a second time. A leg dated inside a statement is
+/// held to it by the balance check instead.
+async fn awaits_statement(db: &mut SqliteConnection, path: &str, date: NaiveDate) -> Result<bool> {
+    Ok(statements_through(db, path).await?.is_some_and(|through| date > through))
+}
+
+async fn tag_unverified(db: &mut SqliteConnection, posting_id: i64, on: bool) -> Result<()> {
+    let sql = match on {
+        true => {
+            "UPDATE postings SET tags = CASE WHEN instr(',' || coalesce(tags, '') || ',', ',' || \
+             ?1 || ',') > 0 THEN tags ELSE coalesce(tags || ',', '') || ?1 END WHERE id = ?2"
+        }
+        false => {
+            "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ?1 || ',', \
+             ','), ','), '') WHERE id = ?2"
+        }
+    };
+    sqlx::query(sql).bind(UNVERIFIED_TAG).bind(posting_id).execute(db).await?;
+    Ok(())
+}
+
+/// Re-marks 未對帳 after an edit. A leg moved to another account, or added,
+/// is marked as 記一筆 would mark it; legs left alone keep their mark. Once
+/// no leg sits on an account statements cover, no statement will ever vouch
+/// for the transaction, so no leg stays marked.
+async fn remark_unverified(db: &mut SqliteConnection, id: i64, moved: &HashSet<i64>) -> Result<()> {
+    let date: String = sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
+        .bind(id)
+        .fetch_one(&mut *db)
+        .await?;
+    let date: NaiveDate = date.parse().context("transaction date")?;
+    let legs: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT p.id, a.path FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
+         p.transaction_id = ?",
+    )
+    .bind(id)
+    .fetch_all(&mut *db)
+    .await?;
+    let mut on_statements = false;
+    for (pid, path) in &legs {
+        let through = statements_through(db, path).await?;
+        on_statements |= through.is_some();
+        if moved.contains(pid) {
+            tag_unverified(db, *pid, through.is_some_and(|through| date > through)).await?;
+        }
+    }
+    if !on_statements {
+        for (pid, _) in &legs {
+            tag_unverified(db, *pid, false).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Books a hand-entered transaction, reviewed. Returns its id.
