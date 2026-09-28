@@ -26,7 +26,8 @@ pub async fn load_accounts() -> Result<AccountTree, ServerFnError> {
     let mut shown: Vec<_> = chart
         .accounts
         .iter()
-        .filter_map(|a| chart.choice(a).map(|c| (a.account_type, c)))
+        .filter(|a| a.account_type != db::query::AccountType::Equity)
+        .map(|a| (a.account_type, chart.choice(a)))
         .collect();
     shown.sort_by(|(ta, a), (tb, b)| (ta, &a.path).cmp(&(tb, &b.path)));
     Ok(shown.into_iter().map(|(_, c)| c).collect())

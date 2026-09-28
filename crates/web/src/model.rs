@@ -298,6 +298,7 @@ pub enum AccountKind {
     Liability,
     Income,
     Expense,
+    Equity,
 }
 
 /// An account the journal can be filtered to, or a leg posted to.

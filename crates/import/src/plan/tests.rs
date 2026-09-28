@@ -229,6 +229,42 @@ fn a_pick_pairs_what_the_amounts_could_not() -> Result<()> {
     Ok(())
 }
 
+/// A pick is checked against its line again: a record edited since to
+/// another amount no longer fits, and the line pairs as if never picked.
+#[test]
+fn a_pick_whose_record_no_longer_fits_is_ignored() -> Result<()> {
+    let st = statement(&[(10, dec!(-150), dec!(-50))]);
+    let existing = vec![
+        held(1, dec!(100), true),
+        unverified(9, dec!(-150), 41),
+        unverified(8, dec!(-140), 42),
+    ];
+    let refs = st.dedup_refs();
+    let p = picked(&st, existing, HashMap::from([(refs[0].clone(), 42)]))?;
+    let verified: Vec<_> = p.verified.iter().map(|v| v.transaction_id).collect();
+    assert_eq!(verified, [41]);
+    Ok(())
+}
+
+/// An ambiguous line is reported for a person to pick even when the same
+/// statement leaves another bank's record unshown: that refusal would hide
+/// the choice behind a message no pick can settle.
+#[test]
+fn an_ambiguity_is_reported_before_a_record_left_to_the_next_statement() {
+    let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-150), dec!(-45))]);
+    let shared =
+        LedgerPosting { other_accounts: vec![OTHER.to_string()], ..unverified(9, dec!(-30), 40) };
+    let existing = vec![
+        held(1, dec!(100), true),
+        unverified(8, dec!(-150), 41),
+        unverified(9, dec!(-150), 42),
+        shared,
+    ];
+    let err = with(&st, existing).expect_err("ambiguous");
+    let Ambiguous(lines) = err.downcast_ref::<Ambiguous>().expect("the ambiguity, not {err}");
+    assert_eq!(lines[0].candidates, [41, 42]);
+}
+
 /// Uncategorised lines say how their other leg was chosen.
 #[test]
 fn a_fallback_leg_carries_its_origin() -> Result<()> {

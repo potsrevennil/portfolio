@@ -18,7 +18,7 @@ use ledger::{
     accounts::Chart,
     model::{Source, CONVERSIONS, OPENING_EQUITY},
     names::fallback_account,
-    statements::bank::{Bank, BankStatement},
+    statements::bank::{Bank, BankStatement, StatementLine},
 };
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
@@ -161,6 +161,7 @@ pub fn plan(
             false => Origin::Fallback,
         };
     let mut ambiguous: Vec<Ambiguity> = Vec::new();
+    let mut shared: Option<String> = None;
 
     // --- what the ledger already holds ---
     let mut openings: Vec<NaiveDate> = Vec::with_capacity(statements.len());
@@ -242,16 +243,21 @@ pub fn plan(
         // window, but only one-to-one: with two candidates either way (two
         // lunches of the same price) nothing chooses, and the import stops
         // with the records still unverified, until a person picks. A pick
-        // takes its line and record out of the running for the rest.
+        // takes its line and record out of the running for the rest; one
+        // whose record no longer fits the line, edited since, is ignored.
         let unverified: Vec<&LedgerPosting> =
             s.existing.iter().filter(|p| p.unverified && !p.opening).collect();
+        let fits = |line: &StatementLine, p: &LedgerPosting| {
+            p.amount == line.delta() && within_window(p.date, line.book_date)
+        };
         let mut picked: HashSet<i64> = HashSet::new();
         for li in 0..st.lines.len() {
             if line_status[li] != Status::New {
                 continue;
             }
             let pick = s.chosen.get(&refs[si][li]).copied().filter(|id| {
-                unverified.iter().any(|p| p.transaction_id == *id) && !picked.contains(id)
+                unverified.iter().any(|p| p.transaction_id == *id && fits(&st.lines[li], p))
+                    && !picked.contains(id)
             });
             if let Some(id) = pick {
                 picked.insert(id);
@@ -260,12 +266,11 @@ pub fn plan(
         }
         let unverified: Vec<&LedgerPosting> =
             unverified.into_iter().filter(|p| !picked.contains(&p.transaction_id)).collect();
-        let fits = |&li: &usize, p: &&LedgerPosting| {
-            p.amount == st.lines[li].delta() && within_window(p.date, st.lines[li].book_date)
-        };
         let new_lines: Vec<usize> =
             (0..st.lines.len()).filter(|&li| line_status[li] == Status::New).collect();
-        let pairing = one_to_one(&new_lines, &unverified, fits);
+        let pairing = one_to_one(&new_lines, &unverified, |&li: &usize, p: &&LedgerPosting| {
+            fits(&st.lines[li], p)
+        });
         for &(l, r) in &pairing.pairs {
             line_status[new_lines[l]] = Status::Verifies(unverified[r].transaction_id);
         }
@@ -303,15 +308,15 @@ pub fn plan(
             // Moving the record moves its every leg, so one reaching another
             // account that has its own statement is not ours to move.
             if let Some(other) = p.other_accounts.iter().find(|a| has_statements.contains(&***a)) {
-                bail!(
-                    "{} {}: the record of {} on {} is also {other}'s, and this statement does not \
-                     show it. Import it together with the next statement, which may, or review \
-                     the record. Nothing was imported",
-                    s.account,
-                    st.currency,
-                    p.amount,
-                    p.date
-                );
+                shared.get_or_insert_with(|| {
+                    format!(
+                        "{} {}: the record of {} on {} is also {other}'s, and this statement does \
+                         not show it. Import it together with the next statement, which may, or \
+                         review the record. Nothing was imported",
+                        s.account, st.currency, p.amount, p.date
+                    )
+                });
+                continue;
             }
             plan.deferred.push(Deferred { transaction_id: p.transaction_id, date: after });
             plan.counts.deferred += 1;
@@ -328,8 +333,13 @@ pub fn plan(
         status.push(line_status);
     }
 
+    // Ambiguous lines first: they are what a person can settle in 待配對,
+    // and the record the other refusal names may be one of their candidates.
     if !ambiguous.is_empty() {
         return Err(Ambiguous(ambiguous).into());
+    }
+    if let Some(shared) = shared {
+        bail!(shared);
     }
 
     // --- how the new lines pair up, as the freeze pairs them ---

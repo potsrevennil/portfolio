@@ -69,16 +69,17 @@ impl TryFrom<ChoiceRow> for Choice {
     }
 }
 
-/// Records lines an import refused to pair. A line recorded before keeps
-/// its pick; one not yet picked takes the candidates seen now.
+/// Records lines an import refused to pair, with the candidates seen now. A
+/// line refused again had its pick ignored, the record edited since so it no
+/// longer fits, so the pick is dropped for a person to make again.
 pub async fn record(db: &mut SqliteConnection, lines: &[Ambiguity]) -> Result<()> {
     for a in lines {
         sqlx::query(
             "INSERT INTO verification_choice
                 (account_id, currency, statement_ref, date, amount, description, candidates)
              SELECT id, ?, ?, ?, ?, ?, ? FROM accounts WHERE path = ?
-             ON CONFLICT (statement_ref) DO UPDATE SET candidates = excluded.candidates
-             WHERE transaction_id IS NULL",
+             ON CONFLICT (statement_ref) DO UPDATE SET candidates = excluded.candidates,
+                transaction_id = NULL, chosen_at = NULL",
         )
         .bind(a.currency.to_string())
         .bind(&a.statement_ref)

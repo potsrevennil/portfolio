@@ -474,6 +474,60 @@ async fn an_ambiguous_line_is_paired_by_a_pick() {
     let events = events(&pool, coffee).await;
     assert_eq!(events[0].0, "paired");
     assert_eq!(events[0].1["statement_ref"], "bank:line:1");
+
+    // Refused again, the line's pick no longer fit its record: the pick is
+    // dropped, to be made again from the candidates seen now.
+    let mut conn = pool.acquire().await.unwrap();
+    pairing::record(&mut conn, &[Ambiguity {
+        account: "Assets:Bank:Savings".into(),
+        currency: Currency::TWD,
+        statement_ref: "bank:line:1".into(),
+        date: NaiveDate::from_ymd_opt(2024, 3, 2).unwrap(),
+        amount: dec!(-150),
+        description: "範例店".into(),
+        candidates: vec![lunch, coffee],
+    }])
+    .await
+    .unwrap();
+    drop(conn);
+    let q = queue(&pool, JournalQuery::default()).await;
+    assert_eq!(q.choices[0].chosen, None);
+    let offered: Vec<_> = q.choices[0].candidates.iter().map(|e| e.id).collect();
+    assert_eq!(offered, [coffee, lunch]);
+}
+
+/// An opening balance's equity leg: hidden from every picker but its own
+/// entry's, so the entry still saves from the editor.
+#[tokio::test]
+async fn an_equity_leg_stays_editable() {
+    let (_dir, pool) = ledger().await;
+    let opening: i64 = sqlx::query_scalar(
+        "SELECT t.id FROM transactions t JOIN postings p ON p.transaction_id = t.id JOIN accounts \
+         a ON a.id = p.account_id WHERE a.path = 'Assets:Cash' AND t.narration = '期初'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let editing: Editing = call(&pool, || load_entry(opening)).await.unwrap();
+    let offered: Vec<_> = editing.accounts.iter().map(|a| a.path.as_str()).collect();
+    assert!(offered.contains(&"Equity:Opening-Balances"), "{offered:?}");
+    let html = with_actions(|| view! { <Editor editing=editing.clone() /> }.to_html());
+    assert!(html.contains(r#"<option value="Equity:Opening-Balances" selected"#), "{html}");
+
+    let ids: Vec<i64> = legs(&pool, opening).await.into_iter().map(|(p, ..)| p).collect();
+    let legs_in = vec![
+        leg(Some(ids[0]), "Assets:Cash", "1000"),
+        leg(Some(ids[1]), "Equity:Opening-Balances", "-1000"),
+    ];
+    save(&pool, opening, "期初現金", legs_in, false).await.unwrap();
+    assert_eq!(events_kinds(&pool, opening).await, ["edited"]);
+
+    // Nowhere else.
+    let fee = id_of(&pool, FEE).await;
+    let editing: Editing = call(&pool, || load_entry(fee)).await.unwrap();
+    assert!(!editing.accounts.iter().any(|a| a.path.starts_with("Equity")));
+    let accounts = call(&pool, load_accounts).await.unwrap();
+    assert!(!format!("{accounts:?}").contains("Equity"), "{accounts:?}");
 }
 
 // --- Entering by hand

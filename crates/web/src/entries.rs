@@ -103,35 +103,37 @@ impl Chart {
         self.labels.get(path).cloned().unwrap_or_else(|| path.to_string())
     }
 
-    /// The accounts a person picks from, in balance-sheet order: no equity,
-    /// which holds the loader's system accounts, and no closed account but
-    /// those in `keep`, already in use where the picker is.
+    /// The accounts a person picks from, in balance-sheet order. Equity,
+    /// which holds the loader's system accounts, and closed accounts are left
+    /// out, but for those in `keep`, already in use where the picker is: an
+    /// opening balance or a conversion keeps its equity leg when edited.
     pub fn choices(&self, keep: &[&str]) -> Vec<AccountChoice> {
+        let kept = |a: &&journal::Account| keep.contains(&a.path.as_str());
         let mut shown: Vec<_> = self
             .accounts
             .iter()
-            .filter(|a| a.account_type != AccountType::Equity)
-            .filter(|a| !a.closed || keep.contains(&a.path.as_str()))
+            .filter(|a| a.account_type != AccountType::Equity || kept(a))
+            .filter(|a| !a.closed || kept(a))
             .collect();
         shown.sort_by_key(|a| (a.account_type, a.path.as_str()));
-        shown.into_iter().filter_map(|a| self.choice(a)).collect()
+        shown.into_iter().map(|a| self.choice(a)).collect()
     }
 
-    pub fn choice(&self, a: &journal::Account) -> Option<AccountChoice> {
+    pub fn choice(&self, a: &journal::Account) -> AccountChoice {
         let kind = match a.account_type {
             AccountType::Asset => AccountKind::Asset,
             AccountType::Liability => AccountKind::Liability,
             AccountType::Income => AccountKind::Income,
             AccountType::Expense => AccountKind::Expense,
-            AccountType::Equity => return None,
+            AccountType::Equity => AccountKind::Equity,
         };
-        Some(AccountChoice {
+        AccountChoice {
             path: a.path.clone(),
             label: self.label(&a.path),
             depth: a.path.matches(':').count(),
             kind,
             closed: a.closed,
-        })
+        }
     }
 
     /// One transaction as a page shows it; `focus` marks legs in the
