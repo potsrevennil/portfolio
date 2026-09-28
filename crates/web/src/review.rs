@@ -38,6 +38,12 @@ pub async fn confirm_entry(id: i64) -> Result<(), ServerFnError> {
 }
 
 #[server]
+pub async fn unconfirm_entry(id: i64) -> Result<(), ServerFnError> {
+    let pool = expect_context::<db::SqlitePool>();
+    db::review::unconfirm(&pool, id).await.map_err(failed)
+}
+
+#[server]
 pub async fn load_entry(id: i64) -> Result<Editing, ServerFnError> {
     use ledger_types::currency::Currency;
 
@@ -96,6 +102,7 @@ pub struct Actions {
     pub save: ServerAction<SaveEntry>,
     pub choose: ServerAction<ChoosePairing>,
     pub delete: ServerAction<DeleteEntry>,
+    pub unconfirm: ServerAction<UnconfirmEntry>,
 }
 
 impl Actions {
@@ -105,6 +112,7 @@ impl Actions {
             save: ServerAction::new(),
             choose: ServerAction::new(),
             delete: ServerAction::new(),
+            unconfirm: ServerAction::new(),
         }
     }
 
@@ -114,6 +122,7 @@ impl Actions {
             + self.save.version().get()
             + self.choose.version().get()
             + self.delete.version().get()
+            + self.unconfirm.version().get()
     }
 }
 
@@ -269,7 +278,7 @@ pub fn EditPage() -> impl IntoView {
     let params = use_params_map();
     let id = move || params.read().get("id").and_then(|id| id.parse::<i64>().ok());
     let editing = Resource::new(
-        move || (id(), actions.save.version().get()),
+        move || (id(), actions.version()),
         |(id, _)| async move {
             match id {
                 Some(id) => load_entry(id).await,
@@ -294,7 +303,7 @@ pub fn EditPage() -> impl IntoView {
 /// so the page works before the script loads.
 #[component]
 pub fn Editor(editing: Editing) -> impl IntoView {
-    let Actions { save, delete, .. } = expect_context::<Actions>();
+    let Actions { save, delete, unconfirm, .. } = expect_context::<Actions>();
     let Editing { entry, accounts, history } = editing;
     let id = entry.id;
     let currency = entry.legs.first().map(|l| l.money.currency.to_string()).unwrap_or_default();
@@ -356,6 +365,17 @@ pub fn Editor(editing: Editing) -> impl IntoView {
                 </div>
             </ActionForm>
             <ActionError result=save.value() />
+            {reviewed
+                .then(|| {
+                    view! {
+                        <ActionForm action=unconfirm attr:class="unconfirm">
+                            <input type="hidden" name="id" value=id />
+                            <span class="note">"已確認。要重新檢查的話："</span>
+                            <button type="submit">"改回未確認"</button>
+                        </ActionForm>
+                        <ActionError result=unconfirm.value() />
+                    }
+                })}
             <ActionForm action=delete attr:class="delete">
                 <input type="hidden" name="id" value=id />
                 <label>
@@ -381,6 +401,7 @@ pub fn Editor(editing: Editing) -> impl IntoView {
                                             "confirmed" => "確認",
                                             "paired" => "選為配對",
                                             "deleted" => "刪除",
+                                            "unconfirmed" => "改回未確認",
                                             other => other,
                                         }
                                         .to_string();

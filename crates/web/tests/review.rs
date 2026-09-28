@@ -23,7 +23,7 @@ use web::{
     model::{Editing, JournalQuery, LegInput, Origin, Queue, Source as TxnSource},
     review::{
         choose_pairing, confirm_entry, delete_entry, load_entry, load_queue, review_count,
-        save_entry, Actions, Editor, SPARE_ROWS,
+        save_entry, unconfirm_entry, Actions, Editor, SPARE_ROWS,
     },
     server,
 };
@@ -213,6 +213,30 @@ async fn confirming_leaves_the_queue_and_an_event() {
     assert_eq!(events(&pool, lunch).await.len(), 1);
 }
 
+#[tokio::test]
+async fn a_confirmation_can_be_taken_back() {
+    let (_dir, pool) = ledger().await;
+    let lunch = id_of(&pool, LUNCH).await;
+    // Taking back what was never confirmed changes nothing.
+    call(&pool, || unconfirm_entry(lunch)).await.unwrap();
+    assert!(events(&pool, lunch).await.is_empty());
+    call(&pool, || confirm_entry(lunch)).await.unwrap();
+    call(&pool, || unconfirm_entry(lunch)).await.unwrap();
+    assert!(!reviewed(&pool, lunch).await);
+    assert_eq!(narrations(&queue(&pool, JournalQuery::default()).await), [
+        COFFEE, TAXI, LUNCH, FEE
+    ]);
+    assert_eq!(events_kinds(&pool, lunch).await, ["confirmed", "unconfirmed"]);
+    let (_, payload) = &events(&pool, lunch).await[1];
+    assert_eq!(
+        (&payload["before"]["reviewed"], &payload["after"]["reviewed"]),
+        (&Value::Bool(true), &Value::Bool(false))
+    );
+    let editing: Editing = call(&pool, || load_entry(lunch)).await.unwrap();
+    let html = with_actions(|| view! { <Editor editing=editing /> }.to_html());
+    position(&visible(&html), "改回未確認");
+}
+
 /// A new category and note overwrite the same rows; the event keeps what
 /// they were.
 #[tokio::test]
@@ -393,6 +417,8 @@ async fn the_editor_offers_each_leg_and_spare_rows() {
     position(&text, "未分類");
     position(&text, "同時確認");
     // No equity, no root, in what a leg may post to.
+    // Only a confirmed entry can be taken back.
+    assert!(!text.contains("改回未確認"), "{text}");
     let offered: Vec<_> = editing.accounts.iter().map(|a| a.path.as_str()).collect();
     assert!(!offered.iter().any(|p| p.starts_with("Equity") || !p.contains(':')), "{offered:?}");
 }

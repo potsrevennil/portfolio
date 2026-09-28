@@ -27,6 +27,8 @@ pub enum EventKind {
     Paired,
     /// Taken out of the ledger: its legs are gone, `after` has none.
     Deleted,
+    /// A 確認 taken back: it waits for review again.
+    Unconfirmed,
 }
 
 /// A whole transaction as it stood: what `before` and `after` hold.

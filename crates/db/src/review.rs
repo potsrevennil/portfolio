@@ -329,6 +329,29 @@ pub async fn confirm(pool: &SqlitePool, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Takes back a 確認: the transaction waits in the queue again, as it
+/// stands. Unconfirming one not reviewed changes nothing and records nothing.
+pub async fn unconfirm(pool: &SqlitePool, id: i64) -> Result<()> {
+    let mut db = pool.begin().await?;
+    live(&mut db, id).await?;
+    let before = events::snapshot(&mut db, id).await?;
+    if !before.reviewed {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE transactions SET reviewed = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE id = ?",
+    )
+    .bind(id)
+    .execute(&mut *db)
+    .await?;
+    let after = events::snapshot(&mut db, id).await?;
+    events::record(&mut db, id, EventKind::Unconfirmed, &Change { before: Some(before), after })
+        .await?;
+    db.commit().await?;
+    Ok(())
+}
+
 async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
     live(db, id).await?;
     let before = events::snapshot(db, id).await?;

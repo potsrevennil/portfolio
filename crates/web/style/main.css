@@ -639,6 +639,17 @@ input.currency {
   margin-right: 0.3rem;
 }
 
+.edit form.unconfirm {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.edit form.unconfirm .note {
+  padding: 0;
+}
+
 .edit form.delete {
   display: flex;
   gap: 0.8rem;

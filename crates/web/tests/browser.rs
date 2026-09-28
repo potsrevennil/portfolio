@@ -264,6 +264,24 @@ async fn confirm_from_the_queue() {
     // The count beside the link follows without a reload.
     assert_eq!(j.find(".count-badge").await.text().await.unwrap(), "3");
     assert!(reviewed(&j.pool, LUNCH).await);
+
+    // Taken back from the editor, it is waiting again.
+    let id: i64 = sqlx::query_scalar("SELECT id FROM transactions WHERE narration = ?")
+        .bind(LUNCH)
+        .fetch_one(&j.pool)
+        .await
+        .unwrap();
+    j.open(&format!("/review/{id}")).await;
+    j.find("form.unconfirm button").await.click().await.unwrap();
+    j.until_count("form.unconfirm", 0).await;
+    // The badge refetches after the form does.
+    j.until_count(".count-badge", 1).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while j.find(".count-badge").await.text().await.unwrap() != "4" {
+        assert!(Instant::now() < deadline, "the count never went back to 4");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(!reviewed(&j.pool, LUNCH).await);
     j.close().await;
 }
 
