@@ -32,8 +32,8 @@ pub struct LegEdit {
 }
 
 /// A transaction's legs and note as they should stand. Legs it leaves out
-/// are removed; the rest keep their row, tags and, if unchanged, origin,
-/// but for 未對帳, which follows the leg's account.
+/// are removed; the rest keep their row, tags and, if unchanged, origin.
+/// 未對帳 is re-marked for legs the edit moves; see `remark_unverified`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Edit {
     pub narration: Option<String>,
@@ -212,7 +212,9 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
         }
     }
 
-    let mut moved = HashSet::new();
+    // Legs now on another account, with the account each left (`None` for
+    // one the edit adds).
+    let mut moved: HashMap<i64, Option<&str>> = HashMap::new();
     for leg in &edit.legs {
         let unchanged = leg.posting_id.and_then(|pid| held.get(&pid)).is_some_and(|r| {
             r.path == leg.account
@@ -244,7 +246,7 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
                 .execute(&mut *db)
                 .await?;
                 if !same_account {
-                    moved.insert(pid);
+                    moved.insert(pid, held.get(&pid).map(|r| r.path.as_str()));
                 }
             }
             None => {
@@ -260,7 +262,7 @@ pub async fn edit(pool: &SqlitePool, id: i64, edit: &Edit) -> Result<()> {
                 .execute(&mut *db)
                 .await?
                 .last_insert_rowid();
-                moved.insert(pid);
+                moved.insert(pid, None);
             }
         }
     }
@@ -416,11 +418,20 @@ async fn tag_unverified(db: &mut SqliteConnection, posting_id: i64, on: bool) ->
     Ok(())
 }
 
-/// Re-marks 未對帳 after an edit. A leg moved to another account, or added,
-/// is marked as 記一筆 would mark it; legs left alone keep their mark. Once
-/// no leg sits on an account statements cover, no statement will ever vouch
-/// for the transaction, so no leg stays marked.
-async fn remark_unverified(db: &mut SqliteConnection, id: i64, moved: &HashSet<i64>) -> Result<()> {
+/// Re-marks 未對帳 after an edit. Legs left on their account keep their
+/// mark, whatever the edit: only a statement clears it. A leg moved onto an
+/// account statements cover is marked as 記一筆 would mark it. A leg moved to
+/// an account no statement covers yet drops a mark it had only for the
+/// statements of the account it left, and otherwise keeps it: the account
+/// may be a bank whose first statement is still to come, as the 天天記帳
+/// importer, which knows the banks, marked it for. The other legs of a
+/// record carry its mark with the bank's; once no asset or liability leg is
+/// marked, nothing is left to verify, and theirs go too.
+async fn remark_unverified(
+    db: &mut SqliteConnection,
+    id: i64,
+    moved: &HashMap<i64, Option<&str>>,
+) -> Result<()> {
     let date: String = sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
         .bind(id)
         .fetch_one(&mut *db)
@@ -433,15 +444,29 @@ async fn remark_unverified(db: &mut SqliteConnection, id: i64, moved: &HashSet<i
     .bind(id)
     .fetch_all(&mut *db)
     .await?;
-    let mut on_statements = false;
     for (pid, path) in &legs {
-        let through = statements_through(db, path).await?;
-        on_statements |= through.is_some();
-        if moved.contains(pid) {
-            tag_unverified(db, *pid, through.is_some_and(|through| date > through)).await?;
+        let Some(left) = moved.get(pid) else { continue };
+        match statements_through(db, path).await? {
+            Some(through) => tag_unverified(db, *pid, date > through).await?,
+            None => {
+                if let Some(left) = left {
+                    if statements_through(db, left).await?.is_some() {
+                        tag_unverified(db, *pid, false).await?;
+                    }
+                }
+            }
         }
     }
-    if !on_statements {
+    let marked: Vec<(String,)> = sqlx::query_as(
+        "SELECT a.type FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
+         p.transaction_id = ? AND instr(',' || coalesce(p.tags, '') || ',', ',' || ? || ',') > 0",
+    )
+    .bind(id)
+    .bind(UNVERIFIED_TAG)
+    .fetch_all(&mut *db)
+    .await?;
+    let verifiable = |t: &str| matches!(t.parse(), Ok(AccountType::Asset | AccountType::Liability));
+    if !marked.iter().any(|(t,)| verifiable(t)) {
         for (pid, _) in &legs {
             tag_unverified(db, *pid, false).await?;
         }

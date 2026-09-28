@@ -139,7 +139,13 @@ pub async fn choose(pool: &SqlitePool, id: i64, transaction_id: i64) -> Result<(
         .await?
         .with_context(|| format!("查無待配對的對帳單明細 {id}"))?;
     let choice = Choice::try_from(row)?;
-    if !choice.ambiguity.candidates.contains(&transaction_id) {
+    let deleted: Option<String> =
+        sqlx::query_scalar("SELECT deleted_at FROM transactions WHERE id = ?")
+            .bind(transaction_id)
+            .fetch_optional(&mut *db)
+            .await?
+            .flatten();
+    if !choice.ambiguity.candidates.contains(&transaction_id) || deleted.is_some() {
         bail!("這筆不在可配對的紀錄裡");
     }
     let taken: Option<String> = sqlx::query_scalar(&format!(

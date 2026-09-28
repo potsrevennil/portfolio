@@ -462,6 +462,10 @@ async fn an_ambiguous_line_is_paired_by_a_pick() {
     let salary = id_of(&pool, "薪水").await;
     let stranger = call(&pool, || choose_pairing(id, Some(salary))).await.unwrap_err();
     assert!(stranger.to_string().contains("不在可配對的紀錄裡"), "{stranger}");
+    // A candidate deleted since is no longer one.
+    call(&pool, || delete_entry(lunch, Some("1".into()))).await.unwrap();
+    let gone = call(&pool, || choose_pairing(id, Some(lunch))).await.unwrap_err();
+    assert!(gone.to_string().contains("不在可配對的紀錄裡"), "{gone}");
 
     call(&pool, || choose_pairing(id, Some(coffee))).await.unwrap();
     let q = queue(&pool, JournalQuery::default()).await;
@@ -492,8 +496,9 @@ async fn an_ambiguous_line_is_paired_by_a_pick() {
     drop(conn);
     let q = queue(&pool, JournalQuery::default()).await;
     assert_eq!(q.choices[0].chosen, None);
+    // The deleted lunch is no longer offered.
     let offered: Vec<_> = q.choices[0].candidates.iter().map(|e| e.id).collect();
-    assert_eq!(offered, [coffee, lunch]);
+    assert_eq!(offered, [coffee]);
 }
 
 /// An opening balance's equity leg: hidden from every picker but its own
@@ -775,6 +780,37 @@ async fn an_edit_moves_the_unverified_mark_with_the_account() {
     ];
     save(&pool, id, "", recategorised, false).await.unwrap();
     assert_eq!(posting_tags(&pool, id).await[0].1, unverified(true));
+}
+
+/// A 天天記帳 record on a bank whose first statement hasn't come: the
+/// importer marked it 未對帳, knowing the bank, and no edit short of moving
+/// it where a statement says otherwise takes that away, or the first
+/// statement would book its line a second time.
+#[tokio::test]
+async fn an_edit_keeps_the_mark_of_a_record_awaiting_a_first_statement() {
+    let (_dir, pool) = ledger().await;
+    let coffee = id_of(&pool, COFFEE).await;
+    let ids: Vec<i64> = legs(&pool, coffee).await.into_iter().map(|(p, ..)| p).collect();
+    let marked = || async {
+        let tags = posting_tags(&pool, coffee).await;
+        tags.iter().all(|(_, t)| t.as_deref() == Some("unverified"))
+    };
+    let edit = |category: &str, bank: &str| {
+        vec![leg(Some(ids[0]), category, "150"), leg(Some(ids[1]), bank, "-150")]
+    };
+
+    save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Assets:Bank:Savings"), true).await.unwrap();
+    assert!(marked().await, "{:?}", posting_tags(&pool, coffee).await);
+    save(&pool, coffee, "拿鐵", edit("Expenses:Uncategorized", "Assets:Bank:Savings"), false)
+        .await
+        .unwrap();
+    assert!(marked().await, "{:?}", posting_tags(&pool, coffee).await);
+    // Nothing says Cash isn't a bank still to send its first statement.
+    save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Assets:Cash"), false).await.unwrap();
+    assert!(marked().await, "{:?}", posting_tags(&pool, coffee).await);
+    let waiting = JournalQuery { unverified: true, ..Default::default() };
+    let waiting = call(&pool, || load_journal(waiting)).await.unwrap();
+    assert!(waiting.entries.iter().any(|e| e.id == coffee));
 }
 
 /// An entry made by mistake can be deleted: it leaves every list and every
