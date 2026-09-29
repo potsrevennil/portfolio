@@ -857,6 +857,24 @@ async fn a_record_awaiting_a_first_statement_stays_marked() {
     ]);
 }
 
+/// Taking a record's bank leg out, and the money onto cash instead, leaves
+/// nothing for a statement to verify: no leg keeps the mark, as when the leg
+/// is moved.
+#[tokio::test]
+async fn deleting_the_bank_leg_clears_the_mark() {
+    let (_dir, pool) = ledger().await;
+    let coffee = id_of(&pool, COFFEE).await;
+    let ids: Vec<i64> = legs(&pool, coffee).await.into_iter().map(|(p, ..)| p).collect();
+    let on_cash = vec![leg(Some(ids[0]), "Expenses:Food", "150"), leg(None, "Assets:Cash", "-150")];
+    save(&pool, coffee, "拿鐵", on_cash, false).await.unwrap();
+    let tags = posting_tags(&pool, coffee).await;
+    assert_eq!(tags.len(), 2, "{tags:?}");
+    assert!(tags.iter().all(|(_, t)| t.is_none()), "{tags:?}");
+    let waiting = JournalQuery { unverified: true, ..Default::default() };
+    let listed = call(&pool, || load_journal(waiting)).await.unwrap();
+    assert!(!listed.entries.iter().any(|e| e.id == coffee));
+}
+
 /// The chart names the statement accounts: each numbered account, and where
 /// the app's pooled account and its settlement post. No mapping, none.
 #[test]

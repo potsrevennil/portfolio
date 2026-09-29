@@ -275,10 +275,12 @@ pub async fn edit(
             }
         }
     }
+    let mut removed = Vec::new();
     for r in rows.iter().filter(|r| !kept.contains(&r.id)) {
         sqlx::query("DELETE FROM postings WHERE id = ?").bind(r.id).execute(&mut *db).await?;
+        removed.push(r.path.as_str());
     }
-    remark_unverified(&mut db, statements, id, &moved).await?;
+    remark_unverified(&mut db, statements, id, &moved, &removed).await?;
     sqlx::query(
         "UPDATE transactions SET narration = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', \
          'now') WHERE id = ?",
@@ -469,13 +471,14 @@ async fn tag_unverified(db: &mut SqliteConnection, posting_id: i64, on: bool) ->
 /// whatever the edit: only a statement clears it. A leg moved onto an account
 /// statements post to is marked as 記一筆 would mark it; one moved elsewhere
 /// keeps what it had. The record's other legs carry its mark along with the
-/// bank's, so once a leg leaves a statement account and no leg on one is
-/// marked, nothing is left to verify and no leg keeps it.
+/// bank's, so once a leg leaves a statement account, moved or `removed`, and
+/// no leg on one is marked, nothing is left to verify and no leg keeps it.
 async fn remark_unverified(
     db: &mut SqliteConnection,
     statements: &StatementAccounts,
     id: i64,
     moved: &HashMap<i64, Option<&str>>,
+    removed: &[&str],
 ) -> Result<()> {
     let date: String = sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
         .bind(id)
@@ -490,6 +493,9 @@ async fn remark_unverified(
     .fetch_all(&mut *db)
     .await?;
     let mut left_statements = false;
+    for path in removed {
+        left_statements |= statement_account(db, statements, path).await?.0;
+    }
     for (pid, path) in &legs {
         let Some(left) = moved.get(pid) else { continue };
         if let Some(left) = left {
