@@ -192,6 +192,11 @@ impl JournalQuery {
     }
 
     pub fn with_page(&self, page: u32) -> Self { JournalQuery { page, ..self.clone() } }
+
+    /// Another account, every other filter kept, back at the first page.
+    pub fn with_account(&self, account: Option<&str>) -> Self {
+        JournalQuery { account: account.map(str::to_string), page: 1, ..self.clone() }
+    }
 }
 
 /// Blank form fields are no filter.
@@ -237,13 +242,59 @@ impl fmt::Display for JournalQuery {
     }
 }
 
+/// The kinds an account may belong to, as the balance sheet names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AccountKind {
+    Asset,
+    Liability,
+    Income,
+    Expense,
+}
+
+impl fmt::Display for AccountKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            AccountKind::Asset => "資產",
+            AccountKind::Liability => "負債",
+            AccountKind::Income => "收入",
+            AccountKind::Expense => "支出",
+        })
+    }
+}
+
 /// An account the journal can be filtered to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountChoice {
     pub path: String,
-    /// Standalone, so it reads without the tree around it.
+    /// Its ancestors' labels from the root down, then its own.
+    pub trail: Vec<String>,
+}
+
+/// The whole trail, so that typing any ancestor narrows the list and two
+/// accounts sharing a label still tell themselves apart.
+impl fmt::Display for AccountChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut trail = self.trail.iter();
+        if let Some(first) = trail.next() {
+            f.write_str(first)?;
+        }
+        for name in trail {
+            write!(f, " › {name}")?;
+        }
+        Ok(())
+    }
+}
+
+/// One account in the tree the picker browses: its own label, since the row
+/// above gives the context, and whatever files under it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountNode {
+    pub path: String,
     pub label: String,
-    pub depth: usize,
+    /// Open on arrival: the filtered account's ancestors, so a reader lands
+    /// looking at where they are.
+    pub open: bool,
+    pub children: Vec<AccountNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -273,7 +324,14 @@ pub struct Journal {
     pub query: JournalQuery,
     /// The filtered account's label, when there is one.
     pub account: Option<String>,
+    /// The same account under the name the picker offers it by.
+    pub chosen: Option<String>,
     pub accounts: Vec<AccountChoice>,
+    /// The accounts a name the reader typed fits, when it fits more than one:
+    /// they are listed together, and this offers the way down to one of them.
+    pub among: Vec<AccountChoice>,
+    /// The same accounts to browse a level at a time.
+    pub tree: Vec<AccountNode>,
     pub entries: Vec<Entry>,
     pub total: u64,
     pub pages: u32,
