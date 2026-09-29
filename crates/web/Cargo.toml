@@ -37,7 +37,11 @@ leptos_axum = { version = "0.8", optional = true }
 tokio       = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Browser journeys (tests/browser.rs) drive a headless Chromium through
+# chromedriver; no TLS, both are on localhost.
+fantoccini          = { version = "0.21", default-features = false }
 http-body-util      = "0.1"
+hyper-util          = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 prices              = { workspace = true }
 rust_decimal_macros = { workspace = true }
 sqlx                = { workspace = true }

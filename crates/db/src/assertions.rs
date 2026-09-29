@@ -84,12 +84,35 @@ pub async fn insert(conn: &mut SqliteConnection, a: &BalanceAssertion) -> Result
     }
 }
 
-/// Every assertion, by account path, currency and date.
+/// Every assertion still in force, by account path, currency and date.
 pub async fn load(conn: &mut SqliteConnection) -> Result<Vec<BalanceAssertion>> {
-    let rows: Vec<Row> =
-        sqlx::query_as(&format!("{SELECT} ORDER BY a.path, b.currency, b.period_end, b.source"))
-            .fetch_all(conn)
-            .await
-            .context("loading balance assertions")?;
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "{SELECT} WHERE b.superseded_at IS NULL ORDER BY a.path, b.currency, b.period_end, \
+         b.source"
+    ))
+    .fetch_all(conn)
+    .await
+    .context("loading balance assertions")?;
     rows.into_iter().map(BalanceAssertion::try_from).collect()
+}
+
+/// Marks a 天天記帳 closing no longer true: a person changed the records it
+/// summed. It stays on record; `load` leaves it out.
+pub async fn supersede(conn: &mut SqliteConnection, a: &BalanceAssertion) -> Result<()> {
+    if a.source != AssertionSource::Tiantian {
+        bail!("only a 天天記帳 closing can be superseded, not {a}");
+    }
+    sqlx::query(
+        "UPDATE balance_assertion SET superseded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE \
+         superseded_at IS NULL AND currency = ? AND source = ? AND period_end = ? AND account_id \
+         = (SELECT id FROM accounts WHERE path = ?)",
+    )
+    .bind(a.currency.to_string())
+    .bind(a.source.to_string())
+    .bind(a.period_end.to_string())
+    .bind(&a.account)
+    .execute(conn)
+    .await
+    .with_context(|| format!("superseding {a}"))?;
+    Ok(())
 }

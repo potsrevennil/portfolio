@@ -84,6 +84,8 @@ INSERT INTO postings (transaction_id, account_id, amount, currency) VALUES (1, 1
 INSERT INTO transaction_refs (transaction_id, external_ref) VALUES (1, 'check:1');
 INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) VALUES (1, 'TWD', 'counted', '2020-01-01', '0');
 INSERT INTO broker_record (account_id, external_ref, kind, settle_date, quantity, price, amount, commission, currency, description, import_batch_id) VALUES (1, 'check:1', 'deposit', '2020-01-01', '0', '0', '1', '0', 'USD', 'check', 1);
+INSERT INTO transaction_events (transaction_id, kind, payload) VALUES (1, 'edited', '{}');
+INSERT INTO verification_choice (account_id, currency, statement_ref, date, amount, description, candidates, transaction_id, chosen_at) VALUES (1, 'TWD', 'check:2', '2020-01-01', '0', 'check', '[1]', 1, '2020-01-01');
 INSERT INTO holding_assertion (account_id, as_of, kind, commodity, quantity, source) VALUES (1, '2020-01-01', 'cash', 'USD', '1', 'statement');
 SQL
 

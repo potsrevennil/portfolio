@@ -12,7 +12,9 @@ use chrono::NaiveDate;
 use ledger::{labels::Labels, model::Source};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
+use strum_macros::{Display, EnumString};
 
 use crate::load::schema_type;
 
@@ -36,13 +38,36 @@ pub struct Posting {
     pub amount: Decimal,
     pub currency: Currency,
     pub tags: Option<String>,
+    pub origin: Option<Origin>,
+}
+
+/// How a leg's account was chosen: the `postings.origin` vocabulary.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Display, EnumString, Serialize, Deserialize, sqlx::Type,
+)]
+#[strum(serialize_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+pub enum Origin {
+    /// From the 天天記帳 record the line was matched to.
+    Tiantian,
+    /// A mapping.toml description rule.
+    Rule,
+    /// No rule: the uncategorised account.
+    Fallback,
+    /// A person chose it.
+    Manual,
 }
 
 /// An untagged leg: `(account, amount, currency).into()`.
 impl<A: Into<String>> From<(A, Decimal, Currency)> for Posting {
     fn from((account, amount, currency): (A, Decimal, Currency)) -> Self {
-        Posting { account: account.into(), amount, currency, tags: None }
+        Posting { account: account.into(), amount, currency, tags: None, origin: None }
     }
+}
+
+impl Posting {
+    pub fn with_origin(self, origin: Origin) -> Self { Posting { origin: Some(origin), ..self } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,16 +150,18 @@ pub async fn insert_deduped(
                 let account_id = ensure_account(db, labels, &p.account).await?;
                 let amount = p.amount.to_string();
                 let currency = p.currency.to_string();
+                let origin = p.origin.map(|o| o.to_string());
                 sqlx::query!(
                     r#"
-                    INSERT INTO postings (transaction_id, account_id, amount, currency, tags)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     "#,
                     txn_id,
                     account_id,
                     amount,
                     currency,
                     p.tags,
+                    origin,
                 )
                 .execute(&mut *db)
                 .await?;
@@ -188,7 +215,7 @@ pub async fn ensure_account(db: &mut SqliteConnection, labels: &Labels, path: &s
 }
 
 /// Summed with `rust_decimal`, not SQL `SUM`, which would CAST to REAL.
-fn validate_balanced(postings: &[Posting]) -> Result<()> {
+pub(crate) fn validate_balanced(postings: &[Posting]) -> Result<()> {
     if postings.is_empty() {
         bail!("transaction has no postings");
     }

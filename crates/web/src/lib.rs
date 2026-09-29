@@ -2,13 +2,19 @@
 //! browser. `cargo leptos build` builds both halves; the `ssr` feature is the
 //! server, `hydrate` the wasm client.
 
+pub mod accounts;
 pub mod app;
 pub mod balance_sheet;
 #[cfg(feature = "ssr")]
 pub mod entries;
 pub mod error;
+pub mod fold;
 pub mod journal;
+pub mod manual;
 pub mod model;
+#[cfg(feature = "ssr")]
+pub mod queue;
+pub mod review;
 #[cfg(feature = "ssr")]
 pub mod server;
 #[cfg(feature = "ssr")]

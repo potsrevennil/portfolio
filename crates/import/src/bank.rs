@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use db::{
     assertions, check,
     import::{ensure_account, insert_deduped, InsertOutcome, Transaction},
-    import_batch, SqliteConnection,
+    import_batch, pairing, SqliteConnection, SqlitePool,
 };
 use ledger::{
     accounts::Chart,
@@ -74,10 +74,35 @@ pub async fn run(bank: Bank, args: &Args) -> Result<Report> {
     let chart = Chart::load(args.ledger_dir.join("mapping.toml"))?;
     let merged = bank.load_merged(&args.statements)?;
     let pool = db::init_db(&args.database_url).await?;
+    import_all(&pool, &chart, bank, &merged, &[]).await
+}
+
+/// [`import`] as one database transaction, committed if it succeeds. Lines
+/// it could not pair on its own are kept for a person to pair in the review
+/// queue, though nothing else is written; the next import uses the picks.
+pub async fn import_all(
+    pool: &SqlitePool,
+    chart: &Chart,
+    bank: Bank,
+    merged: &[Merged],
+    candidates: &[Candidate],
+) -> Result<Report> {
     let mut tx = pool.begin().await?;
-    let report = import(&mut tx, &chart, bank, &merged, &[]).await?;
-    tx.commit().await?;
-    Ok(report)
+    match import(&mut tx, chart, bank, merged, candidates).await {
+        Ok(report) => {
+            tx.commit().await?;
+            Ok(report)
+        }
+        Err(e) => {
+            tx.rollback().await?;
+            if let Some(plan::Ambiguous(lines)) = e.downcast_ref() {
+                let mut choices = pool.begin().await?;
+                pairing::record(&mut choices, lines).await?;
+                choices.commit().await?;
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Imports `bank`'s statements into the caller's transaction and gates it;
@@ -109,7 +134,8 @@ pub async fn import(
             .flat_map(|(i, &n)| std::iter::repeat(first_file + i).take(n))
             .collect();
         first_file += spans.len();
-        statements.push(plan::Statement { account, statement, files, existing });
+        let chosen = pairing::chosen(db, &account, statement.currency).await?;
+        statements.push(plan::Statement { account, statement, files, existing, chosen });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
     let Plan { transactions, mut counts, openings, verified, deferred } =

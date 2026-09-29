@@ -3,11 +3,12 @@
 
 use std::collections::BTreeSet;
 
-use leptos::{prelude::*, web_sys::HtmlDetailsElement};
+use leptos::prelude::*;
 use leptos_meta::Title;
 
 use crate::{
     error::LoadFailed,
+    fold::{is_open, on_toggle, remembered},
     model::{BalanceSheet, Converted, JournalQuery, Money, Node, Section, Unpriced},
 };
 
@@ -47,21 +48,7 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
     // Sections start open; the groups under them start folded.
     let sections: BTreeSet<String> =
         sheet.sections.iter().chain(&sheet.at_cost).map(|s| s.path.clone()).collect();
-    let open = RwSignal::new(sections.clone());
-    // Client only: restore the open groups once, then save every change. The
-    // `open` attribute is rendered on the server, and hydration adopts the
-    // markup as it stands, so a restore has to land after it — the next frame.
-    Effect::new(move |restored: Option<()>| {
-        match restored {
-            None => request_animation_frame(move || {
-                if let Some(saved) = load_open() {
-                    open.set(saved);
-                }
-            }),
-            Some(()) => save_open(&open.read()),
-        }
-        open.track();
-    });
+    let open = remembered(OPEN_KEY, sections.clone());
 
     let mut groups = sections.clone();
     for s in &sheet.sections {
@@ -151,27 +138,6 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     .into_any()
 }
 
-/// Whether the group at `path` is open, tracked for the `open` attribute.
-fn is_open(path: String, open: RwSignal<BTreeSet<String>>) -> impl Fn() -> bool {
-    move || open.with(|o| o.contains(&path))
-}
-
-/// Keeps the fold state in step with a `<details>` the reader just toggled.
-fn on_toggle(path: String, open: RwSignal<BTreeSet<String>>) -> impl Fn(leptos::web_sys::Event) {
-    move |ev: leptos::web_sys::Event| {
-        let now = event_target::<HtmlDetailsElement>(&ev).open();
-        if open.with_untracked(|o| o.contains(&path)) != now {
-            open.update(|o| {
-                if now {
-                    o.insert(path.clone())
-                } else {
-                    o.remove(&path)
-                };
-            });
-        }
-    }
-}
-
 /// One figure in the base currency, whatever the row holds.
 #[component]
 fn Figures(
@@ -201,18 +167,4 @@ pub fn MoneyText(money: Money) -> impl IntoView {
 #[component]
 pub fn UnpricedNote(unpriced: Unpriced) -> impl IntoView {
     view! { <span class="unpriced">{unpriced.to_string()}</span> }
-}
-
-fn storage() -> Option<leptos::web_sys::Storage> { window().local_storage().ok().flatten() }
-
-fn load_open() -> Option<BTreeSet<String>> {
-    let json = storage()?.get_item(OPEN_KEY).ok()??;
-    serde_json::from_str(&json).ok()
-}
-
-fn save_open(open: &BTreeSet<String>) {
-    if let (Some(storage), Ok(json)) = (storage(), serde_json::to_string(open)) {
-        // Private windows may refuse; the fold state is a convenience.
-        let _ = storage.set_item(OPEN_KEY, &json);
-    }
 }

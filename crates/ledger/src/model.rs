@@ -15,7 +15,7 @@ use chrono::NaiveDate;
 use ledger_types::{assertion::BalanceAssertion, currency::Currency};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use strum_macros::Display;
+use strum_macros::{Display, EnumString};
 
 use super::writer::{self, Posting};
 
@@ -33,7 +33,9 @@ pub fn opening_ref(account: &str, currency: Currency) -> String {
 
 /// Which pipeline produced a transaction. Its lowercase name is the
 /// `transactions.source` value, in the journal and the database alike.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Display, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Display, EnumString, Serialize, Deserialize,
+)]
 #[strum(serialize_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
