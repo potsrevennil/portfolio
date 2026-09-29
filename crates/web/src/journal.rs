@@ -1,7 +1,12 @@
 //! 日記帳: every transaction, newest first, with its legs. The filter and the
 //! list are components of their own so T9's review queue can reuse them.
 
-use leptos::{prelude::*, web_sys::HtmlDetailsElement};
+use leptos::{
+    ev,
+    prelude::*,
+    wasm_bindgen::JsCast,
+    web_sys::{HtmlDetailsElement, Node},
+};
 use leptos_meta::Title;
 use leptos_router::{components::Form, hooks::use_query_map};
 
@@ -123,6 +128,39 @@ pub fn JournalFilter(
             }
         }
     });
+    // A `<details>` gives no way out of its own panel, so the control closes
+    // it when the reader presses somewhere else. Pressing rather than focus:
+    // Safari and Firefox focus neither a link nor a summary when it is
+    // pressed, so a pick would arrive as focus going nowhere and close the
+    // panel out from under the click.
+    //
+    // In an effect because the server has no window to listen to, and holding
+    // the element itself because the callback runs outside the reactive
+    // ownership tree, where the node ref reads back empty.
+    Effect::new(move |_| {
+        // Each run registers its own listener, and its own cleanup takes that
+        // one away: skipping the work when the control is unchanged would
+        // leave the removal without its replacement.
+        if let Some(control) = combo.get() {
+            let elsewhere = window_event_listener(ev::pointerdown, move |press| {
+                let at = press.target().and_then(|t| t.dyn_into::<Node>().ok());
+                if !control.contains(at.as_ref()) {
+                    dropped.set(false);
+                }
+            });
+            on_cleanup(move || elsewhere.remove());
+        }
+    });
+    // Tabbing away is the other way out, and the only one focus can tell us
+    // about: a press that lands nowhere focusable is not a departure.
+    let left = move |ev: ev::FocusEvent| {
+        let into = ev.related_target().and_then(|target| target.dyn_into::<Node>().ok());
+        if into.is_some_and(|node| {
+            combo.get_untracked().is_none_or(|combo| !combo.contains(Some(&node)))
+        }) {
+            dropped.set(false);
+        }
+    };
 
     let current = query.review.clone().unwrap_or_default();
     let review = move |value: Review, text: &'static str| {
@@ -143,6 +181,18 @@ pub fn JournalFilter(
                     <span
                         class="combo"
                         node_ref=combo
+                        on:focusout=left
+                        on:keydown=move |ev| {
+                            if ev.key() == "Escape" {
+                                // On the control, not the box, so Escape also
+                                // reaches a reader who has tabbed into the
+                                // panel. A search box empties itself on
+                                // Escape, which would throw the account away
+                                // instead of shutting the panel.
+                                ev.prevent_default();
+                                dropped.set(false);
+                            }
+                        }
                     >
                         <input
                             type="search"
