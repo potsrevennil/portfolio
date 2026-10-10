@@ -13,8 +13,10 @@ use crate::query::AccountType;
 /// Which transactions to list. The default lists every one.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Filter {
-    /// A chart path: transactions with a leg on it or below it.
-    pub account: Option<String>,
+    /// Chart paths: transactions with a leg on one of them or below it. Empty
+    /// lists every account. More than one because a name a reader types can
+    /// fit several accounts, and the journal shows them together.
+    pub accounts: Vec<String>,
     pub from: Option<NaiveDate>,
     pub to: Option<NaiveDate>,
     /// Matched in payee or narration, ASCII case-insensitive.
@@ -130,17 +132,24 @@ fn push_unverified(q: &mut QueryBuilder<'_, Sqlite>) {
 
 fn push_conditions<'a>(q: &mut QueryBuilder<'a, Sqlite>, filter: &'a Filter) {
     q.push(" WHERE 1 = 1");
-    if let Some(account) = &filter.account {
+    if !filter.accounts.is_empty() {
         q.push(
             " AND EXISTS (SELECT 1 FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
-             p.transaction_id = t.id AND (a.path = ",
-        )
-        .push_bind(account)
-        .push(" OR substr(a.path, 1, length(")
-        .push_bind(account)
-        .push(") + 1) = ")
-        .push_bind(account)
-        .push(" || ':'))");
+             p.transaction_id = t.id AND (",
+        );
+        for (i, account) in filter.accounts.iter().enumerate() {
+            if i > 0 {
+                q.push(" OR ");
+            }
+            q.push("a.path = ")
+                .push_bind(account)
+                .push(" OR substr(a.path, 1, length(")
+                .push_bind(account)
+                .push(") + 1) = ")
+                .push_bind(account)
+                .push(" || ':'");
+        }
+        q.push("))");
     }
     if let Some(from) = filter.from {
         q.push(" AND t.date >= ").push_bind(from.to_string());
