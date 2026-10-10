@@ -22,7 +22,7 @@ use sqlx::SqlitePool;
 use tempfile::TempDir;
 use web::{
     journal::{load_journal, JournalFilter, JournalList},
-    model::{AccountChoice, AccountNode, Journal as Page, JournalQuery, Review},
+    model::{offered_for, AccountChoice, AccountNode, Journal as Page, JournalQuery, Review},
     server,
 };
 
@@ -42,7 +42,9 @@ const MAPPING: &str = r#"
 "Assets:Split"            = "分帳"
 "Assets:Split:Alpha"      = "甲公司"
 "Assets:Split:Alpha:Tab"  = "分帳"
+"Assets:Split:Alpha:Petty" = "雜費"
 "Assets:Split:Beta"       = "乙公司"
+"Assets:Split:Beta:Petty" = "雜費"
 "Assets:Split:Beta:Tab"   = "分帳"
 "Liabilities"             = "負債"
 "Liabilities:Card"        = "信用卡"
@@ -103,6 +105,12 @@ fn journal() -> Journal {
             ("Assets:Split:Alpha:Tab", "300", TWD),
             ("Assets:Split:Beta:Tab", "-200", TWD),
             ("Assets:Cash", "-100", TWD),
+        ]),
+        // Older than everything else, so it sits at the end of the last page
+        // and leaves the assertions about recent records alone.
+        txn("2022-12-01", "雜費", &[
+            ("Assets:Split:Alpha:Petty", "40", TWD),
+            ("Assets:Split:Beta:Petty", "-40", TWD),
         ]),
         Txn {
             payee: Some(DINNER),
@@ -311,7 +319,7 @@ async fn pages_hold_fifty_and_link_to_their_neighbours() {
     let (_dir, pool) = ledger().await;
     let first = render(journal_page(&pool, JournalQuery::default()).await);
     assert_eq!(entries(&first).len(), 50);
-    position(&visible(&first), "共 67 筆 · 第 1／2 頁");
+    position(&visible(&first), "共 68 筆 · 第 1／2 頁");
     assert!(first.contains(r#"href="/journal?page=2" rel="next""#), "{first}");
     assert!(!first.contains(r#"rel="prev""#), "{first}");
 
@@ -329,8 +337,8 @@ async fn pages_hold_fifty_and_link_to_their_neighbours() {
 async fn filtered_legs_are_marked_and_every_leg_links_to_its_account() {
     let (_dir, pool) = ledger().await;
     let html = render(journal_page(&pool, JournalQuery::account("Assets:Split")).await);
-    position(&visible(&html), "分帳 共 1 筆");
-    assert_eq!(html.matches(r#"class="leg focus""#).count(), 2, "{html}");
+    position(&visible(&html), "分帳 共 2 筆");
+    assert_eq!(html.matches(r#"class="leg focus""#).count(), 4, "{html}");
     assert!(html.contains(r#"href="/journal?account=Assets%3ASplit%3AAlpha%3ATab""#), "{html}");
 }
 
@@ -373,7 +381,7 @@ async fn a_name_no_account_answers_to_is_refused_by_name() {
     let refused = load(&pool, JournalQuery::account("活存2")).await.unwrap_err().to_string();
     assert!(refused.contains("查無口座：活存2"), "{refused}");
     // An empty box is not a refusal: it is every account.
-    assert_eq!(journal_page(&pool, JournalQuery::default()).await.total, 67);
+    assert_eq!(journal_page(&pool, JournalQuery::default()).await.total, 68);
 }
 
 #[tokio::test]
@@ -427,6 +435,86 @@ async fn the_accounts_a_shared_name_fits_are_offered_beside_the_listing() {
 }
 
 #[tokio::test]
+async fn what_the_panel_offers_is_what_submitting_finds() {
+    let (_dir, pool) = ledger().await;
+    let every = journal_page(&pool, JournalQuery::default()).await.accounts;
+    // Typing any account's own name finds that account and nothing else, and
+    // the panel offers it for that name too.
+    for account in &every {
+        let typed = account.to_string();
+        let page = journal_page(&pool, JournalQuery::account(&typed)).await;
+        assert_eq!(page.query.account.as_deref(), Some(account.path.as_str()), "{typed}");
+        assert!(every.iter().any(|a| offered_for(&a.to_string(), &typed)), "{typed}");
+    }
+    // And for any text at all, nothing the panel offers is left out of what
+    // submitting lists. The two sets need not match row for row — a name that
+    // names a group outright stands for the group, which already holds the
+    // children the panel lists beside it — but every row is covered.
+    for typed in ["雜費", "甲公司", "銀行", "資產 ›", "分", "no-such-name"] {
+        let offered: Vec<&str> = every
+            .iter()
+            .filter(|a| offered_for(&a.to_string(), typed))
+            .map(|a| a.path.as_str())
+            .collect();
+        let page = load(&pool, JournalQuery::account(typed)).await;
+        match offered.is_empty() {
+            // Nothing answers to it, so it is refused rather than listed.
+            true => {
+                let refused = page.unwrap_err().to_string();
+                assert!(refused.contains("查無口座："), "{typed}: {refused}");
+            }
+            false => {
+                let page = page.unwrap();
+                let filtered: Vec<&str> = match page.among.is_empty() {
+                    true => page.query.account.as_deref().into_iter().collect(),
+                    false => page.among.iter().map(|a| a.path.as_str()).collect(),
+                };
+                for row in &offered {
+                    let covered = filtered
+                        .iter()
+                        .any(|under| row == under || row.starts_with(&format!("{under}:")));
+                    assert!(covered, "{typed}: {row} is offered but not listed, {filtered:?}");
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_tree_label_two_branches_share_finds_both() {
+    let (_dir, pool) = ledger().await;
+    // 雜費 is the tree label of two accounts in different branches and the
+    // standalone label of neither, so only the panel's own matching finds it
+    // — it used to be refused while the panel went on offering it.
+    let page = journal_page(&pool, JournalQuery::account("雜費")).await;
+    assert_eq!(page.among.iter().map(AccountChoice::to_string).collect::<Vec<_>>(), [
+        "資產 › 分帳 › 甲公司 › 雜費",
+        "資產 › 分帳 › 乙公司 › 雜費"
+    ]);
+    assert_eq!(page.total, 1);
+    assert_eq!(page.query.account.as_deref(), Some("雜費"));
+}
+
+#[tokio::test]
+async fn part_of_a_name_takes_a_group_and_what_files_under_it() {
+    let (_dir, pool) = ledger().await;
+    // 甲公司 names the group outright, so it stands for that subtree alone.
+    let group = journal_page(&pool, JournalQuery::account("甲公司")).await;
+    assert_eq!(group.query.account.as_deref(), Some("Assets:Split:Alpha"));
+    assert!(group.among.is_empty());
+    // A part of it is nobody's name, so it takes everything it appears in:
+    // the group and both accounts under it.
+    let part = journal_page(&pool, JournalQuery::account("公司 ›")).await;
+    assert_eq!(part.among.iter().map(|a| a.path.as_str()).collect::<Vec<_>>(), [
+        "Assets:Split:Alpha:Petty",
+        "Assets:Split:Alpha:Tab",
+        "Assets:Split:Beta:Petty",
+        "Assets:Split:Beta:Tab"
+    ]);
+    assert_eq!((group.total, part.total), (2, 2));
+}
+
+#[tokio::test]
 async fn dates_bound_the_range_inclusively() {
     let (_dir, pool) = ledger().await;
     let query = JournalQuery {
@@ -460,7 +548,7 @@ async fn review_and_verification_are_separate_filters() {
     let review = |review| JournalQuery::default().with_review(review);
     let unreviewed = journal_page(&pool, review(Review::Unreviewed)).await;
     assert_eq!(narrations(&unreviewed), [JUICE, "晚餐 <script>alert(1)</script>"]);
-    assert_eq!(journal_page(&pool, review(Review::Reviewed)).await.total, 65);
+    assert_eq!(journal_page(&pool, review(Review::Reviewed)).await.total, 66);
 
     let unverified = JournalQuery { unverified: true, ..Default::default() };
     let unverified = journal_page(&pool, unverified).await;
@@ -493,8 +581,10 @@ async fn the_picker_offers_every_account_by_kind_and_no_equity_one() {
         "資產 › 現金",
         "資產 › 分帳",
         "資產 › 分帳 › 甲公司",
+        "資產 › 分帳 › 甲公司 › 雜費",
         "資產 › 分帳 › 甲公司 › 分帳",
         "資產 › 分帳 › 乙公司",
+        "資產 › 分帳 › 乙公司 › 雜費",
         "資產 › 分帳 › 乙公司 › 分帳",
         "負債",
         "負債 › 信用卡",
@@ -525,7 +615,7 @@ async fn the_tree_starts_at_the_kinds_and_opens_a_level_at_a_time() {
     // Inside the tree a row carries its own label; the row above places it.
     let split = assets.children.iter().find(|n| n.label == "分帳").unwrap();
     assert_eq!(roots(&split.children), ["甲公司", "乙公司"]);
-    assert_eq!(roots(&split.children[0].children), ["分帳"]);
+    assert_eq!(roots(&split.children[0].children), ["雜費", "分帳"]);
     // 權益 is the loader's own.
     assert!(!journal.tree.iter().any(|n| n.path.starts_with("Equity")));
 

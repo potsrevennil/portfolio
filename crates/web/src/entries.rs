@@ -13,7 +13,8 @@ use db::{
 use ledger_types::currency::Currency;
 
 use crate::model::{
-    AccountChoice, AccountKind, AccountNode, Entry, Journal, JournalQuery, Leg, Money, Review,
+    offered_for, AccountChoice, AccountKind, AccountNode, Entry, Journal, JournalQuery, Leg, Money,
+    Review,
 };
 
 pub const PAGE_SIZE: u32 = 50;
@@ -200,13 +201,30 @@ impl Chart {
     }
 
     /// The accounts a typed name — or a path a link carried — means, usually
-    /// one. A name nothing answers to is refused by name, never widened back
-    /// to every account.
+    /// one.
+    ///
+    /// A name that names one outright wins: a path, a standalone label or a
+    /// whole trail stands for that account and nothing else, so a link keeps
+    /// filtering to exactly what it says. Anything else is matched the way the
+    /// panel matches it, so a name the panel offers is a name submitting finds
+    /// — a bare tree label two branches share, or part of one. A name nothing
+    /// answers to is refused by name, never widened back to every account.
     pub fn resolve(&self, typed: &str) -> Result<Vec<String>> {
-        match self.names.get(typed) {
-            Some(Named::Account(path)) => Ok(vec![path.clone()]),
-            Some(Named::Several(paths)) => Ok(paths.iter().map(|p| p.to_string()).collect()),
-            None => Err(anyhow!("查無口座：{typed}")),
+        if let Some(named) = self.names.get(typed) {
+            return Ok(match named {
+                Named::Account(path) => vec![path.clone()],
+                Named::Several(paths) => paths.iter().map(|p| p.to_string()).collect(),
+            });
+        }
+        let offered: Vec<String> = self
+            .choices
+            .iter()
+            .filter(|choice| offered_for(&choice.to_string(), typed))
+            .map(|choice| choice.path.clone())
+            .collect();
+        match offered.is_empty() {
+            true => Err(anyhow!("查無口座：{typed}")),
+            false => Ok(offered),
         }
     }
 

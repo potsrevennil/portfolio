@@ -285,6 +285,13 @@ impl fmt::Display for AccountChoice {
     }
 }
 
+/// Whether the picker offers an account named `name` for what a reader typed.
+/// The panel and the submitted form both go through this, so a name the panel
+/// lists is a name submitting finds.
+pub fn offered_for(name: &str, typed: &str) -> bool {
+    name.to_lowercase().contains(&typed.trim().to_lowercase())
+}
+
 /// One account in the tree the picker browses: its own label, since the row
 /// above gives the context, and whatever files under it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

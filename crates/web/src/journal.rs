@@ -13,7 +13,7 @@ use leptos_router::{components::Form, hooks::use_query_map};
 use crate::{
     balance_sheet::MoneyText,
     error::LoadFailed,
-    model::{AccountChoice, AccountNode, Entry, Journal, JournalQuery, Review},
+    model::{offered_for, AccountChoice, AccountNode, Entry, Journal, JournalQuery, Review},
 };
 
 #[server]
@@ -228,11 +228,11 @@ pub fn JournalFilter(
                                 </ul>
                                 <ul class="matches" class:hidden=move || !searching()>
                                     {move || {
-                                        let typed = text.read().trim().to_lowercase();
+                                        let typed = text.read().clone();
                                         let found = searchable
                                             .read_value()
                                             .iter()
-                                            .filter(|(_, name)| name.to_lowercase().contains(&typed))
+                                            .filter(|(_, name)| offered_for(name, &typed))
                                             .map(|(href, name)| {
                                                 view! {
                                                     <li>
