@@ -6,15 +6,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{anyhow, Context, Result};
 use db::{
     chart::standalone_labels,
+    import::Origin as DbOrigin,
     journal::{self, Filter},
     query::{in_subtree, AccountType},
     SqlitePool,
 };
+use ledger::model::Source as DbSource;
 use ledger_types::currency::Currency;
 
 use crate::model::{
-    offered_for, AccountChoice, AccountKind, AccountNode, Entry, Journal, JournalQuery, Leg, Money,
-    Review,
+    offered_for, AccountChoice, AccountKind, AccountNode, ChartAccount, Entry, Journal,
+    JournalQuery, Leg, Money, Origin, Review, Source,
 };
 
 pub const PAGE_SIZE: u32 = 50;
@@ -71,6 +73,7 @@ enum Named {
 /// The chart as the journal page needs it: a name for every account, the names
 /// the account box offers, and the way back from what the box holds to a path.
 pub struct Chart {
+    pub accounts: Vec<journal::Account>,
     /// Path → the label that reads on its own, outside the tree.
     labels: BTreeMap<String, String>,
     /// Path → the label a tree shows, where the row above gives the context.
@@ -92,8 +95,11 @@ impl Chart {
         let labels = standalone_labels(&tree);
         let label = |path: &str| labels.get(path).cloned().unwrap_or_else(|| path.to_string());
 
+        // A closed account is not offered, but its name still resolves, so
+        // it filters its own history once chosen.
         let mut offered: Vec<_> = accounts
             .iter()
+            .filter(|a| !a.closed)
             .filter_map(|a| match AccountKind::try_from(a.account_type) {
                 Ok(kind) => Some((a, trail(&a.path, Some(kind), &tree))),
                 Err(_) => None,
@@ -134,7 +140,7 @@ impl Chart {
         let branches = offered.iter().map(|(a, _)| a.path.clone()).collect();
         let tree = tree.iter().map(|(p, l)| (p.to_string(), l.to_string())).collect();
         let choices = offered.into_iter().map(|(_, choice)| choice).collect();
-        Ok(Chart { labels, tree, full, choices, names, branches })
+        Ok(Chart { accounts, labels, tree, full, choices, names, branches })
     }
 
     pub fn label(&self, path: &str) -> String {
@@ -197,6 +203,12 @@ impl Chart {
                 Review::Unreviewed => Some(false),
             },
             unverified: q.unverified,
+            source: q
+                .source
+                .as_deref()
+                .map(|s| s.parse::<Source>().map_err(anyhow::Error::msg))
+                .transpose()?
+                .map(DbSource::from),
         })
     }
 
@@ -235,6 +247,90 @@ impl Chart {
             trail: self.offer(path).split(" › ").map(str::to_string).collect(),
         }
     }
+
+    /// The accounts a person picks from, in balance-sheet order. Equity,
+    /// which holds the loader's system accounts, and closed accounts are left
+    /// out, but for those in `keep`, already in use where the picker is: an
+    /// opening balance or a conversion keeps its equity leg when edited.
+    pub fn accounts_for(&self, keep: &[&str]) -> Vec<ChartAccount> {
+        let kept = |a: &&journal::Account| keep.contains(&a.path.as_str());
+        let mut shown: Vec<_> = self
+            .accounts
+            .iter()
+            .filter(|a| a.account_type != AccountType::Equity || kept(a))
+            .filter(|a| !a.closed || kept(a))
+            .collect();
+        shown.sort_by_key(|a| (a.account_type, a.path.as_str()));
+        shown.into_iter().map(|a| self.account(a)).collect()
+    }
+
+    pub fn account(&self, a: &journal::Account) -> ChartAccount {
+        ChartAccount {
+            path: a.path.clone(),
+            label: self.label(&a.path),
+            depth: a.path.matches(':').count(),
+            kind: AccountKind::try_from(a.account_type).ok(),
+            closed: a.closed,
+        }
+    }
+
+    /// One transaction as a page shows it; `focus` marks legs in the
+    /// filtered subtrees.
+    pub fn entry(&self, e: journal::Entry, base: Currency, focus: &[String]) -> Entry {
+        Entry {
+            id: e.id,
+            date: e.date.to_string(),
+            payee: e.payee,
+            narration: e.narration,
+            source: e.source.into(),
+            reviewed: e.reviewed,
+            unverified: e.unverified,
+            legs: e
+                .legs
+                .into_iter()
+                .map(|l| Leg {
+                    id: l.id,
+                    label: self.label(&l.account),
+                    money: Money::new(l.amount, l.currency, base),
+                    exact: l.amount,
+                    focus: focus.iter().any(|root| in_subtree(&l.account, root)),
+                    origin: l.origin.map(Origin::from),
+                    path: l.account,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<Source> for DbSource {
+    fn from(s: Source) -> Self {
+        match s {
+            Source::Import => DbSource::Import,
+            Source::Tiantian => DbSource::Tiantian,
+            Source::Manual => DbSource::Manual,
+        }
+    }
+}
+
+impl From<DbSource> for Source {
+    fn from(s: DbSource) -> Self {
+        match s {
+            DbSource::Import => Source::Import,
+            DbSource::Tiantian => Source::Tiantian,
+            DbSource::Manual => Source::Manual,
+        }
+    }
+}
+
+impl From<DbOrigin> for Origin {
+    fn from(o: DbOrigin) -> Self {
+        match o {
+            DbOrigin::Tiantian => Origin::Tiantian,
+            DbOrigin::Rule => Origin::Rule,
+            DbOrigin::Fallback => Origin::Fallback,
+            DbOrigin::Manual => Origin::Manual,
+        }
+    }
 }
 
 pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Result<Journal> {
@@ -247,29 +343,7 @@ pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Re
     let page = query.page.clamp(1, pages);
     let offset = u64::from(page - 1) * u64::from(PAGE_SIZE);
     let found = journal::entries(pool, &filter, PAGE_SIZE, offset).await?;
-
-    let focus = |path: &str| filter.accounts.iter().any(|root| in_subtree(path, root));
-    let entries = found
-        .into_iter()
-        .map(|e| Entry {
-            id: e.id,
-            date: e.date.to_string(),
-            payee: e.payee,
-            narration: e.narration,
-            reviewed: e.reviewed,
-            unverified: e.unverified,
-            legs: e
-                .legs
-                .into_iter()
-                .map(|l| Leg {
-                    label: chart.label(&l.account),
-                    money: Money::new(l.amount, l.currency, base),
-                    focus: focus(&l.account),
-                    path: l.account,
-                })
-                .collect(),
-        })
-        .collect();
+    let entries = found.into_iter().map(|e| chart.entry(e, base, &filter.accounts)).collect();
 
     // One account is named by its path, so a link keeps working when the chart
     // is relabelled. Several are named by what the reader typed, which is the

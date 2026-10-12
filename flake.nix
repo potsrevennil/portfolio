@@ -10,7 +10,7 @@
   outputs = inputs@{ flake-parts, ... }: flake-parts.lib.mkFlake { inherit inputs; } {
     imports = [ ];
     systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
-    perSystem = { pkgs, system, ... }:
+    perSystem = { pkgs, system, self', ... }:
       let
         wrapShell = mkShell: attrs:
           mkShell (attrs // {
@@ -62,6 +62,16 @@
             };
         };
 
+        # The browser journeys (crates/web/tests/browser.rs): a headless
+        # Chromium and the chromedriver built for the same version. Linux only,
+        # and a shell of its own so everyday work does not download a browser.
+        devShells.browser = wrapShell pkgs.mkShellNoCC {
+          inputsFrom = [ self'.devShells.default ];
+          packages = pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.chromium
+            pkgs.chromedriver
+          ];
+        };
       };
   };
 }

@@ -16,6 +16,7 @@ prices              = { workspace = true }
 rust_decimal        = { workspace = true }
 rust_decimal_macros = { workspace = true }
 serde               = { workspace = true }
+serde_json          = { workspace = true }
 sqlx                = { workspace = true }
 strum               = { workspace = true }
 strum_macros        = { workspace = true }
