@@ -416,11 +416,20 @@ pub const UNVERIFIED_HINT: &str =
 
 fn entry(e: Entry, review: bool) -> impl IntoView {
     let id = e.id;
+    let controls = match review {
+        true => view! { <ReviewControls id /> }.into_any(),
+        false => view! {
+            <div class="actions">
+                <a href=format!("/review/{id}")>"修改"</a>
+            </div>
+        }
+        .into_any(),
+    };
     view! {
         <li class="entry" class:unverified=e.unverified class:unreviewed=!e.reviewed>
             <EntryHead entry=e.clone() source=review />
             <EntryLegs legs=e.legs />
-            {review.then(|| view! { <ReviewControls id /> })}
+            {controls}
         </li>
     }
 }

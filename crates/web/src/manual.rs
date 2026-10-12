@@ -89,9 +89,11 @@ pub fn ManualEntry(form: ManualForm) -> impl IntoView {
     let spending = of(&[AccountKind::Expense]);
     let income = of(&[AccountKind::Income]);
     let entered = move || {
-        enter.value().get().and_then(Result::ok).map(|_| {
+        enter.value().get().and_then(Result::ok).map(|id| {
             view! {
-                <p class="note done">"已記下。"</p>
+                <p class="note done">
+                    "已記下。" <a href=format!("/review/{id}")>"看這筆"</a>
+                </p>
             }
         })
     };

@@ -16,8 +16,11 @@ use sqlx::SqlitePool;
 use web::{
     journal::{load_journal, JournalList},
     manual::enter_manual,
-    model::{JournalQuery, Queue, Source as TxnSource},
-    review::{confirm_entry, load_queue, review_count, Actions},
+    model::{Editing, JournalQuery, LegInput, Origin, Queue, Source as TxnSource},
+    review::{
+        confirm_entry, delete_entry, load_entry, load_queue, review_count, save_entry,
+        unconfirm_entry, Actions, Editor, SPARE_ROWS,
+    },
     server,
 };
 
@@ -87,6 +90,27 @@ async fn reviewed(pool: &SqlitePool, id: i64) -> bool {
         .fetch_one(pool)
         .await
         .unwrap()
+}
+
+fn leg(posting: Option<i64>, account: &str, amount: &str) -> LegInput {
+    LegInput {
+        posting: posting.map(|p| p.to_string()).unwrap_or_default(),
+        account: account.into(),
+        amount: amount.into(),
+        currency: "TWD".into(),
+    }
+}
+
+async fn save(
+    pool: &SqlitePool,
+    id: i64,
+    narration: &str,
+    legs: Vec<LegInput>,
+    confirm: bool,
+) -> Result<(), ServerFnError> {
+    let narration = Some(narration.to_string());
+    let confirm = confirm.then(|| "1".to_string());
+    call(pool, || save_entry(id, narration, legs, confirm)).await
 }
 
 fn with_actions<T>(f: impl FnOnce() -> T) -> T {
@@ -164,11 +188,13 @@ async fn unverified_is_not_the_same_as_unreviewed() {
         "{}",
         rows[3]
     );
-    // Every row can be confirmed as it is.
+    // Every row can be confirmed as it is, or opened.
     assert_eq!(html.matches(r#"<button type="submit">確認</button>"#).count(), 4, "{html}");
+    let fee = id_of(&pool, FEE).await;
+    assert!(html.contains(&format!(r#"href="/review/{fee}""#)), "{html}");
 }
 
-// --- Confirming -------------------------------------------------------------
+// --- Confirming and editing -------------------------------------------------
 
 #[tokio::test]
 async fn confirming_leaves_the_queue_and_an_event() {
@@ -188,6 +214,246 @@ async fn confirming_leaves_the_queue_and_an_event() {
     // Confirming it again changes nothing, so records nothing.
     call(&pool, || confirm_entry(lunch)).await.unwrap();
     assert_eq!(events(&pool, lunch).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_confirmation_can_be_taken_back() {
+    let (_dir, pool) = ledger().await;
+    let lunch = id_of(&pool, LUNCH).await;
+    // Taking back what was never confirmed changes nothing.
+    call(&pool, || unconfirm_entry(lunch)).await.unwrap();
+    assert!(events(&pool, lunch).await.is_empty());
+    call(&pool, || confirm_entry(lunch)).await.unwrap();
+    call(&pool, || unconfirm_entry(lunch)).await.unwrap();
+    assert!(!reviewed(&pool, lunch).await);
+    assert_eq!(narrations(&queue(&pool, JournalQuery::default()).await), [
+        COFFEE, TAXI, LUNCH, FEE
+    ]);
+    assert_eq!(events_kinds(&pool, lunch).await, ["confirmed", "unconfirmed"]);
+    let (_, payload) = &events(&pool, lunch).await[1];
+    assert_eq!(
+        (&payload["before"]["reviewed"], &payload["after"]["reviewed"]),
+        (&Value::Bool(true), &Value::Bool(false))
+    );
+    let editing: Editing = call(&pool, || load_entry(lunch)).await.unwrap();
+    let html = with_actions(|| view! { <Editor editing=editing /> }.to_html());
+    position(&visible(&html), "改回未確認");
+}
+
+/// A new category and note overwrite the same rows; the event keeps what
+/// they were.
+#[tokio::test]
+async fn an_edit_updates_in_place_and_keeps_the_old_state() {
+    let (_dir, pool) = ledger().await;
+    let fee = id_of(&pool, FEE).await;
+    let before = legs(&pool, fee).await;
+    let (bank, other) = (before[0].0, before[1].0);
+    save(
+        &pool,
+        fee,
+        "年費",
+        vec![
+            leg(Some(bank), "Assets:Bank:Savings", "-500"),
+            leg(Some(other), "Expenses:Food", "500"),
+        ],
+        false,
+    )
+    .await
+    .unwrap();
+
+    let after = legs(&pool, fee).await;
+    assert_eq!(after, [
+        (bank, "Assets:Bank:Savings".to_string(), "-500".to_string(), None),
+        (other, "Expenses:Food".to_string(), "500".to_string(), Some("manual".to_string())),
+    ]);
+    let narration: String = sqlx::query_scalar("SELECT narration FROM transactions WHERE id = ?")
+        .bind(fee)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(narration, "年費");
+    // Not confirmed: it stays in the queue.
+    assert!(!reviewed(&pool, fee).await);
+
+    let events = events(&pool, fee).await;
+    let (kind, payload) = &events[0];
+    assert_eq!((events.len(), kind.as_str()), (1, "edited"));
+    let old = &payload["before"];
+    assert_eq!(old["narration"], FEE);
+    assert_eq!(old["legs"][1]["account"], "Expenses:Uncategorized");
+    assert_eq!(old["legs"][1]["origin"], "fallback");
+    assert_eq!(payload["after"]["legs"][1]["account"], "Expenses:Food");
+
+    // Saved and confirmed: out of the queue, one more event.
+    save(
+        &pool,
+        fee,
+        "年費",
+        vec![
+            leg(Some(bank), "Assets:Bank:Savings", "-500"),
+            leg(Some(other), "Expenses:Food", "500"),
+        ],
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(reviewed(&pool, fee).await);
+    let kinds: Vec<String> = events_kinds(&pool, fee).await;
+    assert_eq!(kinds, ["edited", "confirmed"]);
+}
+
+async fn events_kinds(pool: &SqlitePool, id: i64) -> Vec<String> {
+    events(pool, id).await.into_iter().map(|(k, _)| k).collect()
+}
+
+/// One line into several postings: the legs must still sum to zero per
+/// currency, or nothing is written.
+#[tokio::test]
+async fn a_split_must_balance() {
+    let (_dir, pool) = ledger().await;
+    let taxi = id_of(&pool, TAXI).await;
+    let before = legs(&pool, taxi).await;
+    let (other, card) = (before[0].0, before[1].0);
+
+    let off = save(
+        &pool,
+        taxi,
+        TAXI,
+        vec![
+            leg(Some(other), "Expenses:Food", "200"),
+            leg(Some(card), "Liabilities:Card", "-300"),
+            leg(None, "Assets:Split:Alpha:Tab", "50"),
+            // A spare row left blank is no leg.
+            leg(None, "", ""),
+        ],
+        false,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(off.contains("借貸不平衡，差 -50 TWD"), "{off}");
+    assert_eq!(legs(&pool, taxi).await, before);
+    assert!(events(&pool, taxi).await.is_empty());
+
+    save(
+        &pool,
+        taxi,
+        TAXI,
+        vec![
+            leg(Some(other), "Expenses:Food", "200"),
+            leg(Some(card), "Liabilities:Card", "-300"),
+            leg(None, "Assets:Split:Alpha:Tab", "100"),
+            leg(None, "", ""),
+        ],
+        true,
+    )
+    .await
+    .unwrap();
+    let after = legs(&pool, taxi).await;
+    assert_eq!(after.len(), 3);
+    assert_eq!((after[0].0, after[1].0), (other, card), "the old rows are kept");
+    assert_eq!(after[2].1, "Assets:Split:Alpha:Tab");
+    assert_eq!(events_kinds(&pool, taxi).await, ["split", "confirmed"]);
+    // Still the one transaction.
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM transactions WHERE narration = ?")
+        .bind(TAXI)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn an_edit_is_refused_by_name() {
+    let (_dir, pool) = ledger().await;
+    let fee = id_of(&pool, FEE).await;
+    let rows = legs(&pool, fee).await;
+    let refused =
+        |legs| async { save(&pool, fee, FEE, legs, false).await.unwrap_err().to_string() };
+
+    // Moving money the bank's statement vouches for.
+    let gate = refused(vec![
+        leg(Some(rows[0].0), "Assets:Bank:Savings", "-400"),
+        leg(Some(rows[1].0), "Expenses:Uncategorized", "400"),
+    ])
+    .await;
+    // One balance, in words, and what to do: not the whole check report.
+    assert_eq!(
+        gate.trim_start_matches("error running server function: "),
+        "沒有儲存：這筆會讓「活存」2024-02-29 的餘額變成 12400 TWD，但你盤點記那天是 12300 \
+         TWD。2024-02-29 以前的帳已經對過了：這筆可能已經記過，或者日期該在 2024-02-29 之後。"
+    );
+    let amount = refused(vec![leg(Some(rows[0].0), "Assets:Bank:Savings", "五百")]).await;
+    assert!(amount.contains("金額不對：五百"), "{amount}");
+    let stranger = refused(vec![
+        leg(Some(rows[0].0), "Assets:Bank:Savings", "-500"),
+        leg(Some(1), "Expenses:Food", "500"),
+    ])
+    .await;
+    assert!(stranger.contains("不屬於這筆交易"), "{stranger}");
+    let unknown = refused(vec![
+        leg(Some(rows[0].0), "Assets:Bank:Savings", "-500"),
+        leg(Some(rows[1].0), "Expenses:Nowhere", "500"),
+    ])
+    .await;
+    assert!(unknown.contains("查無帳戶：Expenses:Nowhere"), "{unknown}");
+
+    assert_eq!(legs(&pool, fee).await, rows);
+    assert!(events(&pool, fee).await.is_empty());
+}
+
+/// The editor as the server renders it: every leg a row of plain form
+/// fields, then the blank rows to split into.
+#[tokio::test]
+async fn the_editor_offers_each_leg_and_spare_rows() {
+    let (_dir, pool) = ledger().await;
+    let fee = id_of(&pool, FEE).await;
+    let editing: Editing = call(&pool, || load_entry(fee)).await.unwrap();
+    assert_eq!(editing.entry.legs[1].origin, Some(Origin::Fallback));
+    let html = with_actions(|| view! { <Editor editing=editing.clone() /> }.to_html());
+    let rows = html.matches("<tr>").count() - 1;
+    assert_eq!(rows, editing.entry.legs.len() + SPARE_ROWS);
+    assert!(html.contains(r#"name="legs[1][account]""#), "{html}");
+    assert!(html.contains(r#"<option value="Expenses:Uncategorized" selected"#), "{html}");
+    assert!(html.contains(r#"name="legs[2][currency]" value="TWD""#), "{html}");
+    let text = visible(&html);
+    position(&text, "未分類");
+    position(&text, "同時確認");
+    // No equity, no root, in what a leg may post to.
+    // Only a confirmed entry can be taken back.
+    assert!(!text.contains("改回未確認"), "{text}");
+    let offered: Vec<_> = editing.accounts.iter().map(|a| a.path.as_str()).collect();
+    assert!(!offered.iter().any(|p| p.starts_with("Equity") || !p.contains(':')), "{offered:?}");
+}
+
+#[tokio::test]
+async fn an_equity_leg_stays_editable() {
+    let (_dir, pool) = ledger().await;
+    let opening: i64 = sqlx::query_scalar(
+        "SELECT t.id FROM transactions t JOIN postings p ON p.transaction_id = t.id JOIN accounts \
+         a ON a.id = p.account_id WHERE a.path = 'Assets:Cash' AND t.narration = '期初'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let editing: Editing = call(&pool, || load_entry(opening)).await.unwrap();
+    let offered: Vec<_> = editing.accounts.iter().map(|a| a.path.as_str()).collect();
+    assert!(offered.contains(&"Equity:Opening-Balances"), "{offered:?}");
+    let html = with_actions(|| view! { <Editor editing=editing.clone() /> }.to_html());
+    assert!(html.contains(r#"<option value="Equity:Opening-Balances" selected"#), "{html}");
+
+    let ids: Vec<i64> = legs(&pool, opening).await.into_iter().map(|(p, ..)| p).collect();
+    let legs_in = vec![
+        leg(Some(ids[0]), "Assets:Cash", "1000"),
+        leg(Some(ids[1]), "Equity:Opening-Balances", "-1000"),
+    ];
+    save(&pool, opening, "期初現金", legs_in, false).await.unwrap();
+    assert_eq!(events_kinds(&pool, opening).await, ["edited"]);
+
+    // Nowhere else.
+    let fee = id_of(&pool, FEE).await;
+    let editing: Editing = call(&pool, || load_entry(fee)).await.unwrap();
+    assert!(!editing.accounts.iter().any(|a| a.path.starts_with("Equity")));
 }
 
 // --- Entering by hand
@@ -372,11 +638,117 @@ async fn a_hand_entry_on_a_bank_account_waits_for_its_statement() {
 /// after its last statement, the leg waits for the statement, so the next
 /// import verifies it instead of booking the line twice; moved off, the mark
 /// goes, from every leg once none is left for a statement to vouch for.
-/// Entered by hand on a card no statement has posted to yet, it waits for the
-/// first one.
 #[tokio::test]
-async fn a_hand_entry_awaiting_a_first_statement_is_marked() {
+async fn an_edit_moves_the_unverified_mark_with_the_account() {
     let (_dir, pool) = ledger().await;
+    sqlx::query(
+        "INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) SELECT \
+         id, 'TWD', 'statement', '2024-02-29', '12300' FROM accounts WHERE path = \
+         'Assets:Bank:Savings'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let id = call(&pool, || {
+        enter_manual(
+            "2024-03-10".into(),
+            "90".into(),
+            "TWD".into(),
+            "Assets:Cash".into(),
+            Some("Expenses:Food".into()),
+            None,
+            None,
+        )
+    })
+    .await
+    .unwrap();
+    let ids: Vec<i64> = legs(&pool, id).await.into_iter().map(|(p, ..)| p).collect();
+    let paid_from = |account: &str| {
+        vec![leg(Some(ids[0]), account, "-90"), leg(Some(ids[1]), "Expenses:Food", "90")]
+    };
+    let unverified = |tag: bool| tag.then(|| "unverified".to_string());
+
+    save(&pool, id, "", paid_from("Assets:Bank:Savings"), false).await.unwrap();
+    assert_eq!(posting_tags(&pool, id).await, [
+        ("Assets:Bank:Savings".to_string(), unverified(true)),
+        ("Expenses:Food".to_string(), None),
+    ]);
+    let (_, payload) = events(&pool, id).await.pop().unwrap();
+    assert_eq!(payload["after"]["legs"][0]["tags"], Value::from("unverified"), "{payload}");
+
+    save(&pool, id, "", paid_from("Assets:Cash"), false).await.unwrap();
+    assert!(posting_tags(&pool, id).await.iter().all(|(_, t)| t.is_none()));
+
+    // An imported record marks every leg; taking its bank leg off the bank
+    // clears them all, and the journal stops listing it as 未對帳.
+    save(&pool, id, "", paid_from("Assets:Bank:Savings"), false).await.unwrap();
+    sqlx::query("UPDATE postings SET tags = 'unverified' WHERE transaction_id = ?")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    save(&pool, id, "", paid_from("Assets:Cash"), false).await.unwrap();
+    assert!(posting_tags(&pool, id).await.iter().all(|(_, t)| t.is_none()));
+    let waiting = JournalQuery { unverified: true, ..Default::default() };
+    let waiting = call(&pool, || load_journal(waiting)).await.unwrap();
+    assert!(!waiting.entries.iter().any(|e| e.id == id));
+
+    // A category change leaves the bank leg's mark alone.
+    save(&pool, id, "", paid_from("Assets:Bank:Savings"), false).await.unwrap();
+    let recategorised = vec![
+        leg(Some(ids[0]), "Assets:Bank:Savings", "-90"),
+        leg(Some(ids[1]), "Expenses:Uncategorized", "90"),
+    ];
+    save(&pool, id, "", recategorised, false).await.unwrap();
+    assert_eq!(posting_tags(&pool, id).await[0].1, unverified(true));
+}
+
+/// A 天天記帳 record on a bank whose first statement hasn't come: the
+/// importer marked it 未對帳, and an edit keeps it so on any account a
+/// statement will post to, or that first statement would book its line a
+/// second time. Only moving it off, to cash, takes the mark away.
+#[tokio::test]
+async fn a_record_awaiting_a_first_statement_stays_marked() {
+    let (_dir, pool) = ledger().await;
+    // Savings has statements through February; the card has none yet.
+    sqlx::query(
+        "INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) SELECT \
+         id, 'TWD', 'statement', '2024-02-29', '12300' FROM accounts WHERE path = \
+         'Assets:Bank:Savings'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let coffee = id_of(&pool, COFFEE).await;
+    let ids: Vec<i64> = legs(&pool, coffee).await.into_iter().map(|(p, ..)| p).collect();
+    let marked = || async {
+        let tags = posting_tags(&pool, coffee).await;
+        (tags.iter().filter(|(_, t)| t.as_deref() == Some("unverified")).count(), tags)
+    };
+    let edit = |category: &str, paid_from: &str| {
+        vec![leg(Some(ids[0]), category, "150"), leg(Some(ids[1]), paid_from, "-150")]
+    };
+
+    save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Assets:Bank:Savings"), true).await.unwrap();
+    assert_eq!(marked().await.0, 2, "{:?}", marked().await.1);
+    save(&pool, coffee, "拿鐵", edit("Expenses:Uncategorized", "Assets:Bank:Savings"), false)
+        .await
+        .unwrap();
+    assert_eq!(marked().await.0, 2, "{:?}", marked().await.1);
+    // From a bank with statements to a card with none yet.
+    save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Liabilities:Card"), false).await.unwrap();
+    assert_eq!(marked().await.0, 2, "{:?}", marked().await.1);
+    let waiting = JournalQuery { unverified: true, ..Default::default() };
+    let listed = call(&pool, || load_journal(waiting.clone())).await.unwrap();
+    assert!(listed.entries.iter().any(|e| e.id == coffee));
+
+    // Cash: no statement will show it.
+    save(&pool, coffee, "拿鐵", edit("Expenses:Food", "Assets:Cash"), false).await.unwrap();
+    assert_eq!(marked().await.0, 0, "{:?}", marked().await.1);
+    let listed = call(&pool, || load_journal(waiting)).await.unwrap();
+    assert!(!listed.entries.iter().any(|e| e.id == coffee));
+
+    // Entered by hand on the card, it waits for the first statement too.
     let card = call(&pool, || {
         enter_manual(
             "2024-03-10".into(),
@@ -394,6 +766,24 @@ async fn a_hand_entry_awaiting_a_first_statement_is_marked() {
         ("Liabilities:Card".to_string(), Some("unverified".to_string())),
         ("Expenses:Food".to_string(), None),
     ]);
+}
+
+/// Taking a record's bank leg out, and the money onto cash instead, leaves
+/// nothing for a statement to verify: no leg keeps the mark, as when the leg
+/// is moved.
+#[tokio::test]
+async fn deleting_the_bank_leg_clears_the_mark() {
+    let (_dir, pool) = ledger().await;
+    let coffee = id_of(&pool, COFFEE).await;
+    let ids: Vec<i64> = legs(&pool, coffee).await.into_iter().map(|(p, ..)| p).collect();
+    let on_cash = vec![leg(Some(ids[0]), "Expenses:Food", "150"), leg(None, "Assets:Cash", "-150")];
+    save(&pool, coffee, "拿鐵", on_cash, false).await.unwrap();
+    let tags = posting_tags(&pool, coffee).await;
+    assert_eq!(tags.len(), 2, "{tags:?}");
+    assert!(tags.iter().all(|(_, t)| t.is_none()), "{tags:?}");
+    let waiting = JournalQuery { unverified: true, ..Default::default() };
+    let listed = call(&pool, || load_journal(waiting)).await.unwrap();
+    assert!(!listed.entries.iter().any(|e| e.id == coffee));
 }
 
 /// The chart names the statement accounts: each numbered account, and where
@@ -427,6 +817,84 @@ fn statement_accounts_come_from_the_chart() {
 
 /// An entry made by mistake can be deleted: it leaves every list and every
 /// balance, and its history keeps what it was.
+#[tokio::test]
+async fn an_entry_can_be_deleted() {
+    let (_dir, pool) = ledger().await;
+    let id = call(&pool, || {
+        enter_manual(
+            "2024-03-05".into(),
+            "85".into(),
+            "TWD".into(),
+            "Assets:Cash".into(),
+            Some("Expenses:Food".into()),
+            None,
+            Some("打錯".into()),
+        )
+    })
+    .await
+    .unwrap();
+    let cash = || async {
+        call(&pool, || load_journal(JournalQuery::account("Assets:Cash"))).await.unwrap()
+    };
+    let before = cash().await.total;
+
+    // Not without ticking that it is meant.
+    let unsure = call(&pool, || delete_entry(id, None)).await.unwrap_err().to_string();
+    assert!(unsure.contains("確定刪除這筆"), "{unsure}");
+
+    call(&pool, || delete_entry(id, Some("1".into()))).await.unwrap();
+    assert_eq!(cash().await.total, before - 1);
+    assert!(legs(&pool, id).await.is_empty());
+    let kinds = events_kinds(&pool, id).await;
+    assert_eq!(kinds, ["entered", "deleted"]);
+    let deleted = &events(&pool, id).await[1].1;
+    assert_eq!(deleted["before"]["legs"][1]["account"], "Expenses:Food");
+    assert_eq!(deleted["after"]["legs"], Value::Array(vec![]));
+    // Gone from the editor, and nothing more can be done to it.
+    let gone = call(&pool, || load_entry(id)).await.unwrap_err().to_string();
+    assert!(gone.contains(&format!("查無交易 {id}")), "{gone}");
+    let again = call(&pool, || delete_entry(id, Some("1".into()))).await.unwrap_err();
+    assert!(again.to_string().contains("已經刪除"), "{again}");
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(db::check::check(&mut conn).await.unwrap().ok());
+
+    // A line a statement or count vouches for stays: deleting it would
+    // break that balance.
+    let fee = id_of(&pool, FEE).await;
+    let held = call(&pool, || delete_entry(fee, Some("1".into()))).await.unwrap_err();
+    assert!(held.to_string().contains("「活存」2024-02-29"), "{held}");
+    assert_eq!(legs(&pool, fee).await.len(), 2);
+}
+
+/// A figure the ledger already disagreed with holds up nothing else: a write
+/// is refused only for a balance it breaks.
+#[tokio::test]
+async fn a_mismatch_elsewhere_does_not_block_a_write() {
+    let (_dir, pool) = ledger().await;
+    sqlx::query(
+        "INSERT INTO balance_assertion (account_id, currency, source, period_end, closing) SELECT \
+         id, 'TWD', 'statement', '2024-03-31', '1' FROM accounts WHERE path = 'Liabilities:Card'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let fee = id_of(&pool, FEE).await;
+    let rows = legs(&pool, fee).await;
+    save(
+        &pool,
+        fee,
+        FEE,
+        vec![
+            leg(Some(rows[0].0), "Assets:Bank:Savings", "-500"),
+            leg(Some(rows[1].0), "Expenses:Food", "500"),
+        ],
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(reviewed(&pool, fee).await);
+}
+
 // --- Through the router ---------------------------------------------------
 
 #[tokio::test]
@@ -454,6 +922,11 @@ async fn the_review_pages_render() {
         assert!(lines[0].starts_with("未確認 你還沒看過"), "{legend}");
         assert!(lines[1].starts_with("未對帳 記了但銀行對帳單還沒出現"), "{legend}");
     }
+
+    let edit = visible(&site.page("/review/6").await);
+    position(&edit, "修改 · 帳簿");
+    position(&edit, "手續費");
+    position(&visible(&site.page("/review/999").await), "讀取失敗：查無交易 999");
 
     let entry = site.page("/entry").await;
     // A spend by default: an account to pay from and a category, nothing else.
