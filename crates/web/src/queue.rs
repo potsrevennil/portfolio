@@ -1,10 +1,12 @@
-//! Builds the review pages from `db`: the queue, a transaction opened for
-//! editing, and the forms' text parsed into what `db::review` writes.
+//! Builds the review pages from `db`: the queue with the lines waiting to be
+//! paired, a transaction opened for editing, and the forms' text parsed into
+//! what `db::review` writes.
 
 use anyhow::{bail, Context, Result};
 use db::{
     events,
     journal::{self, Filter},
+    pairing,
     review::{Edit, LegEdit, Manual},
     SqlitePool,
 };
@@ -13,7 +15,10 @@ use rust_decimal::Decimal;
 
 use crate::{
     entries::{self, Chart},
-    model::{Change, ChartAccount, Editing, JournalQuery, LegInput, ManualInput, Queue, Review},
+    model::{
+        Change, ChartAccount, Choice, Editing, JournalQuery, LegInput, ManualInput, Money, Queue,
+        Review,
+    },
 };
 
 /// How many transactions wait for review.
@@ -24,7 +29,22 @@ pub async fn count(pool: &SqlitePool) -> Result<u64> {
 /// The journal held to unreviewed records, whatever the query asks.
 pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Result<Queue> {
     let journal = entries::load(pool, &query.with_review(Review::Unreviewed), base).await?;
-    Ok(Queue { journal })
+    let chart = Chart::load(pool).await?;
+    let mut choices = Vec::new();
+    for c in pairing::open(pool).await? {
+        let a = c.ambiguity;
+        let candidates = journal::by_ids(pool, &a.candidates).await?;
+        choices.push(Choice {
+            id: c.id,
+            date: a.date.to_string(),
+            account: chart.label(&a.account),
+            money: Money::new(a.amount, a.currency, base),
+            description: a.description,
+            candidates: candidates.into_iter().map(|e| chart.entry(e, base, &[])).collect(),
+            chosen: c.chosen,
+        });
+    }
+    Ok(Queue { journal, choices })
 }
 
 /// Where a leg may post: accounts below a root.

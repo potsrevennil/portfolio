@@ -415,10 +415,26 @@ pub struct Journal {
     pub pages: u32,
 }
 
-/// 待確認: the journal held to unreviewed records.
+/// A statement line the importer would not pair alone, and the unverified
+/// records it fits.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Choice {
+    pub id: i64,
+    pub date: String,
+    pub account: String,
+    pub money: Money,
+    pub description: String,
+    pub candidates: Vec<Entry>,
+    /// The record picked, waiting for the next import.
+    pub chosen: Option<i64>,
+}
+
+/// 待確認: the journal held to unreviewed records, and the lines waiting to
+/// be paired.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Queue {
     pub journal: Journal,
+    pub choices: Vec<Choice>,
 }
 
 /// One change the app recorded on a transaction.

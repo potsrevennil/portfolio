@@ -1,13 +1,15 @@
 //! 待確認: the journal held to unreviewed records, each confirmed as it is or
-//! opened to edit or split.
+//! opened to edit or split, and the statement lines waiting for a person to
+//! say which record each one is.
 
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_router::hooks::{use_params_map, use_query_map};
 
 use crate::{
-    journal::{EntryHead, JournalFilter, JournalList, OriginNote},
-    model::{ChartAccount, Editing, JournalQuery, LegInput, Queue},
+    balance_sheet::MoneyText,
+    journal::{EntryHead, EntryLegs, JournalFilter, JournalList, OriginNote},
+    model::{ChartAccount, Choice, Editing, JournalQuery, LegInput, Queue},
 };
 
 /// Blank rows the editor offers for splitting a leg.
@@ -82,6 +84,13 @@ pub async fn delete_entry(id: i64, sure: Option<String>) -> Result<(), ServerFnE
     Ok(())
 }
 
+#[server]
+pub async fn choose_pairing(choice: i64, record: Option<i64>) -> Result<(), ServerFnError> {
+    let pool = expect_context::<db::SqlitePool>();
+    let record = record.ok_or_else(|| ServerFnError::new("請選一筆紀錄"))?;
+    db::pairing::choose(&pool, choice, record).await.map_err(failed)
+}
+
 /// The server's words, as the page shows them.
 #[cfg(feature = "ssr")]
 pub fn failed(e: anyhow::Error) -> ServerFnError { ServerFnError::new(format!("{e:#}")) }
@@ -92,6 +101,7 @@ pub fn failed(e: anyhow::Error) -> ServerFnError { ServerFnError::new(format!("{
 pub struct Actions {
     pub confirm: ServerAction<ConfirmEntry>,
     pub save: ServerAction<SaveEntry>,
+    pub choose: ServerAction<ChoosePairing>,
     pub delete: ServerAction<DeleteEntry>,
     pub unconfirm: ServerAction<UnconfirmEntry>,
 }
@@ -101,6 +111,7 @@ impl Actions {
         Actions {
             confirm: ServerAction::new(),
             save: ServerAction::new(),
+            choose: ServerAction::new(),
             delete: ServerAction::new(),
             unconfirm: ServerAction::new(),
         }
@@ -110,6 +121,7 @@ impl Actions {
     pub fn version(&self) -> usize {
         self.confirm.version().get()
             + self.save.version().get()
+            + self.choose.version().get()
             + self.delete.version().get()
             + self.unconfirm.version().get()
     }
@@ -146,10 +158,11 @@ pub fn ReviewPage() -> impl IntoView {
         <Transition fallback=|| view! { <p class="note">"載入中…"</p> }>
             {move || Suspend::new(async move {
                 match queue.await {
-                    Ok(Queue { journal }) => {
+                    Ok(Queue { journal, choices }) => {
                         view! {
                             <div class="journal review">
                                 <ActionError result=actions.confirm.value() />
+                                <Pairings choices />
                                 <JournalFilter
                                     action="/review"
                                     query=journal.query.clone()
@@ -198,6 +211,68 @@ where
             view! { <p class="note error">{crate::error::said(&e)}</p> }
         })
     }
+}
+
+/// Statement lines the importer would not pair alone: pick the record each
+/// one is, and the next import verifies it.
+#[component]
+pub fn Pairings(choices: Vec<Choice>) -> impl IntoView {
+    let choose = expect_context::<Actions>().choose;
+    (!choices.is_empty()).then(|| {
+        view! {
+            <section class="pairings">
+                <h2>"待配對"</h2>
+                <p class="note">"對帳單的這幾筆，同金額的紀錄不只一筆。請選是哪一筆，下次匯入時就會對上。"</p>
+                <ActionError result=choose.value() />
+                <ol>
+                    {choices
+                        .into_iter()
+                        .map(|c| {
+                            let chosen = c.chosen;
+                            view! {
+                                <li class="choice">
+                                    <div class="line">
+                                        <span class="date">{c.date}</span>
+                                        <span class="account">{c.account}</span>
+                                        <MoneyText money=c.money />
+                                        <span class="narration">{c.description}</span>
+                                    </div>
+                                    {chosen.map(|_| view! { <p class="chosen">"已選，下次匯入時對帳"</p> })}
+                                    <ActionForm action=choose>
+                                        <input type="hidden" name="choice" value=c.id />
+                                        <ul class="candidates">
+                                            {c
+                                                .candidates
+                                                .into_iter()
+                                                .map(|e| {
+                                                    let id = e.id;
+                                                    view! {
+                                                        <li>
+                                                            <label>
+                                                                <input
+                                                                    type="radio"
+                                                                    name="record"
+                                                                    value=id
+                                                                    checked=chosen == Some(id)
+                                                                />
+                                                                <EntryHead entry=e.clone() />
+                                                                <EntryLegs legs=e.legs />
+                                                            </label>
+                                                        </li>
+                                                    }
+                                                })
+                                                .collect_view()}
+                                        </ul>
+                                        <button type="submit">"選這筆"</button>
+                                    </ActionForm>
+                                </li>
+                            }
+                        })
+                        .collect_view()}
+                </ol>
+            </section>
+        }
+    })
 }
 
 #[component]
