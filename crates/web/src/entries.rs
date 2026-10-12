@@ -15,8 +15,8 @@ use ledger::model::Source as DbSource;
 use ledger_types::currency::Currency;
 
 use crate::model::{
-    offered_for, AccountChoice, AccountKind, AccountNode, Entry, Journal, JournalQuery, Leg, Money,
-    Origin, Review, Source,
+    offered_for, AccountChoice, AccountKind, AccountNode, ChartAccount, Entry, Journal,
+    JournalQuery, Leg, Money, Origin, Review, Source,
 };
 
 pub const PAGE_SIZE: u32 = 50;
@@ -242,6 +242,29 @@ impl Chart {
         AccountChoice {
             path: path.to_string(),
             trail: self.offer(path).split(" › ").map(str::to_string).collect(),
+        }
+    }
+
+    /// The accounts a person picks from, in balance-sheet order. Equity,
+    /// which holds the loader's system accounts, is left out but for the
+    /// accounts in `keep`, already in use where the picker is: an opening
+    /// balance or a conversion keeps its equity leg when edited.
+    pub fn accounts_for(&self, keep: &[&str]) -> Vec<ChartAccount> {
+        let mut shown: Vec<_> = self
+            .accounts
+            .iter()
+            .filter(|a| a.account_type != AccountType::Equity || keep.contains(&a.path.as_str()))
+            .collect();
+        shown.sort_by_key(|a| (a.account_type, a.path.as_str()));
+        shown.into_iter().map(|a| self.account(a)).collect()
+    }
+
+    pub fn account(&self, a: &journal::Account) -> ChartAccount {
+        ChartAccount {
+            path: a.path.clone(),
+            label: self.label(&a.path),
+            depth: a.path.matches(':').count(),
+            kind: AccountKind::try_from(a.account_type).ok(),
         }
     }
 

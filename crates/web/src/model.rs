@@ -358,6 +358,17 @@ pub struct AccountNode {
     pub children: Vec<AccountNode>,
 }
 
+/// An account as 記一筆's pickers list it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChartAccount {
+    pub path: String,
+    /// Standalone, so it reads without the tree around it.
+    pub label: String,
+    pub depth: usize,
+    /// None for equity, which holds the loader's system accounts.
+    pub kind: Option<AccountKind>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Leg {
     /// The posting's id: what an edit names it by.
@@ -408,6 +419,21 @@ pub struct Journal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Queue {
     pub journal: Journal,
+}
+
+/// 記一筆 as its form sends it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ManualInput {
+    pub date: String,
+    pub amount: String,
+    pub currency: String,
+    pub account: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub counter: String,
+    #[serde(default)]
+    pub note: String,
 }
 
 #[cfg(test)]
