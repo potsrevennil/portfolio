@@ -47,7 +47,7 @@ pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Re
     Ok(Queue { journal, choices })
 }
 
-/// Where a leg may post: accounts below a root.
+/// Where a leg may post: accounts below a root, open or already in use.
 fn postable(chart: &Chart, keep: &[&str]) -> Vec<ChartAccount> {
     chart.accounts_for(keep).into_iter().filter(|a| a.depth > 0).collect()
 }

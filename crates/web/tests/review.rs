@@ -20,6 +20,7 @@ use rust_decimal_macros::dec;
 use serde_json::Value;
 use sqlx::SqlitePool;
 use web::{
+    accounts::{close_account, load_accounts, reopen_account},
     journal::{load_journal, JournalList},
     manual::enter_manual,
     model::{Editing, JournalQuery, LegInput, Origin, Queue, Source as TxnSource},
@@ -540,6 +541,8 @@ async fn an_equity_leg_stays_editable() {
     let fee = id_of(&pool, FEE).await;
     let editing: Editing = call(&pool, || load_entry(fee)).await.unwrap();
     assert!(!editing.accounts.iter().any(|a| a.path.starts_with("Equity")));
+    let accounts = call(&pool, load_accounts).await.unwrap();
+    assert!(!format!("{accounts:?}").contains("Equity"), "{accounts:?}");
 }
 
 // --- Entering by hand
@@ -981,6 +984,76 @@ async fn a_mismatch_elsewhere_does_not_block_a_write() {
     assert!(reviewed(&pool, fee).await);
 }
 
+// --- Closing accounts -------------------------------------------------------
+
+#[tokio::test]
+async fn closing_an_account_marks_it_and_leaves_an_event() {
+    let (_dir, pool) = ledger().await;
+    call(&pool, || close_account("Assets:Old-Wallet".into(), Some("不用了".into()))).await.unwrap();
+    let (closed, event, note): (bool, String, Option<String>) = sqlx::query_as(
+        "SELECT a.closed != 0, e.event, e.note FROM accounts a JOIN account_events e ON \
+         e.account_id = a.id WHERE a.path = 'Assets:Old-Wallet' ORDER BY e.id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((closed, event.as_str(), note.as_deref()), (true, "closed", Some("不用了")));
+
+    // Gone from the pickers; still in the 帳戶 tree, marked closed.
+    let journal = call(&pool, || load_journal(JournalQuery::default())).await.unwrap();
+    assert!(!journal.accounts.iter().any(|a| a.path == "Assets:Old-Wallet"));
+    let tree = call(&pool, load_accounts).await.unwrap();
+    let assets = tree.0.iter().find(|n| n.account.path == "Assets").unwrap();
+    let wallet = assets.children.iter().find(|n| n.account.path == "Assets:Old-Wallet").unwrap();
+    assert!(wallet.account.closed);
+    // Its history still filters by it: the box names it, though the picker
+    // no longer offers it.
+    let filtered =
+        call(&pool, || load_journal(JournalQuery::account("Assets:Old-Wallet"))).await.unwrap();
+    assert_eq!(filtered.total, 2);
+    assert_eq!(filtered.query.account.as_deref(), Some("Assets:Old-Wallet"));
+    assert!(filtered.chosen.is_some());
+    assert!(!filtered.accounts.iter().any(|a| a.path == "Assets:Old-Wallet"));
+    // Nothing new posts to it.
+    let fee = id_of(&pool, FEE).await;
+    let rows = legs(&pool, fee).await;
+    let error = save(
+        &pool,
+        fee,
+        FEE,
+        vec![
+            leg(Some(rows[0].0), "Assets:Bank:Savings", "-500"),
+            leg(Some(rows[1].0), "Assets:Old-Wallet", "500"),
+        ],
+        false,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("帳戶已結清：Assets:Old-Wallet"), "{error}");
+
+    call(&pool, || reopen_account("Assets:Old-Wallet".into())).await.unwrap();
+    let events: Vec<String> = sqlx::query_scalar(
+        "SELECT e.event FROM account_events e JOIN accounts a ON a.id = e.account_id WHERE a.path \
+         = 'Assets:Old-Wallet' ORDER BY e.id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(events, ["created", "closed", "reopened"]);
+}
+
+#[tokio::test]
+async fn an_account_holding_money_is_not_closed() {
+    let (_dir, pool) = ledger().await;
+    let held = call(&pool, || close_account("Assets:Cash".into(), None)).await.unwrap_err();
+    assert!(held.to_string().contains("餘額不是 0，不能結清：880 TWD"), "{held}");
+    let parent = call(&pool, || close_account("Assets:Split".into(), None)).await.unwrap_err();
+    assert!(parent.to_string().contains("底下還有 2 個帳戶沒結清"), "{parent}");
+    let root = call(&pool, || close_account("Assets".into(), None)).await.unwrap_err();
+    assert!(root.to_string().contains("這個帳戶不能結清"), "{root}");
+}
+
 // --- Through the router ---------------------------------------------------
 
 #[tokio::test]
@@ -1022,4 +1095,14 @@ async fn the_review_pages_render() {
     );
     position(&visible(&entry), "支出 收入 轉帳");
     position(&visible(&entry), "付款帳戶");
+    let accounts = site.page("/accounts").await;
+    position(&visible(&accounts), "舊錢包 結清");
+    // Every account, as a tree: the roots open, the groups under them folded.
+    let assets = &accounts[position(&accounts, "資產")..];
+    assert_eq!(accounts.matches(r#"<details open class="group">"#).count(), 4, "{accounts}");
+    let folded = &assets[position(assets, r#"<details class="group">"#)..];
+    position(&visible(folded), "分帳");
+    position(&visible(&accounts), "全部展開");
+    // The button says what it does.
+    assert!(accounts.contains("不再使用這個帳戶"), "{accounts}");
 }
