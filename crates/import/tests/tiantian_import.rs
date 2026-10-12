@@ -336,6 +336,14 @@ async fn a_bank_record_relabels_the_line_already_imported() -> Result<()> {
         ("Assets:Cathay:Savings".to_string(), "-200".to_string()),
         ("Expenses:Food".to_string(), "200".to_string()),
     ]);
+    // The review queue says the category came from the matched record.
+    let origin: Option<String> = sqlx::query_scalar(
+        "SELECT p.origin FROM postings p JOIN accounts a ON a.id = p.account_id JOIN transactions \
+         t ON t.id = p.transaction_id WHERE t.date = '2026-01-20' AND a.path = 'Expenses:Food'",
+    )
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(origin.as_deref(), Some("tiantian"));
     assert_eq!(f.legs_on("2026-01-21").await?, [
         ("Assets:Cash:TWD".to_string(), "300".to_string()),
         ("Assets:Cathay:Savings".to_string(), "-300".to_string()),

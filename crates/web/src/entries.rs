@@ -197,6 +197,7 @@ impl Chart {
                 Review::Unreviewed => Some(false),
             },
             unverified: q.unverified,
+            source: None,
         })
     }
 
