@@ -36,7 +36,7 @@ fn source<'a>(c: &'a Coverage, account: &str) -> &'a SourceRow {
 async fn sources_are_listed_in_config_order_with_their_group() {
     let c = coverage().await;
     let labels: Vec<_> = c.sources.iter().map(|s| s.label.as_str()).collect();
-    assert_eq!(labels, ["銀行 活存", "銀行 外幣", "甲卡", "現金", "券商 甲券商"]);
+    assert_eq!(labels, ["銀行 活存", "銀行 外幣", "甲卡", "現金", "券商 甲券商", "預付"]);
 }
 
 #[tokio::test]
@@ -79,6 +79,16 @@ async fn an_account_is_checked_only_as_far_as_its_least_checked_currency() {
     assert_eq!(fx.behind_days, Some(70));
     assert_eq!(fx.status, Status::Checked);
     assert_eq!(fx.tail, None);
+}
+
+#[tokio::test]
+async fn one_counted_account_does_not_vouch_for_its_sibling() {
+    let c = coverage().await;
+    let prepaid = source(&c, "Assets:Prepaid");
+    assert_eq!(prepaid.checked, None);
+    assert_eq!(prepaid.per_commodity, ["禮券 TWD 從未", "月票 TWD 2024-02-01"]);
+    assert_eq!(prepaid.tail.as_ref().map(|t| t.count), Some(1));
+    assert_eq!(prepaid.status, Status::Overdue);
 }
 
 #[tokio::test]
@@ -196,7 +206,7 @@ async fn the_server_function_reads_the_configured_sources() {
     let l = ledger().await;
     let c = call(&l, load_coverage).await.unwrap();
     assert_eq!(c.today, chrono::Local::now().date_naive().to_string());
-    assert_eq!(c.sources.len(), 5);
+    assert_eq!(c.sources.len(), 6);
     // Long past every due day of the fixture, whatever today is.
     assert_eq!(source(&c, "Liabilities:Card").status, Status::Overdue);
     assert_eq!(source(&c, "Assets:Bank:Savings").status, Status::Unchecked);

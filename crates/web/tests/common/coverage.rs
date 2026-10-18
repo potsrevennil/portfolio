@@ -1,6 +1,6 @@
 //! The coverage page's synthetic ledger as it stands on [`TODAY`]: a bank
-//! account, a multi-currency account, a card, cash and a broker, each with
-//! its own cadence. All values are invented.
+//! account, a multi-currency account, a card, cash, a broker and two prepaid
+//! passes, each source with its own cadence. All values are invented.
 #![allow(dead_code)]
 
 use db::assertions::{AssertionSource, BalanceAssertion};
@@ -26,6 +26,9 @@ pub const MAPPING: &str = r#"
 "Assets:Broker"        = "券商"
 "Assets:Broker:Alpha"  = "甲券商"
 "Assets:Cash"          = "現金"
+"Assets:Prepaid"       = "預付"
+"Assets:Prepaid:Gift"  = "禮券"
+"Assets:Prepaid:Pass"  = "月票"
 "Assets:Split"         = "分帳"
 "Assets:Split:Alpha"   = "甲公司"
 "Liabilities"          = "負債"
@@ -56,6 +59,11 @@ every   = 30
 [[sources]]
 account = "Assets:Broker:Alpha"
 cadence = "quarterly"
+
+[[sources]]
+account = "Assets:Prepaid"
+cadence = "count"
+every   = 90
 "#;
 
 const MANIFEST: &[&str] = &[
@@ -83,6 +91,15 @@ const TXNS: &[(&str, bool, Legs)] = {
         ("2023-11-01", false, &[
             ("Assets:Broker:Alpha", "1000", TWD),
             ("Equity:Opening-Balances", "-1000", TWD),
+        ]),
+        // Two passes in one source: one counted, one never.
+        ("2023-11-01", false, &[
+            ("Assets:Prepaid:Pass", "500", TWD),
+            ("Equity:Opening-Balances", "-500", TWD),
+        ]),
+        ("2023-11-01", false, &[
+            ("Assets:Prepaid:Gift", "300", TWD),
+            ("Equity:Opening-Balances", "-300", TWD),
         ]),
         ("2023-12-01", false, &[
             ("Assets:Bank:FX", "100", USD),
@@ -164,6 +181,7 @@ fn assertions() -> Vec<BalanceAssertion> {
         (Statement, "Assets:Bank:FX", EUR, Some(("2024-01-01", "0")), "2024-01-15", "0"),
         (Statement, "Liabilities:Card", TWD, Some(("2023-11-26", "0")), "2023-12-25", "-300"),
         (Counted, "Assets:Cash", TWD, None, "2024-01-31", "1000"),
+        (Counted, "Assets:Prepaid:Pass", TWD, None, "2024-02-01", "500"),
         // That app's own sum, which vouches for nothing here.
         (Tiantian, "Assets:Cash", TWD, None, "2024-02-29", "900"),
     ];

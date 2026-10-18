@@ -50,9 +50,16 @@ impl Cadence {
                 Some(first - Days::new(1))
             }
             Cadence::OnDemand => None,
-            Cadence::Live => Some(today - Days::new(1)),
-            Cadence::Count { every } => Some(today - Days::new(every.into())),
+            Cadence::Live => today.checked_sub_days(Days::new(1)),
+            Cadence::Count { every } => today.checked_sub_days(Days::new(every.into())),
         }
+    }
+
+    /// The figures missing by `today` when the last one reached `checked`.
+    pub fn missed(self, checked: Option<NaiveDate>, today: NaiveDate) -> Option<Missed> {
+        self.due(today)
+            .filter(|due| checked.is_none_or(|c| c < *due))
+            .map(|due| Missed { since: checked.and_then(|c| self.due_after(c)), due })
     }
 
     /// The first day after `day` a figure falls due: where a source whose
@@ -72,10 +79,20 @@ impl Cadence {
             // The end of the quarter `day` is in, or of the next if it is that end.
             Cadence::Quarterly => Cadence::Quarterly.due(day + Days::new(1) + Months::new(3)),
             Cadence::OnDemand => None,
-            Cadence::Live => Some(day + Days::new(1)),
-            Cadence::Count { every } => Some(day + Days::new(every.into())),
+            Cadence::Live => day.checked_add_days(Days::new(1)),
+            Cadence::Count { every } => day.checked_add_days(Days::new(every.into())),
         }
     }
+}
+
+/// Figures a cadence asked for that have not arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Missed {
+    /// The first one missed after the last figure; `None` when there never
+    /// was one.
+    pub since: Option<NaiveDate>,
+    /// The newest one due.
+    pub due: NaiveDate,
 }
 
 /// As the coverage page names it.
@@ -106,7 +123,8 @@ pub enum Standing {
     Checked,
     /// Records after the last figure, which nothing has checked yet.
     Unchecked,
-    /// A figure is due, or none ever arrived, within the grace days.
+    /// A figure is due within the grace days, or none ever arrived and
+    /// nothing was recorded either.
     Due,
     /// A due figure is later than the grace days.
     Overdue,
@@ -124,11 +142,7 @@ impl Standing {
         tail: bool,
         today: NaiveDate,
     ) -> Self {
-        let due = cadence.due(today).filter(|due| checked.is_none_or(|c| c < *due));
-        let missed_since = match checked {
-            Some(c) => due.and_then(|_| cadence.due_after(c)),
-            None => due,
-        };
+        let missed_since = cadence.missed(checked, today).map(|m| m.since.unwrap_or(m.due));
         let late = |since: NaiveDate| (today - since).num_days() > i64::from(grace);
         match (missed_since, checked, tail) {
             // Records with no figure at all: late whenever one is due.
@@ -293,6 +307,21 @@ mod tests {
             Some(date("2026-10-01"))
         );
         assert_eq!(Cadence::OnDemand.due_after(date("2026-09-01")), None);
+    }
+
+    #[test]
+    fn what_was_missed() {
+        let card = Cadence::Monthly { day: 25 };
+        let today = date("2026-10-18");
+        assert_eq!(card.missed(Some(date("2026-09-25")), today), None);
+        assert_eq!(
+            card.missed(Some(date("2026-07-25")), today),
+            Some(Missed { since: Some(date("2026-08-25")), due: date("2026-09-25") })
+        );
+        assert_eq!(card.missed(None, today), Some(Missed { since: None, due: date("2026-09-25") }));
+        assert_eq!(Cadence::OnDemand.missed(None, today), None);
+        // A count interval past the calendar is never due rather than a panic.
+        assert_eq!(Cadence::Count { every: u32::MAX }.due(today), None);
     }
 
     #[test]

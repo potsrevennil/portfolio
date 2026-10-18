@@ -76,6 +76,8 @@ pub async fn figures(conn: &mut SqliteConnection) -> Result<Vec<Figure>> {
 pub struct Record {
     /// The transaction's id, or the broker record's.
     pub id: i64,
+    /// The account it posts to, in the source's subtree.
+    pub account: String,
     pub date: NaiveDate,
     pub commodity: String,
     /// Tagged [`UNVERIFIED_TAG`]: waiting for a statement to show it.
@@ -85,6 +87,7 @@ pub struct Record {
 #[derive(sqlx::FromRow)]
 struct RecordRow {
     id: i64,
+    account: String,
     date: String,
     commodity: String,
     unverified: bool,
@@ -96,6 +99,7 @@ impl TryFrom<RecordRow> for Record {
     fn try_from(r: RecordRow) -> Result<Self> {
         Ok(Record {
             id: r.id,
+            account: r.account,
             date: r.date.parse().with_context(|| format!("record date {:?}", r.date))?,
             commodity: r.commodity,
             unverified: r.unverified,
@@ -106,16 +110,17 @@ impl TryFrom<RecordRow> for Record {
 /// `a.path` is `?1` or under it.
 const IN_SUBTREE: &str = "(a.path = ?1 OR substr(a.path, 1, length(?1) + 1) = ?1 || ':')";
 
-/// The transactions posting to `root` or under it, one row per currency.
+/// The transactions posting to `root` or under it, one row per account and
+/// currency.
 pub async fn ledger_records(conn: &mut SqliteConnection, root: &str) -> Result<Vec<Record>> {
     let rows: Vec<RecordRow> = sqlx::query_as(&format!(
-        "SELECT t.id, t.date, p.currency AS commodity,
+        "SELECT t.id, a.path AS account, t.date, p.currency AS commodity,
                 max(instr(',' || coalesce(p.tags, '') || ',', ',' || ?2 || ',') > 0) AS unverified
          FROM postings p
          JOIN accounts a ON a.id = p.account_id
          JOIN transactions t ON t.id = p.transaction_id
          WHERE {IN_SUBTREE} AND t.deleted_at IS NULL
-         GROUP BY t.id, p.currency
+         GROUP BY t.id, a.path, p.currency
          ORDER BY t.date, t.id"
     ))
     .bind(root)
@@ -130,11 +135,12 @@ pub async fn ledger_records(conn: &mut SqliteConnection, root: &str) -> Result<V
 /// row for the cash, and one for the security where it moves shares.
 pub async fn broker_records(conn: &mut SqliteConnection, root: &str) -> Result<Vec<Record>> {
     let rows: Vec<RecordRow> = sqlx::query_as(&format!(
-        "SELECT r.id AS id, r.settle_date AS date, r.currency AS commodity, 0 AS unverified
+        "SELECT r.id AS id, a.path AS account, r.settle_date AS date, r.currency AS commodity,
+                0 AS unverified
          FROM broker_record r JOIN accounts a ON a.id = r.account_id
          WHERE {IN_SUBTREE}
          UNION ALL
-         SELECT r.id, r.settle_date, r.symbol, 0
+         SELECT r.id, a.path, r.settle_date, r.symbol, 0
          FROM broker_record r JOIN accounts a ON a.id = r.account_id
          WHERE {IN_SUBTREE} AND r.symbol IS NOT NULL AND CAST(r.quantity AS REAL) <> 0
          ORDER BY date, id"

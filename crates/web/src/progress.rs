@@ -49,13 +49,17 @@ pub async fn load(pool: &SqlitePool, config: &Config, today: NaiveDate) -> Resul
         // A broker's own records are its sub-ledger; the postings on its
         // account are only the money sent in.
         let held_by_broker = !broker.is_empty() || figures.iter().any(|f| f.kind != "balance");
-        let records = match held_by_broker {
-            true => broker,
-            false => coverage::ledger_records(&mut conn, &source.account).await?,
+        let held = Held {
+            records: match held_by_broker {
+                true => broker,
+                false => coverage::ledger_records(&mut conn, &source.account).await?,
+            },
+            journal: !held_by_broker,
+            files: source.raw.as_deref().map(|r| manifest.under(r)).unwrap_or_default(),
+            figures,
         };
-        let files = source.raw.as_deref().map(|r| manifest.under(r)).unwrap_or_default();
         let label = source.label.clone().unwrap_or_else(|| label(&labels, &source.account));
-        sources.push(row(source, label, &figures, &records, !held_by_broker, &files, today));
+        sources.push(row(source, label, &labels, &held, today));
     }
 
     let roots: Vec<&str> = config.sources.0.iter().map(|s| s.account.as_str()).collect();
@@ -93,7 +97,7 @@ fn label(labels: &BTreeMap<&str, &str>, path: &str) -> String {
         .join(" ")
 }
 
-/// How far figures vouch for one commodity of a source.
+/// How far figures vouch for one account and commodity of a source.
 struct Vouched {
     /// The newest day a figure vouches for; `None` if none ever did.
     through: Option<NaiveDate>,
@@ -102,45 +106,72 @@ struct Vouched {
     settled: bool,
 }
 
+/// What a source holds: the figures vouching for it and its own records.
+struct Held<'a> {
+    figures: Vec<&'a Figure>,
+    records: Vec<Record>,
+    /// The records are postings, which the journal lists.
+    journal: bool,
+    files: Vec<&'a RawFile>,
+}
+
 fn row(
     source: &Source,
     label: String,
-    figures: &[&Figure],
-    records: &[Record],
-    ledger: bool,
-    files: &[&RawFile],
+    labels: &BTreeMap<&str, &str>,
+    held: &Held<'_>,
     today: NaiveDate,
 ) -> SourceRow {
-    let mut commodities: BTreeMap<&str, Vouched> = BTreeMap::new();
-    for f in figures {
-        let v =
-            commodities.entry(&f.commodity).or_insert(Vouched { through: None, settled: false });
-        if v.through.is_none_or(|t| f.as_of >= t) {
-            *v = Vouched { through: Some(f.as_of), settled: f.figure.is_zero() };
-        }
-    }
-    for r in records {
-        let v =
-            commodities.entry(&r.commodity).or_insert(Vouched { through: None, settled: false });
-        if v.through.is_none_or(|t| r.date > t) {
-            v.settled = false;
-        }
-    }
-    let open: Vec<(&str, Option<NaiveDate>)> =
-        commodities.iter().filter(|(_, v)| !v.settled).map(|(c, v)| (*c, v.through)).collect();
+    let Held { figures, records, journal, files } = held;
+    // Per account and commodity: a figure covers its account's subtree, and
+    // a count of one wallet says nothing of the wallet beside it.
+    let mut keys: BTreeSet<(&str, &str)> =
+        records.iter().map(|r| (r.account.as_str(), r.commodity.as_str())).collect();
+    keys.extend(figures.iter().map(|f| (f.account.as_str(), f.commodity.as_str())));
+    let vouched: BTreeMap<(&str, &str), Vouched> = keys
+        .into_iter()
+        .map(|(account, commodity)| {
+            let newest = figures
+                .iter()
+                .filter(|f| f.commodity == commodity && in_subtree(account, &f.account))
+                .max_by_key(|f| f.as_of);
+            let through = newest.map(|f| f.as_of);
+            let moved = records.iter().any(|r| {
+                r.commodity == commodity
+                    && in_subtree(&r.account, account)
+                    && through.is_none_or(|t| r.date > t)
+            });
+            let settled = newest.is_some_and(|f| f.figure.is_zero()) && !moved;
+            ((account, commodity), Vouched { through, settled })
+        })
+        .collect();
+    let open: Vec<(String, Option<NaiveDate>)> = vouched
+        .iter()
+        .filter(|(_, v)| !v.settled)
+        .map(|((account, commodity), v)| {
+            let name = match *account == source.account {
+                true => commodity.to_string(),
+                false => {
+                    let leaf = account.rsplit(':').next().unwrap_or(account);
+                    format!("{} {commodity}", labels.get(account).unwrap_or(&leaf))
+                }
+            };
+            (name, v.through)
+        })
+        .collect();
     // The source is checked only as far as its least recently checked
     // commodity: a 外幣 account vouched in USD says nothing about its JPY.
     let checked = match open.is_empty() {
-        true => commodities.values().filter_map(|v| v.through).max(),
+        true => vouched.values().filter_map(|v| v.through).max(),
         false => open.iter().map(|(_, t)| *t).min().flatten(),
     };
     let distinct: BTreeSet<Option<NaiveDate>> = open.iter().map(|(_, t)| *t).collect();
     let per_commodity = match distinct.len() > 1 {
         true => open
             .iter()
-            .map(|(c, t)| match t {
-                Some(t) => format!("{c} {t}"),
-                None => format!("{c} 從未"),
+            .map(|(name, t)| match t {
+                Some(t) => format!("{name} {t}"),
+                None => format!("{name} 從未"),
             })
             .collect(),
         false => Vec::new(),
@@ -149,11 +180,12 @@ fn row(
     let tail_records: Vec<&Record> = records
         .iter()
         .filter(|r| {
-            let through = commodities.get(r.commodity.as_str()).and_then(|v| v.through);
+            let through =
+                vouched.get(&(r.account.as_str(), r.commodity.as_str())).and_then(|v| v.through);
             r.unverified || through.is_none_or(|t| r.date > t)
         })
         .collect();
-    let tail = tail(&tail_records, ledger.then_some(source.account.as_str()));
+    let tail = tail(&tail_records, journal.then_some(source.account.as_str()));
 
     let standing = Standing::of(source.cadence, source.grace, checked, tail.is_some(), today);
     let counted = matches!(source.cadence, Cadence::Count { .. });
@@ -164,10 +196,10 @@ fn row(
         Standing::Due => Status::ToDownload,
         Standing::Overdue => Status::Overdue,
     };
-    let due = source.cadence.due(today).filter(|d| checked.is_none_or(|c| c < *d));
+    let missed = source.cadence.missed(checked, today);
     let missing = matches!(standing, Standing::Due | Standing::Overdue).then(|| Missing {
-        from: checked.and_then(|c| source.cadence.due_after(c)).map(|d| d.to_string()),
-        through: due.map(|d| d.to_string()),
+        from: missed.and_then(|m| m.since).map(|d| d.to_string()),
+        through: missed.map(|m| m.due.to_string()),
         count: counted,
         url: source.url.clone(),
     });
@@ -184,7 +216,8 @@ fn row(
         tail,
         gaps: gaps(figures),
         missing,
-        files: files.last().map(|latest| Files {
+        // The newest download where the manifest dates them, else the last name.
+        files: files.iter().max_by_key(|f| (f.downloaded, &f.raw_path)).map(|latest| Files {
             count: files.len(),
             latest: latest.raw_path.clone(),
             downloaded: files.iter().filter_map(|f| f.downloaded).max().map(|d| d.to_string()),
