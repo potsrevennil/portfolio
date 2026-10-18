@@ -1,12 +1,10 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use db::quotes::StockPriceStore;
 use prices::{PriceService, PriceStore, StockPrice};
 
-#[path = "common/mod.rs"]
-mod common;
-use common::create_temp_db;
+#[path = "common/market.rs"]
+mod market;
 
 fn day(y: i32, m: u32, d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, d).unwrap() }
 
@@ -16,8 +14,8 @@ fn day(y: i32, m: u32, d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, d).u
 #[tokio::test]
 #[ignore = "fetches from Yahoo Finance"]
 async fn get_prices_fetches_the_missing_tail() -> anyhow::Result<()> {
-    let (pool, _db_file) = create_temp_db().await?;
-    let price_store = StockPriceStore::new(pool.clone());
+    let (market, _dir) = market::temp().await;
+    let price_store = market.prices();
     let price_service = PriceService::new(price_store.clone());
 
     let mut cached = HashMap::new();
@@ -43,8 +41,8 @@ async fn get_prices_fetches_the_missing_tail() -> anyhow::Result<()> {
 /// only for the symbols that were marked.
 #[tokio::test]
 async fn fetched_through_round_trips() -> anyhow::Result<()> {
-    let (pool, _db_file) = create_temp_db().await?;
-    let store = StockPriceStore::new(pool);
+    let (market, _dir) = market::temp().await;
+    let store = market.prices();
 
     assert!(store.get_fetched_through(&["AAPL"]).await?.is_empty());
 

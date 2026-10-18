@@ -1,17 +1,15 @@
 use std::collections::HashMap;
 
 use chrono::NaiveDate;
-use db::quotes::StockPriceStore;
 use prices::{PriceStore, StockPrice};
 
-#[path = "common/mod.rs"]
-mod common;
-use common::create_temp_db;
+#[path = "common/market.rs"]
+mod market;
 
 #[tokio::test]
 async fn test_save_and_get_stock_prices() -> anyhow::Result<()> {
-    let (pool, _db_file) = create_temp_db().await?;
-    let price_store = StockPriceStore::new(pool.clone());
+    let (market, _dir) = market::temp().await;
+    let price_store = market.prices();
 
     // 1. Save initial data
     let mut prices_map1 = HashMap::new();

@@ -102,6 +102,7 @@ fn fixture() -> (TempDir, freeze::FreezeArgs, load::Args) {
     let load = load::Args {
         journal: root.join("journal.csv"),
         database_url: format!("sqlite:{}", root.join("ledger-app.db").display()),
+        market_url: format!("sqlite:{}", root.join("market.db").display()),
         mapping: root.join("mapping.toml"),
     };
     (dir, freeze, load)
@@ -389,6 +390,7 @@ expense = "Expenses:Uncategorized"
     let load_args = load::Args {
         journal: root.join("journal.csv"),
         database_url: format!("sqlite:{}", root.join("ledger-app.db").display()),
+        market_url: format!("sqlite:{}", root.join("market.db").display()),
         mapping: root.join("mapping.toml"),
     };
 
@@ -512,6 +514,7 @@ async fn load_journal(postings: Vec<journal::Posting>) -> anyhow::Result<(TempDi
     let args = load::Args {
         journal: dir.path().join("journal.csv"),
         database_url: format!("sqlite:{}", dir.path().join("ledger-app.db").display()),
+        market_url: format!("sqlite:{}", dir.path().join("market.db").display()),
         mapping,
     };
     let assertions = self_assertions(&postings);

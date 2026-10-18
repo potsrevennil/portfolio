@@ -74,6 +74,7 @@ jobs:
           filters: |
             migrations:
               - crates/db/migrations/**
+              - crates/db/market-migrations/**
               - scripts/check-migrations
       # Round-trips the sqlx migrations (apply, seed, revert, re-apply) so a down
       # migration with the wrong drop order fails here, not in a real rollback.
@@ -113,7 +114,7 @@ jobs:
         with:
           cache-on-failure: true
           cache-all-crates: true
-      # No SQLX_OFFLINE: crates/db/build.rs creates sqlite.db (gitignored, so absent
+      # No SQLX_OFFLINE: crates/db/build.rs creates sqlx-check.db (gitignored, so absent
       # in a fresh checkout) and runs the migrations against it before the crates
       # compile, which gives the sqlx::query! macros a live schema to check
       # against. That is strictly more checking than offline mode reading
