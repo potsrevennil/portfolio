@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::page::{position, visible, Site};
+use common::page::{call, position, visible, Site};
 use db::{
     assertions::{AssertionSource, BalanceAssertion},
     load,
@@ -12,10 +12,9 @@ use db::{
 use ledger::{
     journal::{self, Journal, Posting, UNVERIFIED_TAG},
     model::Source,
-    valuation::AtCost,
 };
 use ledger_types::currency::Currency;
-use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use leptos::prelude::*;
 use leptos_router::params::ParamsMap;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
@@ -26,7 +25,6 @@ use web::{
         offered_for, AccountChoice, AccountNode, Journal as Page, JournalQuery, Review,
         Source as TxnSource,
     },
-    server,
 };
 
 const MAPPING: &str = r#"
@@ -205,14 +203,8 @@ async fn ledger() -> (TempDir, SqlitePool) {
     (dir, pool)
 }
 
-/// Calls the server function as the server would, with the pool in context.
 async fn load(pool: &SqlitePool, query: JournalQuery) -> Result<Page, ServerFnError> {
-    let owner = Owner::new();
-    let call = owner.with(|| {
-        provide_context(pool.clone());
-        ScopedFuture::new(load_journal(query))
-    });
-    call.await
+    call(pool, || load_journal(query)).await
 }
 
 async fn journal_page(pool: &SqlitePool, query: JournalQuery) -> Page {
@@ -275,14 +267,7 @@ fn narrations(journal: &Page) -> Vec<String> {
     journal.entries.iter().map(|e| e.narration.clone().unwrap_or_default()).collect()
 }
 
-async fn site() -> Site {
-    Site::new(|| async {
-        let (dir, pool) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default(), Default::default()), dir)
-    })
-    .await
-}
+async fn site() -> Site { Site::serving(ledger).await }
 
 // --- Layer 1: the rendered list --------------------------------------------
 

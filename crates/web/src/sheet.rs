@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use chrono::NaiveDate;
 use db::{
+    chart::{root_label, tree_label},
     query::{self, AccountBalance, AccountType, LedgerData},
     SqlitePool,
 };
@@ -54,12 +55,7 @@ pub fn build(
     at_cost: &AtCost,
     rate: impl Fn(Currency) -> Option<Decimal>,
 ) -> BalanceSheet {
-    let label = |path: &str| -> String {
-        labels
-            .get(path)
-            .map(|l| l.to_string())
-            .unwrap_or_else(|| path.rsplit(':').next().unwrap_or(path).to_string())
-    };
+    let label = |path: &str| tree_label(labels, path);
     let foreign =
         |sums: &BTreeMap<Currency, Decimal>| sums.iter().any(|(c, v)| *c != base && !v.is_zero());
     let convert = |sums: &BTreeMap<Currency, Decimal>| -> Converted {
@@ -132,10 +128,9 @@ pub fn build(
             for (c, v) in &tree.sums {
                 *net.entry(*c).or_default() += v;
             }
-            let own = label(root);
             Section {
                 path: root.to_string(),
-                label: if own == *root { fallback.to_string() } else { own },
+                label: root_label(labels, root, fallback),
                 total: convert(&tree.sums),
                 nodes: nodes(tree.children, &label, &convert, &foreign, base),
             }

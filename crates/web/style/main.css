@@ -10,6 +10,12 @@
   --negative: #b3261e;
   --pending: #9a6700;
   --pending-bg: #fdf6e3;
+  /* Chart series, in this order: checked for colour-blind separation as a
+     set, light and dark each against its own background. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --axis: #c3c2b7;
   color-scheme: light dark;
 }
 
@@ -24,6 +30,10 @@
     --negative: #f2877f;
     --pending: #e3b341;
     --pending-bg: #2a2416;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --axis: #44443f;
   }
 }
 
@@ -47,7 +57,8 @@ header.top {
 
 header.top nav {
   display: flex;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
   max-width: 76rem;
   margin: 0 auto;
   padding: 0.6rem 1rem;
@@ -56,6 +67,7 @@ header.top nav {
 header.top a {
   color: var(--muted);
   text-decoration: none;
+  white-space: nowrap;
 }
 
 header.top a[aria-current] {
@@ -303,7 +315,8 @@ details.group > summary.row.section {
   padding: 0 1rem;
 }
 
-.journal .filter {
+.journal .filter,
+.charts .filter {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 1rem;
@@ -312,7 +325,8 @@ details.group > summary.row.section {
   border-bottom: 1px solid var(--line);
 }
 
-.journal .filter label {
+.journal .filter label,
+.charts .filter label {
   display: flex;
   gap: 0.4rem;
   align-items: center;
@@ -325,13 +339,17 @@ details.group > summary.row.section {
 
 .journal .filter select,
 .journal .filter input,
-.journal .filter button {
+.journal .filter button,
+.charts .filter select,
+.charts .filter input,
+.charts .filter button {
   font: inherit;
   max-width: 100%;
 }
 
 .journal .filter a,
-.journal .pager a {
+.journal .pager a,
+.charts .filter a {
   color: var(--accent);
 }
 
@@ -820,4 +838,338 @@ input.currency {
 .journal .among a.pick:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* 圖表 */
+
+.charts {
+  padding: 0 1rem;
+}
+
+.charts .split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr));
+  gap: 0 2.5rem;
+  align-items: start;
+}
+
+.charts h2 {
+  font-size: 1.1rem;
+  margin: 1.2rem 0 0.4rem;
+}
+
+.chart .readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1.2rem;
+  align-items: baseline;
+  min-height: 1.6rem;
+  margin-bottom: 0.4rem;
+}
+
+.chart .readout .period {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart .readout .key {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: baseline;
+}
+
+.chart .readout .name {
+  color: var(--muted);
+}
+
+.chart .readout .value {
+  font-weight: 600;
+}
+
+/* A short stroke for a line, a block for a column: the key mirrors the mark. */
+.swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 2px;
+  align-self: center;
+  background: currentColor;
+}
+
+.chart.column .swatch {
+  height: 0.6rem;
+  width: 0.6rem;
+  border-radius: 2px;
+}
+
+.s1 {
+  color: var(--series-1);
+}
+
+.s2 {
+  color: var(--series-2);
+}
+
+.s3 {
+  color: var(--series-3);
+}
+
+.chart .plot {
+  display: grid;
+  /* The right gutter holds half the newest period's label. */
+  grid-template-columns: 3.4rem minmax(0, 1fr) 1.8rem;
+  grid-template-rows: 12rem auto;
+}
+
+.chart .y-axis {
+  position: relative;
+}
+
+.chart .y-axis span,
+.chart .x-axis span {
+  position: absolute;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chart .y-axis span {
+  right: 0.4rem;
+  transform: translateY(-50%);
+}
+
+.chart .x-axis {
+  grid-column: 2;
+  position: relative;
+  height: 1.5rem;
+}
+
+.chart .x-axis span {
+  top: 0.25rem;
+  transform: translateX(-50%);
+}
+
+@media (max-width: 40rem) {
+  .chart .x-axis span.alternate {
+    display: none;
+  }
+}
+
+.chart .area {
+  position: relative;
+  /* A finger drags across the periods; scrolling the page still works. */
+  touch-action: pan-y;
+  outline-offset: 2px;
+}
+
+.chart .area svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.chart svg line.grid {
+  stroke: var(--line);
+  stroke-width: 1px;
+}
+
+.chart svg line.zero {
+  stroke: var(--axis);
+  stroke-width: 1px;
+}
+
+.chart path.line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart .band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+/* A period with an amount left unconverted draws no figure; the hatching
+   says why there is a gap. */
+.chart .band.incomplete {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent 0 5px,
+    color-mix(in srgb, var(--muted) 18%, transparent) 5px 6px
+  );
+}
+
+.chart .crosshair {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--axis);
+  pointer-events: none;
+}
+
+.chart .dot {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px var(--bg);
+  pointer-events: none;
+}
+
+.chart .cols {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 1px;
+  pointer-events: none;
+}
+
+.chart .col {
+  position: relative;
+  flex: 0 1 24px;
+  min-width: 1px;
+}
+
+.chart .fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: currentColor;
+}
+
+.chart .fill.up {
+  border-radius: 4px 4px 0 0;
+}
+
+.chart .fill.down {
+  border-radius: 0 0 4px 4px;
+}
+
+.chart .band.hovered {
+  background-color: var(--hover);
+}
+
+.incomplete {
+  color: var(--pending);
+  font-weight: 600;
+}
+
+.table-view summary {
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.9rem;
+  margin-top: 0.3rem;
+}
+
+.table-view .scroll {
+  overflow-x: auto;
+}
+
+.table-view table {
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin: 0.4rem 0;
+}
+
+.table-view th,
+.table-view td {
+  padding: 0.25rem 0.8rem 0.25rem 0;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.table-view th[scope="row"],
+.table-view thead th:first-child {
+  text-align: left;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.shares .share {
+  display: grid;
+  /* Fixed name and figure columns, so every bar starts and can end at the
+     same place: lengths compare only on one track. */
+  grid-template-columns: 1rem 6.5rem minmax(2rem, 1fr) 10rem;
+  grid-template-areas: "marker name track value";
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.shares .share.whole {
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "name value";
+  font-weight: 700;
+  border-bottom-width: 2px;
+}
+
+.shares summary.share {
+  cursor: pointer;
+  list-style: none;
+}
+
+.shares summary.share::-webkit-details-marker {
+  display: none;
+}
+
+.shares summary.share:hover {
+  background: var(--hover);
+}
+
+.shares .marker {
+  grid-area: marker;
+}
+
+.shares .name {
+  grid-area: name;
+  overflow-wrap: anywhere;
+}
+
+.shares .track {
+  grid-area: track;
+  height: 0.7rem;
+}
+
+/* Too narrow for a track beside the name and figure: it goes beneath them. */
+@media (max-width: 40rem) {
+  .shares .share {
+    grid-template-columns: 1rem minmax(0, 1fr) auto;
+    grid-template-areas:
+      "marker name value"
+      ". track track";
+    row-gap: 0.25rem;
+  }
+}
+
+.shares .track .fill {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: currentColor;
+  border-radius: 0 4px 4px 0;
+}
+
+.shares .value {
+  grid-area: value;
+  text-align: right;
+}
+
+.shares .part {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-left: 0.4rem;
+  font-variant-numeric: tabular-nums;
 }

@@ -25,7 +25,7 @@ use std::{
 };
 
 use db::pairing::{self, Ambiguity};
-use fantoccini::{elements::Element, Client, ClientBuilder, Locator};
+use fantoccini::{elements::Element, key::Key, Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
@@ -249,6 +249,7 @@ async fn journeys() {
     split_in_the_editor().await;
     pick_a_pairing().await;
     enter_cash_by_hand().await;
+    explore_the_charts().await;
 }
 
 async fn confirm_from_the_queue() {
@@ -391,5 +392,32 @@ async fn enter_cash_by_hand() {
             .await
             .unwrap();
     assert!(deleted.is_some());
+    j.close().await;
+}
+
+async fn explore_the_charts() {
+    let j = Journey::start().await;
+    j.open("/charts?from=2024-01-01&to=2024-03-31&step=month").await;
+    let period = || async { j.find(".chart.line .readout .period").await.text().await.unwrap() };
+    // Until the pointer comes, the readout gives the newest period.
+    assert_eq!(period().await, "2024-03");
+    // Pressing the middle of three periods reads the middle one.
+    j.find(".chart.line .area").await.click().await.unwrap();
+    assert_eq!(period().await, "2024-02");
+    j.find(".chart.line .crosshair").await;
+    j.find(".chart.line .area").await.send_keys(&char::from(Key::Left).to_string()).await.unwrap();
+    assert_eq!(period().await, "2024-01");
+
+    // A phone's width scrolls the page down, never sideways.
+    j.browser.set_window_size(375, 812).await.unwrap();
+    let wide = j
+        .browser
+        .execute(
+            "return document.documentElement.scrollWidth > document.documentElement.clientWidth",
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert_eq!(wide, json!(false));
     j.close().await;
 }

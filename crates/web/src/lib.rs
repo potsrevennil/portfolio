@@ -4,12 +4,14 @@
 
 pub mod app;
 pub mod balance_sheet;
+pub mod charts;
 #[cfg(feature = "ssr")]
 pub mod entries;
 pub mod error;
 pub mod journal;
 pub mod manual;
 pub mod model;
+pub mod plot;
 #[cfg(feature = "ssr")]
 pub mod queue;
 pub mod review;
@@ -18,3 +20,5 @@ pub mod server;
 #[cfg(feature = "ssr")]
 pub mod sheet;
 pub mod summary;
+#[cfg(feature = "ssr")]
+pub mod trends;
