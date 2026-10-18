@@ -103,12 +103,8 @@ type Line<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
 
 const THROUGH_JANUARY_10: &[Line] =
     &[("2026/01/02", "存入", "", "1000", "1000", ""), ("2026/01/05", "消費", "100", "", "900", "")];
-/// Past the frozen records' last day, with a line no record explains.
-const PAST_THE_RECORDS: &[Line] = &[
-    ("2026/01/02", "存入", "", "1000", "1000", ""),
-    ("2026/01/05", "消費", "100", "", "900", ""),
-    ("2026/01/09", "消費", "40", "", "860", ""),
-];
+/// A line past the frozen records' last day that no record explains.
+const AFTER_THE_RECORDS: Line = ("2026/01/09", "消費", "40", "", "860", "");
 const THROUGH_JANUARY: &[Line] = &[
     ("2026/01/02", "存入", "", "1000", "1000", ""),
     ("2026/01/05", "消費", "100", "", "900", ""),
@@ -295,7 +291,7 @@ async fn an_overlapping_export_inserts_only_the_new_records_once() -> Result<()>
 /// imported into that gap passes the gate.
 #[tokio::test]
 async fn a_record_after_the_records_but_inside_the_statement_passes_the_gate() -> Result<()> {
-    let f = Fixture::frozen_with(PAST_THE_RECORDS).await?;
+    let f = Fixture::frozen_with(&[THROUGH_JANUARY_10, &[AFTER_THE_RECORDS]].concat()).await?;
     // U5 is cash on 2026-01-08, after the records and before the statement's
     // last line.
     let report = f.import_tiantian().await?;

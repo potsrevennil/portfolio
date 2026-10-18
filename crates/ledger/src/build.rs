@@ -867,13 +867,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
     // into that gap would land before the assertion.
     let last_record = entries.iter().map(daily::Entry::date).max().unwrap_or(anchor);
     let mut last_posted: BTreeMap<(&str, Currency), NaiveDate> = BTreeMap::new();
-    let posted = cathay
-        .iter()
-        .chain(&daily)
-        .filter_map(|d| match d {
-            Directive::Transaction(t) => Some(t),
-            _ => None,
-        })
+    let posted = model::transactions(cathay.iter().chain(&daily))
         .flat_map(|t| t.postings.iter().map(|p| (p.account.as_str(), p.currency, t.date)))
         .chain(declared.iter().map(|(a, currency, _, date)| (a.as_str(), *currency, *date)));
     for (account, currency, date) in posted {
@@ -901,14 +895,15 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         // A Beancount balance assertion covers the account's whole subtree, so
         // the asserted figure must sum the account with its descendants.
         let prefix = format!("{account}:");
+        let in_subtree = |a: &str| a == account || a.starts_with(&prefix);
         let mut by_currency: BTreeMap<Currency, Decimal> = BTreeMap::new();
         for ((a, currency), amount) in &leaf_bal {
-            if a == account || a.starts_with(&prefix) {
+            if in_subtree(a) {
                 *by_currency.entry(*currency).or_default() += *amount;
             }
         }
         for (a, currency, amount, _) in &declared {
-            if a == account || a.starts_with(&prefix) {
+            if in_subtree(a) {
                 *by_currency.entry(*currency).or_default() += *amount;
             }
         }
@@ -919,7 +914,7 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         for (currency, amount) in per_currency {
             let last = last_posted
                 .iter()
-                .filter(|((a, c), _)| *c == currency && (*a == account || a.starts_with(&prefix)))
+                .filter(|((a, c), _)| *c == currency && in_subtree(a))
                 .map(|(_, date)| *date)
                 .max();
             let day = match last {
