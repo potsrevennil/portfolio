@@ -229,19 +229,19 @@ async fn every_row_is_one_figure_in_twd() {
     // Net worth heads the page, above the sections it sums; the tree follows.
     let net = position(&page, "淨資產");
     let tree = net + "淨資產".len() + position(&page[net + "淨資產".len()..], "資產");
-    assert_eq!(page[net..tree].trim(), "淨資產 8,512 TWD （未換算：5,000.00 JPY）");
+    assert_eq!(page[net..tree].trim(), "淨資產 未完整 （未換算：5,000.00 JPY）");
     let text = &page[tree..];
     // 資產: 912.34 cash + 7,000 savings + 3,000 (100 USD) + 100 splits; JPY has
     // no rate, so it is named rather than taken at 1:1, and the at-cost holding
     // and the 2025 deposit are left out.
     let assets = &text[position(text, "資產")..position(text, "銀行")];
-    assert_eq!(assets.trim(), "資產 11,012 TWD （未換算：5,000.00 JPY）");
+    assert_eq!(assets.trim(), "資產 未完整 （未換算：5,000.00 JPY）");
     // A leaf holding foreign money keeps its own balance, the statement's figure.
     let fx = &text[position(text, "外幣")..position(text, "活存")];
-    assert_eq!(fx.trim(), "外幣 2,700 TWD （未換算：5,000.00 JPY） 5,000.00 JPY · 90.00 USD");
+    assert_eq!(fx.trim(), "外幣 未完整 （未換算：5,000.00 JPY） 5,000.00 JPY · 90.00 USD");
     // A group's own foreign money shows too, apart from its sub-accounts'.
     let bank = &text[position(text, "銀行")..position(text, "外幣")];
-    assert_eq!(bank.trim(), "銀行 10,000 TWD （未換算：5,000.00 JPY） 10.00 USD");
+    assert_eq!(bank.trim(), "銀行 未完整 （未換算：5,000.00 JPY） 10.00 USD");
     let savings = &text[position(text, "活存")..position(text, "現金")];
     assert_eq!(savings.trim(), "活存 7,000 TWD");
     // TWD is quoted whole, as Fava prints it; the cents are still in the ledger.
@@ -380,8 +380,15 @@ async fn the_summary_shows_holdings_at_cost_apart_from_net_worth() {
     let sheet = web::sheet::load(&pool, as_of, Currency::TWD, &at_cost).await.unwrap();
     let html = Owner::new().with(|| view! { <web::summary::SummaryView sheet /> }.to_html());
     let text = visible(&html);
-    // Net worth carries no note, and the 資產 tile follows it directly.
-    assert!(text.contains("淨資產 8,512 TWD （未換算：5,000.00 JPY） 資產 11,012 TWD"), "{text}");
+    // JPY has no rate, so no total that holds it shows a figure; the 資產
+    // tile follows net worth directly.
+    assert!(
+        text.contains(
+            "淨資產 未完整 （未換算：5,000.00 JPY） 資產 未完整 （未換算：5,000.00 JPY） 負債 \
+             -2,500 TWD"
+        ),
+        "{text}"
+    );
     // After the tiles net worth sums, in a row of its own.
     assert!(position(&text, "負債") < position(&text, "以成本衡量之投資"), "{text}");
     assert!(text.trim_end().ends_with("以成本衡量之投資 40,000 TWD"), "{text}");

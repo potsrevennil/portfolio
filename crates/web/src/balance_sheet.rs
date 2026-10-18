@@ -84,8 +84,7 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
             <div class="row net">
                 <span class="name">"淨資產"</span>
                 <span class="figures">
-                    <MoneyText money=sheet.net_worth.money />
-                    <UnpricedNote unpriced=sheet.net_worth.unpriced />
+                    <TotalText total=sheet.net_worth />
                 </span>
             </div>
             <div class="columns">
@@ -186,10 +185,23 @@ fn Figures(
     });
     view! {
         <span class="figures">
-            <MoneyText money=total.money />
-            <UnpricedNote unpriced=total.unpriced />
+            <TotalText total />
             {native}
         </span>
+    }
+}
+
+/// A converted sum, or 未完整 when an amount in it has no rate: the sum of the
+/// rest must never pass for the total. The note names what was left out.
+#[component]
+pub fn TotalText(total: Converted) -> impl IntoView {
+    match total.is_complete() {
+        true => view! { <MoneyText money=total.money /> }.into_any(),
+        false => view! {
+            <span class="money incomplete">"未完整"</span>
+            <UnpricedNote unpriced=total.unpriced />
+        }
+        .into_any(),
     }
 }
 
