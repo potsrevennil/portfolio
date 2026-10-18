@@ -103,10 +103,7 @@ pub struct Model {
 impl Model {
     /// Every transaction across all groups, in a stable order.
     pub fn transactions(&self) -> impl Iterator<Item = &Transaction> {
-        self.cathay.iter().chain(&self.daily).chain(&self.openings).filter_map(|d| match d {
-            Directive::Transaction(t) => Some(t),
-            _ => None,
-        })
+        transactions(self.cathay.iter().chain(&self.daily).chain(&self.openings))
     }
 
     /// Every balance assertion across all groups.
@@ -116,6 +113,16 @@ impl Model {
             _ => None,
         })
     }
+}
+
+/// The transactions among `directives`.
+pub fn transactions<'a>(
+    directives: impl IntoIterator<Item = &'a Directive>,
+) -> impl Iterator<Item = &'a Transaction> {
+    directives.into_iter().filter_map(|d| match d {
+        Directive::Transaction(t) => Some(t),
+        _ => None,
+    })
 }
 
 /// Serialises a directive stream to Beancount text — used by `build` to write
