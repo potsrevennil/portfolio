@@ -1,7 +1,7 @@
 //! All SQLite access: the schema, its migrations and every query. Other crates
 //! hold no SQL; where their logic needs storage they declare a trait
-//! (`prices::PriceStore`, `portfolio::SplitStore`) and this crate implements
-//! it.
+//! (`prices::PriceStore`, `prices::rates::RateStore`, `portfolio::SplitStore`)
+//! and this crate implements it.
 
 pub mod assertions;
 pub mod broker;
@@ -15,6 +15,7 @@ pub mod import;
 pub mod import_batch;
 pub mod journal;
 pub mod load;
+pub mod market;
 pub mod pairing;
 pub mod query;
 pub mod quotes;

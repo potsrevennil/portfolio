@@ -22,13 +22,18 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use chrono::NaiveDate;
+use chrono::{Local, NaiveDate};
 use ledger::{accounts::AccountType, journal, labels::Labels, model::Source};
 use ledger_types::currency::Currency;
+use prices::rates::Coverage;
 use rust_decimal::Decimal;
 use sqlx::{Row, SqlitePool};
 
-use crate::{assertions, check, query};
+use crate::{
+    assertions, check,
+    market::{self, Market, Rates},
+    query,
+};
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -43,6 +48,10 @@ pub struct Args {
     /// The chart config whose categories and `[display]` name the accounts.
     #[arg(long, default_value = "ledger/mapping.toml")]
     pub mapping: PathBuf,
+
+    /// The market cache checked for a rate for every currency loaded
+    #[arg(long, default_value = market::DEFAULT_URL)]
+    pub market_url: String,
 }
 
 /// The `accounts.type` value for an account path.
@@ -60,6 +69,8 @@ pub struct Report {
     pub transactions: usize,
     pub postings: usize,
     pub check: check::CheckReport,
+    /// Each loaded currency's rate coverage in [`market::BASE`].
+    pub rates: Vec<Coverage>,
 }
 
 impl fmt::Display for Report {
@@ -67,7 +78,8 @@ impl fmt::Display for Report {
         writeln!(f, "loaded journal into SQLite:")?;
         writeln!(f, "  {} accounts", self.accounts)?;
         writeln!(f, "  {} transactions, {} postings", self.transactions, self.postings)?;
-        write!(f, "{}", self.check)
+        write!(f, "{}", self.check)?;
+        write!(f, "{}", market::Unrated(&self.rates))
     }
 }
 
@@ -187,7 +199,16 @@ pub async fn run(args: &Args) -> Result<Report> {
 
     tx.commit().await?;
     log::info!("load-journal: committed");
-    Ok(Report { accounts: ids.len(), transactions: groups.len(), postings: posting_count, check })
+
+    let rates = Rates { ledger: pool, market: Market::open(&args.market_url).await? };
+    let rates = prices::rates::status(&rates, market::BASE, Local::now().date_naive()).await?;
+    Ok(Report {
+        accounts: ids.len(),
+        transactions: groups.len(),
+        postings: posting_count,
+        check,
+        rates,
+    })
 }
 
 async fn insert_transaction(

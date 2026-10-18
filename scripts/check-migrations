@@ -23,6 +23,8 @@ set -o pipefail
 
 ROOT="$(realpath "$(dirname "$0")"/../)"
 MIGRATIONS="$ROOT/crates/db/migrations"
+# market.db's own set: a cache, with no foreign keys to seed.
+MARKET_MIGRATIONS="$ROOT/crates/db/market-migrations"
 
 if tput setaf 1 >/dev/null 2>&1; then
   GREEN="$(tput setaf 2)"
@@ -45,21 +47,23 @@ fail()
   exit 1
 }
 
-info "Checking every migration has an up/down pair"
-for up in "$MIGRATIONS"/*.up.sql; do
-  [ -f "${up%.up.sql}.down.sql" ] || fail "missing down for $(basename "$up")"
-done
-for down in "$MIGRATIONS"/*.down.sql; do
-  [ -f "${down%.down.sql}.up.sql" ] || fail "missing up for $(basename "$down")"
-done
+for dir in "$MIGRATIONS" "$MARKET_MIGRATIONS"; do
+  info "Checking every migration in $(basename "$dir") has an up/down pair"
+  for up in "$dir"/*.up.sql; do
+    [ -f "${up%.up.sql}.down.sql" ] || fail "missing down for $(basename "$up")"
+  done
+  for down in "$dir"/*.down.sql; do
+    [ -f "${down%.down.sql}.up.sql" ] || fail "missing up for $(basename "$down")"
+  done
 
-info "Checking migration versions are unique"
-dupes="$(
-  for up in "$MIGRATIONS"/*.up.sql; do
-    basename "$up" | cut -d_ -f1
-  done | sort | uniq -d
-)"
-[ -z "$dupes" ] || fail "duplicate migration versions: $dupes"
+  info "Checking migration versions in $(basename "$dir") are unique"
+  dupes="$(
+    for up in "$dir"/*.up.sql; do
+      basename "$up" | cut -d_ -f1
+    done | sort | uniq -d
+  )"
+  [ -z "$dupes" ] || fail "duplicate migration versions: $dupes"
+done
 
 # A fresh, absolute-path database that is thrown away on exit; sqlx needs an
 # absolute DATABASE_URL.
@@ -114,5 +118,15 @@ done
 
 info "Re-applying migrations"
 sqlx migrate run --source "$MIGRATIONS"
+
+export DATABASE_URL="sqlite://$work/market.db"
+count="$(find "$MARKET_MIGRATIONS" -name '*.up.sql' | wc -l | tr -d ' ')"
+info "Round-tripping $count market migrations"
+sqlx database create
+sqlx migrate run --source "$MARKET_MIGRATIONS"
+for ((i = 0; i < count; i++)); do
+  sqlx migrate revert --source "$MARKET_MIGRATIONS"
+done
+sqlx migrate run --source "$MARKET_MIGRATIONS"
 
 info "Migrations apply and reverse cleanly"

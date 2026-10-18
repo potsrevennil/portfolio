@@ -1,25 +1,26 @@
-use sqlx::Row;
-use tokio;
-
 #[path = "common/mod.rs"]
 mod common;
+#[path = "common/market.rs"]
+mod market;
 use common::create_temp_db;
 
+/// Market data lives only in market.db; the ledger holds none of it.
 #[tokio::test]
-async fn test_init_db_creates_schema() -> sqlx::Result<()> {
-    let (pool, db_file) = create_temp_db().await.expect("Failed to create temp db");
-
-    // Verify that the database file exists
+async fn quotes_and_splits_live_in_the_market_cache_not_the_ledger() -> sqlx::Result<()> {
+    let (ledger, db_file) = create_temp_db().await.expect("Failed to create temp db");
     assert!(db_file.path().exists());
+    let (market, _dir) = market::temp().await;
 
-    // Verify that the stock_prices table exists by querying sqlite_master
-    let row =
-        sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='stock_prices';")
-            .fetch_one(&pool)
-            .await?;
-
-    assert_eq!(row.get::<&str, _>(0), "stock_prices");
-
+    let tables = |pool| async move {
+        sqlx::query_scalar::<_, String>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('stock_prices', \
+             'stock_splits', 'price_checks') ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await
+    };
+    assert_eq!(tables(&ledger).await?, Vec::<String>::new());
+    assert_eq!(tables(market.pool()).await?, ["price_checks", "stock_prices", "stock_splits"]);
     Ok(())
 }
 

@@ -11,6 +11,7 @@ use common::page::{position, visible, Site};
 use db::{
     assertions::{AssertionSource, BalanceAssertion},
     load,
+    market::Market,
 };
 use ledger::{
     journal::{self, Journal, Posting},
@@ -143,33 +144,33 @@ async fn ledger() -> (TempDir, SqlitePool) {
     load::run(&load::Args {
         journal: root.join("journal.csv"),
         database_url: url.clone(),
+        market_url: format!("{url}.market"),
         mapping: root.join("mapping.toml"),
     })
     .await
     .unwrap();
     let pool = db::init_db(&url).await.unwrap();
-    let ticker = YFinanceSource::get_exchange_rate_ticker(Currency::USD, Currency::TWD).unwrap();
-    sqlx::query(
-        "INSERT INTO stock_prices (symbol, date, close_price) VALUES (?, '2024-06-01', 30)",
-    )
-    .bind(ticker)
-    .execute(&pool)
-    .await
-    .unwrap();
+    // USD has a rate; JPY has none.
+    let usd = YFinanceSource::ticker(Currency::USD, Currency::TWD);
+    common::market::quote(&common::market::beside(root).await, &usd, "2024-06-01", 30.0).await;
     (dir, pool)
 }
 
-async fn render(pool: &SqlitePool) -> String {
+async fn render(dir: &TempDir, pool: &SqlitePool) -> String {
+    render_with(&common::market::beside(dir.path()).await, pool).await
+}
+
+async fn render_with(market: &Market, pool: &SqlitePool) -> String {
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
-    let sheet = web::sheet::load(pool, as_of, Currency::TWD, &at_cost).await.unwrap();
+    let sheet = web::sheet::load(pool, market, as_of, Currency::TWD, &at_cost).await.unwrap();
     Owner::new().with(|| view! { <SheetView sheet /> }.to_html())
 }
 
 #[tokio::test]
 async fn labels_come_from_the_mapping_and_no_path_shows() {
-    let (_dir, pool) = ledger().await;
-    let text = visible(&render(&pool).await);
+    let (dir, pool) = ledger().await;
+    let text = visible(&render(&dir, &pool).await);
     for label in [
         "資產",
         "負債",
@@ -193,8 +194,8 @@ async fn labels_come_from_the_mapping_and_no_path_shows() {
 
 #[tokio::test]
 async fn groups_fold_in_chart_order() {
-    let (_dir, pool) = ledger().await;
-    let html = render(&pool).await;
+    let (dir, pool) = ledger().await;
+    let html = render(&dir, &pool).await;
     let text = visible(&html);
     // Children follow their group, groups in chart (path) order: Bank, Cash,
     // Split. In the tree a shared label stands bare; its group says whose it is.
@@ -224,8 +225,8 @@ async fn groups_fold_in_chart_order() {
 
 #[tokio::test]
 async fn every_row_is_one_figure_in_twd() {
-    let (_dir, pool) = ledger().await;
-    let page = visible(&render(&pool).await);
+    let (dir, pool) = ledger().await;
+    let page = visible(&render(&dir, &pool).await);
     // Net worth heads the page, above the sections it sums; the tree follows.
     let net = position(&page, "淨資產");
     let tree = net + "淨資產".len() + position(&page[net + "淨資產".len()..], "資產");
@@ -260,11 +261,53 @@ async fn every_row_is_one_figure_in_twd() {
     assert_eq!(cost.trim(), "以成本衡量之投資 40,000 TWD 丙公司股 40,000 TWD");
 }
 
+/// The net worth row, and the tree after it.
+fn net_worth_and_tree(page: &str) -> (&str, &str) {
+    let net = position(page, "淨資產");
+    let tree = net + "淨資產".len() + position(&page[net + "淨資產".len()..], "資產");
+    (page[net..tree].trim(), &page[tree..])
+}
+
+#[tokio::test]
+async fn with_every_rate_the_totals_are_whole() {
+    let (dir, pool) = ledger().await;
+    let market = common::market::beside(dir.path()).await;
+    let jpy = YFinanceSource::ticker(Currency::JPY, Currency::TWD);
+    common::market::quote(&market, &jpy, "2024-06-01", 0.2).await;
+    let page = visible(&render_with(&market, &pool).await);
+    // 5,000 JPY at 0.2 adds 1,000 to every total holding it.
+    let (net, text) = net_worth_and_tree(&page);
+    assert_eq!(net, "淨資產 9,512 TWD");
+    assert_eq!(text[..position(text, "銀行")].trim(), "資產 12,012 TWD");
+    let bank = &text[position(text, "銀行")..position(text, "外幣")];
+    assert_eq!(bank.trim(), "銀行 11,000 TWD 10.00 USD");
+    assert!(!page.contains("未完整"), "{page}");
+}
+
+/// With the cache empty, every total holding foreign money says so instead
+/// of passing off the TWD part as the whole.
+#[tokio::test]
+async fn with_no_rates_no_total_shows_a_figure() {
+    let (_dir, pool) = ledger().await;
+    let empty = TempDir::new().unwrap();
+    let page = visible(&render_with(&common::market::beside(empty.path()).await, &pool).await);
+    let (net, text) = net_worth_and_tree(&page);
+    assert_eq!(net, "淨資產 未完整 （未換算：5,000.00 JPY、100.00 USD）");
+    assert_eq!(
+        text[..position(text, "銀行")].trim(),
+        "資產 未完整 （未換算：5,000.00 JPY、100.00 USD）"
+    );
+    // A TWD-only total still has its figure.
+    let savings = &text[position(text, "活存")..position(text, "現金")];
+    assert_eq!(savings.trim(), "活存 7,000 TWD");
+}
+
 async fn site() -> Site {
     Site::new(|| async {
         let (dir, pool) = ledger().await;
         let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default(), Default::default()), dir)
+        let market = common::market::beside(dir.path()).await;
+        (server::router(options, pool, market, AtCost::default(), Default::default()), dir)
     })
     .await
 }
@@ -374,10 +417,11 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
 
 #[tokio::test]
 async fn the_summary_shows_holdings_at_cost_apart_from_net_worth() {
-    let (_dir, pool) = ledger().await;
+    let (dir, pool) = ledger().await;
+    let market = common::market::beside(dir.path()).await;
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
-    let sheet = web::sheet::load(&pool, as_of, Currency::TWD, &at_cost).await.unwrap();
+    let sheet = web::sheet::load(&pool, &market, as_of, Currency::TWD, &at_cost).await.unwrap();
     let html = Owner::new().with(|| view! { <web::summary::SummaryView sheet /> }.to_html());
     let text = visible(&html);
     // JPY has no rate, so no total that holds it shows a figure; the 資產

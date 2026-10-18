@@ -4,7 +4,11 @@ use std::path::Path;
 
 use anyhow::Result;
 use axum::Router;
-use db::{review::StatementAccounts, SqlitePool};
+use db::{
+    market::{Market, Rates},
+    review::StatementAccounts,
+    SqlitePool,
+};
 use ledger::{accounts::Chart, valuation::AtCost};
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
@@ -22,12 +26,14 @@ const DEFAULT_MAPPING: &str = "ledger/mapping.toml";
 pub fn router(
     options: LeptosOptions,
     pool: SqlitePool,
+    market: Market,
     at_cost: AtCost,
     statements: StatementAccounts,
 ) -> Router {
     let routes = generate_route_list(App);
     let context = move || {
         provide_context(pool.clone());
+        provide_context(market.clone());
         provide_context(at_cost.clone());
         provide_context(statements.clone());
     };
@@ -44,13 +50,23 @@ pub async fn run() -> Result<()> {
     let options = get_configuration(None)?.leptos_options;
     let url = std::env::var("LEDGER_DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.into());
     let pool = db::connect(&url).await?;
+    let market_url =
+        std::env::var("LEDGER_MARKET_URL").unwrap_or_else(|_| db::market::DEFAULT_URL.into());
+    let rates = Rates { ledger: pool.clone(), market: Market::open(&market_url).await? };
+    match crate::rates::Config::from_env()? {
+        Some(config) => crate::rates::start(rates, config),
+        None => println!("LEDGER_RATES=off: rates are not fetched"),
+    }
+    // Pages only read the cache; the worker above is its one writer.
+    let market = Market::read_only(&market_url).await?;
     let mapping = std::env::var("LEDGER_MAPPING").unwrap_or_else(|_| DEFAULT_MAPPING.into());
     let at_cost = at_cost(Path::new(&mapping))?;
     let statements = statement_accounts(Path::new(&mapping))?;
     let addr = options.site_addr;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log_listening(addr);
-    axum::serve(listener, router(options, pool, at_cost, statements).into_make_service()).await?;
+    let app = router(options, pool, market, at_cost, statements);
+    axum::serve(listener, app.into_make_service()).await?;
     Ok(())
 }
 

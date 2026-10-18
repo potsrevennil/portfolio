@@ -148,6 +148,7 @@ pub async fn ledger() -> (TempDir, SqlitePool) {
     load::run(&load::Args {
         journal: journal_path,
         database_url: url.clone(),
+        market_url: format!("{url}.market"),
         mapping: root.join("mapping.toml"),
     })
     .await
