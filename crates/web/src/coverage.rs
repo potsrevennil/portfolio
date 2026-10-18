@@ -111,6 +111,46 @@ pub struct Files {
     pub downloaded: Option<String>,
 }
 
+impl fmt::Display for Tail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.first == self.last {
+            true => write!(f, "{} 筆，{}", self.count, self.first),
+            false => write!(f, "{} 筆，{} → {}", self.count, self.first, self.last),
+        }
+    }
+}
+
+impl fmt::Display for Gap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} → {}", self.commodity, self.from, self.to)
+    }
+}
+
+impl fmt::Display for Missing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.count, &self.from, &self.through) {
+            (true, Some(from), _) => write!(f, "{from} 就該點算"),
+            (true, None, _) => f.write_str("猶未點算過"),
+            (false, Some(from), Some(through)) if from != through => {
+                write!(f, "{from} → {through} 的對帳單")
+            }
+            (false, _, Some(through)) => write!(f, "{through} 的對帳單"),
+            (false, _, None) => f.write_str("猶無對帳單"),
+        }
+    }
+}
+
+impl fmt::Display for Files {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = self.latest.rsplit('/').next().unwrap_or(&self.latest);
+        write!(f, "{} 個檔，上新 {name}", self.count)?;
+        match &self.downloaded {
+            Some(d) => write!(f, "，{d} 下載"),
+            None => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Unsourced {
     pub label: String,
@@ -206,7 +246,7 @@ fn source_row(s: SourceRow) -> AnyView {
             <td data-label="缺口" class:none=none.3>
                 {s.gaps
                     .into_iter()
-                    .map(|g| view! { <span class="gap">{format!("{} {} → {}", g.commodity, g.from, g.to)}</span> })
+                    .map(|g| view! { <span class="gap">{g.to_string()}</span> })
                     .collect_view()}
             </td>
             <td data-label="欠啥物" class:none=none.4>
@@ -217,11 +257,8 @@ fn source_row(s: SourceRow) -> AnyView {
     }.into_any()
 }
 
-fn tail(t: Tail) -> impl IntoView {
-    let text = match t.first == t.last {
-        true => format!("{} 筆，{}", t.count, t.first),
-        false => format!("{} 筆，{} → {}", t.count, t.first, t.last),
-    };
+fn tail(t: Tail) -> AnyView {
+    let text = t.to_string();
     match t.link {
         Some(link) => view! { <a href=link>{text}</a> }.into_any(),
         None => view! { <span>{text}</span> }.into_any(),
@@ -229,30 +266,18 @@ fn tail(t: Tail) -> impl IntoView {
 }
 
 fn missing(m: Missing) -> AnyView {
-    let what = match (m.count, m.from, m.through) {
-        (true, Some(from), _) => format!("{from} 就該點算"),
-        (true, None, _) => "猶未點算過".to_string(),
-        (false, Some(from), Some(through)) if from != through => {
-            format!("{from} → {through} 的對帳單")
-        }
-        (false, _, Some(through)) => format!("{through} 的對帳單"),
-        (false, _, None) => "猶無對帳單".to_string(),
-    };
     view! {
         <span class="missing">
-            {what}
+            {m.to_string()}
             {m.url.map(|url| view! { " " <a href=url rel="noreferrer" target="_blank">"去下載"</a> })}
         </span>
-    }.into_any()
+    }
+    .into_any()
 }
 
 fn files(f: Files) -> AnyView {
-    let name = f.latest.rsplit('/').next().unwrap_or(&f.latest);
-    let text = match &f.downloaded {
-        Some(d) => format!("{} 個檔，上新 {name}，{d} 下載", f.count),
-        None => format!("{} 個檔，上新 {name}", f.count),
-    };
-    view! { <span class="detail" title=f.latest.clone()>{text}</span> }.into_any()
+    let text = f.to_string();
+    view! { <span class="detail" title=f.latest>{text}</span> }.into_any()
 }
 
 fn unsourced(accounts: Vec<Unsourced>) -> AnyView {

@@ -175,7 +175,7 @@ fn row(
     SourceRow {
         label,
         account: source.account.clone(),
-        cadence: cadence(source.cadence),
+        cadence: source.cadence.to_string(),
         status,
         checked: checked.map(|d| d.to_string()),
         per_commodity,
@@ -235,14 +235,4 @@ fn gaps(figures: &[&Figure]) -> Vec<Gap> {
         }
     }
     gaps
-}
-
-fn cadence(cadence: Cadence) -> String {
-    match cadence {
-        Cadence::Monthly { day } => format!("每月 {day} 日結帳"),
-        Cadence::Quarterly => "每季".into(),
-        Cadence::OnDemand => "隨時下載".into(),
-        Cadence::Live => "即時".into(),
-        Cadence::Count { every } => format!("每 {every} 日點算"),
-    }
 }

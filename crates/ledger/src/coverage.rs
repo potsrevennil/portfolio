@@ -2,7 +2,7 @@
 //! arrive: the `[[sources]]` of mapping.toml, which the coverage page reads to
 //! tell a statement that is merely not due yet from one that is late.
 
-use std::{fs, path::Path};
+use std::{fmt, fs, path::Path};
 
 use anyhow::{bail, Context, Result};
 use chrono::{Datelike, Days, Months, NaiveDate};
@@ -74,6 +74,19 @@ impl Cadence {
             Cadence::OnDemand => None,
             Cadence::Live => Some(day + Days::new(1)),
             Cadence::Count { every } => Some(day + Days::new(every.into())),
+        }
+    }
+}
+
+/// As the coverage page names it.
+impl fmt::Display for Cadence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Cadence::Monthly { day } => write!(f, "每月 {day} 日結帳"),
+            Cadence::Quarterly => f.write_str("每季"),
+            Cadence::OnDemand => f.write_str("隨時下載"),
+            Cadence::Live => f.write_str("即時"),
+            Cadence::Count { every } => write!(f, "每 {every} 日點算"),
         }
     }
 }
