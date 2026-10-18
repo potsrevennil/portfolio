@@ -18,11 +18,13 @@ use rust_decimal::Decimal;
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::{
+    account_status::{self, Account},
     assertions::{self, AssertionSource},
     check::{self, Figure, Mismatch},
     events::{self, Change, EventKind},
     import::Origin,
     query::AccountType,
+    sums::Sums,
 };
 
 /// One leg as the editor submits it.
@@ -68,71 +70,59 @@ struct PostingRow {
     currency: String,
 }
 
-#[derive(sqlx::FromRow)]
-struct AccountRow {
-    id: i64,
-    acct_type: String,
-}
-
-struct Account {
-    id: i64,
-    account_type: AccountType,
-}
-
-async fn account(db: &mut SqliteConnection, path: &str) -> Result<Account> {
-    let row: AccountRow =
-        sqlx::query_as("SELECT id, type AS acct_type FROM accounts WHERE path = ?")
-            .bind(path)
-            .fetch_optional(&mut *db)
-            .await?
-            .with_context(|| format!("查無帳戶：{path}"))?;
-    Ok(Account {
-        id: row.id,
-        account_type: row
-            .acct_type
-            .parse()
-            .with_context(|| format!("account type {:?}", row.acct_type))?,
-    })
+/// An account a new leg may post to.
+async fn open_account(db: &mut SqliteConnection, path: &str) -> Result<Account> {
+    let a = account_status::find(db, path).await?;
+    if a.closed {
+        bail!("帳戶已結清：{path}");
+    }
+    Ok(a)
 }
 
 fn balanced(legs: impl IntoIterator<Item = (Decimal, Currency)>) -> Result<()> {
-    let mut sums: BTreeMap<Currency, Decimal> = BTreeMap::new();
-    let mut any = false;
-    for (amount, currency) in legs {
-        if amount.is_zero() {
-            bail!("金額不可為 0");
-        }
-        *sums.entry(currency).or_default() += amount;
-        any = true;
+    let legs: Vec<(Decimal, Currency)> = legs.into_iter().collect();
+    if legs.iter().any(|(amount, _)| amount.is_zero()) {
+        bail!("金額不可為 0");
     }
-    if !any {
+    if legs.is_empty() {
         bail!("交易沒有任何一筆");
     }
-    let off: Vec<String> = sums
-        .iter()
-        .filter(|(_, sum)| !sum.is_zero())
-        .map(|(c, sum)| format!("{sum} {c}"))
-        .collect();
+    let off: Sums = legs.into_iter().map(|(amount, currency)| (currency, amount)).collect();
     match off.is_empty() {
         true => Ok(()),
-        false => bail!("借貸不平衡，差 {}", off.join("、")),
+        false => bail!("借貸不平衡，差 {off}"),
     }
 }
 
-/// The figures the ledger disagrees with before a write: a write is held
-/// only to the ones it breaks, not to one already broken elsewhere.
-async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
-    Ok(check::check(db).await?.mismatches)
+/// What is already wrong before a write: a write is held only to what it
+/// breaks, not to what is already broken elsewhere.
+struct Baseline {
+    /// The figures the ledger disagrees with.
+    mismatches: Vec<Mismatch>,
+    /// What closed accounts hold.
+    closed: BTreeMap<String, Sums>,
+}
+
+async fn baseline(db: &mut SqliteConnection) -> Result<Baseline> {
+    Ok(Baseline {
+        mismatches: check::check(db).await?.mismatches,
+        closed: account_status::closed_holding(db).await?,
+    })
 }
 
 /// Commits `db` unless the write broke a balance a statement or a count
 /// vouches for; then it says which one, and what to do, in the reader's
 /// words. A 天天記帳 closing it contradicts is only that app's sum of what
 /// was logged there, so a record added later supersedes it instead.
-async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>, before: Vec<Mismatch>) -> Result<()> {
+async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>, before: Baseline) -> Result<()> {
+    let closed = account_status::closed_holding(&mut db).await?;
+    if let Some((path, held)) = closed.iter().find(|(p, h)| before.closed.get(*p) != Some(*h)) {
+        let label = label(&mut db, path).await?;
+        bail!("沒有儲存：這筆會讓已結清的「{label}」剩 {held}。要先到帳戶頁重新啟用它。");
+    }
     let after = check::check(&mut db).await?;
     let (tiantian, broken): (Vec<&Mismatch>, Vec<&Mismatch>) =
-        after.mismatches.iter().filter(|m| !before.contains(m)).partition(
+        after.mismatches.iter().filter(|m| !before.mismatches.contains(m)).partition(
             |m| matches!(&m.figure, Figure::Balance(a) if a.source == AssertionSource::Tiantian),
         );
     if let Some(broken) = broken.first() {
@@ -148,16 +138,20 @@ async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>, before: Vec<Mismatch
     Ok(())
 }
 
+async fn label(db: &mut SqliteConnection, path: &str) -> Result<String> {
+    let label: Option<String> = sqlx::query_scalar("SELECT label FROM accounts WHERE path = ?")
+        .bind(path)
+        .fetch_optional(db)
+        .await?;
+    Ok(label.unwrap_or_else(|| path.to_string()))
+}
+
 async fn refusal(db: &mut SqliteConnection, m: &Mismatch) -> Result<String> {
     let account = match &m.figure {
         Figure::Balance(a) => &a.account,
         Figure::Holding(h) => &h.account,
     };
-    let label: String = sqlx::query_scalar("SELECT label FROM accounts WHERE path = ?")
-        .bind(account)
-        .fetch_optional(db)
-        .await?
-        .unwrap_or_else(|| account.clone());
+    let label = label(db, account).await?;
     let day = m.as_of;
     Ok(match &m.figure {
         Figure::Balance(a) => {
@@ -222,7 +216,13 @@ pub async fn edit(
         }
         let same_account =
             leg.posting_id.and_then(|pid| held.get(&pid)).is_some_and(|r| r.path == leg.account);
-        let target = account(&mut db, &leg.account).await?;
+        // Moving money onto an account needs it open; a leg already on a
+        // closed one may stay, and `gated` keeps a closed asset or liability
+        // empty.
+        let target = match same_account {
+            true => account_status::find(&mut db, &leg.account).await?,
+            false => open_account(&mut db, &leg.account).await?,
+        };
         match leg.posting_id {
             Some(pid) => {
                 sqlx::query(
@@ -518,13 +518,13 @@ pub async fn enter(pool: &SqlitePool, statements: &StatementAccounts, m: &Manual
     if m.amount.is_zero() {
         bail!("金額不可為 0");
     }
-    let from = account(&mut db, &m.account).await?;
+    let from = open_account(&mut db, &m.account).await?;
     if !matches!(from.account_type, AccountType::Asset | AccountType::Liability) {
         bail!("帳戶要是資產或負債：{}", m.account);
     }
     let (other, flow) = match (&m.category, &m.counter) {
         (Some(category), None) => {
-            let a = account(&mut db, category).await?;
+            let a = open_account(&mut db, category).await?;
             let flow = match a.account_type {
                 // Spent from the account; income comes into it.
                 AccountType::Expense => -m.amount,
@@ -534,7 +534,7 @@ pub async fn enter(pool: &SqlitePool, statements: &StatementAccounts, m: &Manual
             (a, flow)
         }
         (None, Some(counter)) => {
-            let a = account(&mut db, counter).await?;
+            let a = open_account(&mut db, counter).await?;
             if !matches!(a.account_type, AccountType::Asset | AccountType::Liability) {
                 bail!("對方帳戶要是資產或負債：{counter}");
             }

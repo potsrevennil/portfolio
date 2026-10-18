@@ -40,6 +40,9 @@ pub const FEE: &str = "手續費";
 pub const LUNCH: &str = "午餐";
 pub const TAXI: &str = "計程車";
 pub const COFFEE: &str = "咖啡";
+/// Emptied by its two entries, so it can be closed.
+pub const OLD_WALLET: &str = "Assets:Old-Wallet";
+pub const INTO_WALLET: &str = "存入舊錢包";
 
 type Legs = &'static [(&'static str, &'static str)];
 
@@ -70,6 +73,11 @@ const TXNS: &[Txn] = &[
     txn("2024-01-02", "薪水", Source::Import, &[
         ("Assets:Bank:Savings", "3000"),
         ("Income:Salary", "-3000"),
+    ]),
+    txn("2024-01-03", INTO_WALLET, Source::Tiantian, &[(OLD_WALLET, "70"), ("Assets:Cash", "-70")]),
+    txn("2024-01-04", "領出舊錢包", Source::Tiantian, &[
+        (OLD_WALLET, "-70"),
+        ("Assets:Cash", "70"),
     ]),
     txn("2024-02-01", FEE, Source::Import, &[
         ("Assets:Bank:Savings", "-500"),
@@ -169,4 +177,24 @@ pub async fn ledger() -> (TempDir, SqlitePool) {
     .await
     .unwrap();
     (dir, pool)
+}
+
+pub async fn is_closed(pool: &SqlitePool, path: &str) -> bool {
+    sqlx::query_scalar("SELECT closed != 0 FROM accounts WHERE path = ?")
+        .bind(path)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// `(event, note)` of every `account_events` row on an account, oldest first.
+pub async fn account_events(pool: &SqlitePool, path: &str) -> Vec<(String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT e.event, e.note FROM account_events e JOIN accounts a ON a.id = e.account_id \
+         WHERE a.path = ? ORDER BY e.id",
+    )
+    .bind(path)
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }

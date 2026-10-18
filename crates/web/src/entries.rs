@@ -95,8 +95,11 @@ impl Chart {
         let labels = standalone_labels(&tree);
         let label = |path: &str| labels.get(path).cloned().unwrap_or_else(|| path.to_string());
 
+        // A closed account is not offered, but its name still resolves, so
+        // it filters its own history once chosen.
         let mut offered: Vec<_> = accounts
             .iter()
+            .filter(|a| !a.closed)
             .filter_map(|a| match AccountKind::try_from(a.account_type) {
                 Ok(kind) => Some((a, trail(&a.path, Some(kind), &tree))),
                 Err(_) => None,
@@ -246,14 +249,16 @@ impl Chart {
     }
 
     /// The accounts a person picks from, in balance-sheet order. Equity,
-    /// which holds the loader's system accounts, is left out but for the
-    /// accounts in `keep`, already in use where the picker is: an opening
-    /// balance or a conversion keeps its equity leg when edited.
+    /// which holds the loader's system accounts, and closed accounts are left
+    /// out, but for those in `keep`, already in use where the picker is: an
+    /// opening balance or a conversion keeps its equity leg when edited.
     pub fn accounts_for(&self, keep: &[&str]) -> Vec<ChartAccount> {
+        let kept = |a: &&journal::Account| keep.contains(&a.path.as_str());
         let mut shown: Vec<_> = self
             .accounts
             .iter()
-            .filter(|a| a.account_type != AccountType::Equity || keep.contains(&a.path.as_str()))
+            .filter(|a| a.account_type != AccountType::Equity || kept(a))
+            .filter(|a| !a.closed || kept(a))
             .collect();
         shown.sort_by_key(|a| (a.account_type, a.path.as_str()));
         shown.into_iter().map(|a| self.account(a)).collect()
@@ -265,6 +270,7 @@ impl Chart {
             label: self.label(&a.path),
             depth: a.path.matches(':').count(),
             kind: AccountKind::try_from(a.account_type).ok(),
+            closed: a.closed,
         }
     }
 
