@@ -93,7 +93,8 @@ async fn income_and_expense_show_what_moved_each_month() {
     let html = render(page(&pool, "Expenses:Food").await);
     let text = visible(&html);
     position(&text, "每月金額");
-    // The page's total is a number when every amount has a rate.
+    // The page's total is a number when every amount has a rate, each at
+    // its own day's: the 10 USD at 30, not today's 31.
     assert!(text.starts_with("支出 › 食食 食食 800 TWD 500 TWD · 10.00 USD"), "{text}");
     // Per currency, what each month added.
     assert!(table(&html, 0).contains(&"2024-02 0 TWD".to_string()), "{html}");

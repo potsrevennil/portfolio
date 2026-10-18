@@ -855,7 +855,8 @@ input.currency {
   align-items: start;
 }
 
-.charts h2 {
+.charts h2,
+.account-page h2 {
   font-size: 1.1rem;
   margin: 1.2rem 0 0.4rem;
 }
@@ -1078,14 +1079,17 @@ input.currency {
   overflow-x: auto;
 }
 
-.table-view table {
+.table-view table,
+table.checks {
   border-collapse: collapse;
   font-size: 0.9rem;
   margin: 0.4rem 0;
 }
 
 .table-view th,
-.table-view td {
+.table-view td,
+table.checks th,
+table.checks td {
   padding: 0.25rem 0.8rem 0.25rem 0;
   border-bottom: 1px solid var(--line);
   text-align: right;
@@ -1217,10 +1221,6 @@ input.currency {
   text-decoration: underline;
 }
 
-.account-page h2 {
-  font-size: 1.1rem;
-  margin: 1.2rem 0 0.4rem;
-}
 
 .account-page h3 {
   font-size: 1rem;
@@ -1232,21 +1232,12 @@ input.currency {
   overflow-x: auto;
 }
 
-table.checks {
-  border-collapse: collapse;
-  font-size: 0.92rem;
-}
 
+
+/* Words read from the left; only the figures line up on the right. */
 table.checks th,
-table.checks td {
-  padding: 0.3rem 0.6rem 0.3rem 0;
-  border-bottom: 1px solid var(--line);
+table.checks td:not(.figure) {
   text-align: left;
-  white-space: nowrap;
-}
-
-table.checks .figure {
-  text-align: right;
 }
 
 table.checks th {

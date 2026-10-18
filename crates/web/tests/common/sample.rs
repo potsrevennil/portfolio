@@ -93,6 +93,8 @@ fn assertions() -> Vec<BalanceAssertion> {
 pub async fn ledger() -> (TempDir, SqlitePool) {
     let (dir, pool) = build::load(MAPPING, &journal(), &assertions()).await;
     build::usd_rate(&pool, "2024-01-01", 30.0).await;
+    // A later rate: an expense keeps the rate of its own day.
+    build::usd_rate(&pool, "2024-03-31", 31.0).await;
     (dir, pool)
 }
 

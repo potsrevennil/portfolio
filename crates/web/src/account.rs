@@ -46,12 +46,11 @@ pub fn AccountRoute() -> impl IntoView {
 pub fn AccountView(page: AccountPage) -> AnyView {
     let AccountPage { path, label, trail, balance, total, flow, trends, checks, journal } = page;
     // A figure per currency only says more than the total when there is a
-    // currency besides the base, or more than one.
-    let native = (balance.iter().any(|m| m.currency != total.money.currency) || balance.len() > 1)
-        .then(|| {
-            let text = balance.iter().map(ToString::to_string).collect::<Vec<_>>().join(" · ");
-            view! { <span class="native">{text}</span> }
-        });
+    // currency besides the base.
+    let native = balance.iter().any(|m| m.currency != total.money.currency).then(|| {
+        let text = balance.iter().map(ToString::to_string).collect::<Vec<_>>().join(" · ");
+        view! { <span class="native">{text}</span> }
+    });
     let several = trends.len() > 1;
     let charts = trends
         .into_iter()

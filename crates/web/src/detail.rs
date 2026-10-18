@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use db::{
-    assertions::{self, AssertionSource},
+    assertions::{self, AssertionSource, BalanceAssertion},
     check,
     query::{self, in_subtree, AccountType, Grain, LedgerData},
     series::Valued,
@@ -50,31 +50,86 @@ pub async fn load(
         .ok_or_else(|| anyhow!("查無口座：{path}"))?;
     let flow = matches!(account.account_type, AccountType::Income | AccountType::Expense);
     // Income is credit-negative; the page reads it as money in.
-    let sign = match account.account_type {
-        AccountType::Income => -Decimal::ONE,
-        _ => Decimal::ONE,
+    let income = account.account_type == AccountType::Income;
+    let sign = match income {
+        true => -Decimal::ONE,
+        false => Decimal::ONE,
     };
 
     let data = LedgerData::load(pool).await?;
     let prices = query::load_fx_prices(pool, &data.currencies(), base, today).await?;
     let from = data.first_date_under(&path).unwrap_or(today).min(today);
     let points = data.subtree_over_time(&path, from, today, Grain::Month);
-
     let now = points.last().map(|(_, b)| b.clone()).unwrap_or_default();
-    // The base currency first, as the balance sheet's figure is.
-    let first = |c: &Currency| (*c != base, *c);
+
+    let total: Valued = match flow {
+        // Each posting at its own day's rate, as the charts' categories are.
+        true => data
+            .flows(base, from, today, Grain::Year, &prices)
+            .iter()
+            .flat_map(|f| &f.accounts)
+            .filter(|(p, _)| in_subtree(p, &path))
+            .map(|(_, v)| v)
+            .sum(),
+        // A balance at today's rate, as the balance sheet's is.
+        false => {
+            now.iter().map(|(&c, &a)| Valued::of(a, c, query::rate(c, base, today, &prices))).sum()
+        }
+    };
+    let total = match income {
+        true => -total,
+        false => total,
+    };
+
+    let mut conn = pool.acquire().await?;
+    let checks = checks(&data, &assertions::load(&mut conn).await?, &path, &chart, base);
+    let mut journal = entries::page(
+        pool,
+        &chart,
+        &JournalQuery { account: Some(path.clone()), page: query.page, ..Default::default() },
+        base,
+    )
+    .await?;
+    // The page has its own heading.
+    journal.account = None;
+
+    Ok(AccountPage {
+        label: chart.label(&path),
+        trail: chart.offer(&path),
+        balance: standing(&now, sign, base),
+        total: converted(&total, base),
+        trends: trends(&points, flow, sign, base),
+        path,
+        flow,
+        checks,
+        journal,
+    })
+}
+
+/// The base currency first, as the balance sheet's figure is.
+fn base_first(base: Currency) -> impl Fn(&Currency) -> (bool, Currency) {
+    move |c| (*c != base, *c)
+}
+
+/// The balance now in each currency it holds.
+fn standing(now: &BTreeMap<Currency, Decimal>, sign: Decimal, base: Currency) -> Vec<Money> {
     let mut balance: Vec<Money> = now
         .iter()
         .filter(|(_, a)| !a.is_zero())
         .map(|(&c, &a)| Money::new(a * sign, c, base))
         .collect();
-    balance.sort_by_key(|m| first(&m.currency));
-    let valued: Vec<Valued> = now
-        .iter()
-        .map(|(&c, &a)| Valued::of(a * sign, c, query::rate(c, base, today, &prices)))
-        .collect();
-    let total = converted(&valued.iter().sum(), base);
+    balance.sort_by_key(|m| base_first(base)(&m.currency));
+    balance
+}
 
+/// One trend per currency: the balance at each month's end, or for a flow
+/// what moved within each month.
+fn trends(
+    points: &[(NaiveDate, BTreeMap<Currency, Decimal>)],
+    flow: bool,
+    sign: Decimal,
+    base: Currency,
+) -> Vec<Trend> {
     let periods: Vec<String> = points.iter().map(|(d, _)| period_name(*d, Step::Month)).collect();
     // A currency that came and went within a month is zero at every month's
     // end: it would only draw an empty chart.
@@ -84,8 +139,8 @@ pub async fn load(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    currencies.sort_by_key(first);
-    let trends = currencies
+    currencies.sort_by_key(base_first(base));
+    currencies
         .into_iter()
         .map(|c| {
             let at = |b: &BTreeMap<Currency, Decimal>| b.get(&c).copied().unwrap_or_default();
@@ -110,15 +165,23 @@ pub async fn load(
                 noted: Vec::new(),
             }
         })
-        .collect();
+        .collect()
+}
 
-    let mut conn = pool.acquire().await?;
-    let mut checks: Vec<BalanceCheck> = assertions::load(&mut conn)
-        .await?
+/// Each figure an outside source states for `path` or under it, against the
+/// books, newest first.
+fn checks(
+    data: &LedgerData,
+    assertions: &[BalanceAssertion],
+    path: &str,
+    chart: &Chart,
+    base: Currency,
+) -> Vec<BalanceCheck> {
+    let mut checks: Vec<BalanceCheck> = assertions
         .iter()
-        .filter(|a| in_subtree(&a.account, &path))
+        .filter(|a| in_subtree(&a.account, path))
         .flat_map(|a| {
-            check::points(&data, a).into_iter().map(|p| BalanceCheck {
+            check::points(data, a).into_iter().map(|p| BalanceCheck {
                 date: p.as_of.to_string(),
                 voucher: a.source.into(),
                 account: (a.account != path).then(|| chart.label(&a.account)),
@@ -130,25 +193,5 @@ pub async fn load(
         })
         .collect();
     checks.sort_by(|a, b| b.date.cmp(&a.date));
-
-    let mut journal = entries::load(
-        pool,
-        &JournalQuery { account: Some(path.clone()), page: query.page, ..Default::default() },
-        base,
-    )
-    .await?;
-    // The page has its own heading.
-    journal.account = None;
-
-    Ok(AccountPage {
-        label: chart.label(&path),
-        trail: chart.offer(&path),
-        path,
-        balance,
-        total,
-        flow,
-        trends,
-        checks,
-        journal,
-    })
+    checks
 }

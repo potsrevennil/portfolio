@@ -328,7 +328,16 @@ impl From<DbOrigin> for Origin {
 }
 
 pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Result<Journal> {
-    let chart = Chart::load(pool).await?;
+    page(pool, &Chart::load(pool).await?, query, base).await
+}
+
+/// [`load`] over a chart the caller already has.
+pub async fn page(
+    pool: &SqlitePool,
+    chart: &Chart,
+    query: &JournalQuery,
+    base: Currency,
+) -> Result<Journal> {
     let filter = chart.filter(query)?;
 
     let total = journal::count(pool, &filter).await?;
@@ -358,7 +367,7 @@ pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Re
         account: one.map(|p| chart.label(p)).or_else(|| query.account.clone()),
         chosen: one.map(|p| chart.offer(p)).or_else(|| query.account.clone()),
         tree: chart.nodes(one),
-        accounts: chart.choices,
+        accounts: chart.choices.clone(),
         among,
         entries,
         total,

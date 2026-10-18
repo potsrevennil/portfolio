@@ -61,13 +61,21 @@ impl AddAssign<&Valued> for Valued {
     }
 }
 
+impl std::iter::Sum for Valued {
+    fn sum<I: Iterator<Item = Valued>>(iter: I) -> Self {
+        iter.fold(Valued::default(), |mut total, v| {
+            total += &v;
+            total
+        })
+    }
+}
+
 impl<'a> std::iter::Sum<&'a Valued> for Valued {
     fn sum<I: Iterator<Item = &'a Valued>>(iter: I) -> Self {
-        let mut total = Valued::default();
-        for v in iter {
+        iter.fold(Valued::default(), |mut total, v| {
             total += v;
-        }
-        total
+            total
+        })
     }
 }
 
@@ -113,6 +121,19 @@ pub struct Flows {
 impl LedgerData {
     /// The first posting's date, where a history starts.
     pub fn first_date(&self) -> Option<NaiveDate> { self.postings.iter().map(|p| p.date).min() }
+
+    /// `root` and its subtree's balance in `currency` at the end of `as_of`.
+    pub fn subtree_balance(&self, root: &str, currency: Currency, as_of: NaiveDate) -> Decimal {
+        self.postings
+            .iter()
+            .filter(|p| {
+                p.currency == currency
+                    && p.date <= as_of
+                    && in_subtree(&self.accounts[&p.account_id].path, root)
+            })
+            .map(|p| p.amount)
+            .sum()
+    }
 
     /// The first posting's date in `root`'s subtree.
     pub fn first_date_under(&self, root: &str) -> Option<NaiveDate> {

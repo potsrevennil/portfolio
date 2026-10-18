@@ -18,7 +18,7 @@ use super::{
     assertions::{self, AssertionSource, BalanceAssertion},
     broker,
     holdings::{self, HoldingAssertion},
-    query::{in_subtree, AccountBalance, AccountType, LedgerData},
+    query::{in_subtree, AccountType, LedgerData},
 };
 
 /// An outside figure: a balance held to the postings, or a holding held to
@@ -218,7 +218,7 @@ pub fn points(data: &LedgerData, a: &BalanceAssertion) -> Vec<Point> {
         .map(|(as_of, expected)| Point {
             as_of,
             expected,
-            computed: subtree_balance(&data.balances_as_of(as_of), &a.account, a.currency),
+            computed: data.subtree_balance(&a.account, a.currency, as_of),
         })
         .collect()
 }
@@ -333,16 +333,6 @@ pub fn uncounted(
         })
         .map(|b| (b.path, b.currency))
         .collect()
-}
-
-/// An assertion on an account covers its subtree, as a Beancount `balance`
-/// does.
-fn subtree_balance(balances: &[AccountBalance], root: &str, currency: Currency) -> Decimal {
-    balances
-        .iter()
-        .filter(|b| b.currency == currency && in_subtree(&b.path, root))
-        .map(|b| b.amount)
-        .sum()
 }
 
 /// The newest date an assertion vouches for this balance. Only the currency it
