@@ -86,6 +86,11 @@ pub struct Converted {
     pub unpriced: Unpriced,
 }
 
+impl Converted {
+    /// Every amount had a rate: `money` is the whole sum.
+    pub fn is_complete(&self) -> bool { self.unpriced.0.is_empty() }
+}
+
 /// One account in the tree, summing its own postings and its descendants'.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
@@ -482,6 +487,107 @@ pub struct ManualInput {
     pub counter: String,
     #[serde(default)]
     pub note: String,
+}
+
+/// How far apart a chart's points are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Step {
+    #[default]
+    Month,
+    Quarter,
+    Year,
+}
+
+impl Step {
+    pub const ALL: [Step; 3] = [Step::Month, Step::Quarter, Step::Year];
+
+    /// What the 間隔 menu calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Step::Month => "月",
+            Step::Quarter => "季",
+            Step::Year => "年",
+        }
+    }
+}
+
+/// The word a URL carries.
+impl fmt::Display for Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Step::Month => "month",
+            Step::Quarter => "quarter",
+            Step::Year => "year",
+        })
+    }
+}
+
+impl FromStr for Step {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Step::ALL
+            .into_iter()
+            .find(|step| step.to_string() == s)
+            .ok_or_else(|| format!("不明的間隔：{s}"))
+    }
+}
+
+/// The charts' range as a URL carries it, as typed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChartQuery {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// A [`Step`], as text.
+    pub step: Option<String>,
+}
+
+/// Blank form fields are no filter.
+impl From<&ParamsMap> for ChartQuery {
+    fn from(params: &ParamsMap) -> Self {
+        let get =
+            |key: &str| params.get(key).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        ChartQuery { from: get("from"), to: get("to"), step: get("step") }
+    }
+}
+
+/// One line, or one column per period: a figure for each.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Series {
+    pub name: String,
+    pub figures: Vec<Converted>,
+}
+
+/// Figures over time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Trend {
+    /// Each period's name, in date order.
+    pub periods: Vec<String>,
+    pub series: Vec<Series>,
+    /// Listed in the table, not drawn.
+    pub noted: Vec<Series>,
+}
+
+/// One account's part of a flow, summing its sub-accounts'.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Share {
+    pub path: String,
+    pub label: String,
+    pub total: Converted,
+    /// Largest first.
+    pub children: Vec<Share>,
+}
+
+/// 圖表: net worth over time, income against expense per period, and where
+/// the money came from and went over the whole range.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Charts {
+    /// The range drawn: a blank bound filled in.
+    pub query: ChartQuery,
+    pub worth: Trend,
+    pub flows: Trend,
+    pub income: Share,
+    pub expense: Share,
 }
 
 #[cfg(test)]
