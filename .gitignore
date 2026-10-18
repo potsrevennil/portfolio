@@ -6,6 +6,10 @@ target
 # securities.example.toml ships in its place.
 securities.toml
 
+# Your own account-number shapes for scripts/scan-sensitive.
+# sensitive-patterns.example ships in its place.
+sensitive-patterns
+
 *.csv
 # Spreadsheet statements (e.g. 台新 exports) are financial data too.
 *.xlsx
