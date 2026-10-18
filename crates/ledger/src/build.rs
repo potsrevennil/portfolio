@@ -861,14 +861,25 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
 
     // Assert every non-國泰 asset/liability balance against the app's own figure,
     // so bean-check proves the emitted ledger matches 天天記帳. Beancount checks a
-    // balance at the start of its date, so assert the day after the last entry.
-    let last_date = entries
+    // balance at the start of its date, so assert the day after the account's last
+    // posting in that currency: its last record, or a later line booking one. A
+    // statement running past the records must not move it, or a record imported
+    // into that gap would land before the assertion.
+    let last_record = entries.iter().map(daily::Entry::date).max().unwrap_or(anchor);
+    let mut last_posted: BTreeMap<(&str, Currency), NaiveDate> = BTreeMap::new();
+    let posted = cathay
         .iter()
-        .map(daily::Entry::date)
-        .chain(statements.iter().flat_map(|s| s.lines.iter().map(|l| l.book_date)))
-        .max()
-        .unwrap_or(anchor);
-    let assert_date = last_date.succ_opt().unwrap_or(last_date);
+        .chain(&daily)
+        .filter_map(|d| match d {
+            Directive::Transaction(t) => Some(t),
+            _ => None,
+        })
+        .flat_map(|t| t.postings.iter().map(|p| (p.account.as_str(), p.currency, t.date)))
+        .chain(declared.iter().map(|(a, currency, _, date)| (a.as_str(), *currency, *date)));
+    for (account, currency, date) in posted {
+        let last = last_posted.entry((account, currency)).or_insert(date);
+        *last = (*last).max(date);
+    }
     let bank_accounts: Vec<&str> = statements
         .iter()
         .map(|s| statement_account(&chart, &s.account_no).map(|a| a.as_ref()))
@@ -906,8 +917,17 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         let mut per_currency: Vec<(Currency, Decimal)> = by_currency.into_iter().collect();
         per_currency.sort_by_key(|(currency, _)| currency.to_string());
         for (currency, amount) in per_currency {
+            let last = last_posted
+                .iter()
+                .filter(|((a, c), _)| *c == currency && (*a == account || a.starts_with(&prefix)))
+                .map(|(_, date)| *date)
+                .max();
+            let day = match last {
+                Some(day) => day,
+                None => last_record,
+            };
             asserts.push(Directive::Balance(model::Balance {
-                date: assert_date,
+                date: day.succ_opt().unwrap_or(day),
                 account: account.to_string(),
                 amount,
                 currency,

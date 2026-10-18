@@ -103,6 +103,12 @@ type Line<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
 
 const THROUGH_JANUARY_10: &[Line] =
     &[("2026/01/02", "存入", "", "1000", "1000", ""), ("2026/01/05", "消費", "100", "", "900", "")];
+/// Past the frozen records' last day, with a line no record explains.
+const PAST_THE_RECORDS: &[Line] = &[
+    ("2026/01/02", "存入", "", "1000", "1000", ""),
+    ("2026/01/05", "消費", "100", "", "900", ""),
+    ("2026/01/09", "消費", "40", "", "860", ""),
+];
 const THROUGH_JANUARY: &[Line] = &[
     ("2026/01/02", "存入", "", "1000", "1000", ""),
     ("2026/01/05", "消費", "100", "", "900", ""),
@@ -148,7 +154,10 @@ struct Fixture {
 impl Fixture {
     /// A ledger loaded from a freeze of `RECORDS` and the statement through
     /// January 10.
-    async fn frozen() -> Result<Self> {
+    async fn frozen() -> Result<Self> { Self::frozen_with(THROUGH_JANUARY_10).await }
+
+    /// The same, with `lines` as that statement.
+    async fn frozen_with(lines: &[Line<'_>]) -> Result<Self> {
         let dir = TempDir::new()?;
         std::fs::write(dir.path().join("mapping.toml"), MAPPING)?;
         let chart = Chart::load(dir.path().join("mapping.toml"))?;
@@ -160,10 +169,7 @@ impl Fixture {
         let args = freeze::FreezeArgs {
             journal: dir.path().join("journal.csv"),
             build: BuildArgs {
-                cathay_statements: vec![write(
-                    "2026-01-11.csv",
-                    &statement("2026/01/11", THROUGH_JANUARY_10),
-                )?],
+                cathay_statements: vec![write("2026-01-11.csv", &statement("2026/01/11", lines))?],
                 line_bank_statements: Vec::new(),
                 daily_income_expense: None,
                 daily_transfers: None,
@@ -281,6 +287,27 @@ async fn an_overlapping_export_inserts_only_the_new_records_once() -> Result<()>
     assert_eq!(again.counts.standalone + again.counts.unverified + again.counts.paired, 0);
     assert_eq!(f.transactions().await?, before + 3);
     assert_eq!(f.cash().await?, dec!(730));
+    Ok(())
+}
+
+/// A statement running past the frozen records leaves days they never covered:
+/// the app's balances are asserted at each account's own last day, so a record
+/// imported into that gap passes the gate.
+#[tokio::test]
+async fn a_record_after_the_records_but_inside_the_statement_passes_the_gate() -> Result<()> {
+    let f = Fixture::frozen_with(PAST_THE_RECORDS).await?;
+    // U5 is cash on 2026-01-08, after the records and before the statement's
+    // last line.
+    let report = f.import_tiantian().await?;
+    assert!(report.check.ok(), "{report}");
+    assert_eq!(f.cash().await?, dec!(730));
+    let asserted: String = sqlx::query_scalar(
+        "SELECT b.period_end FROM balance_assertion b JOIN accounts a ON a.id = b.account_id
+         WHERE a.path = 'Assets:Cash:TWD' AND b.source = 'tiantian'",
+    )
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(asserted, "2026-01-06");
     Ok(())
 }
 
