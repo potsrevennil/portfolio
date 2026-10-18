@@ -2,6 +2,9 @@
   description = "plonky-exp";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
+    # rustup alone: 25.05's 1.27 lacks the `toolchain list --quiet` that
+    # Swatinem/rust-cache runs to key its cache.
+    nixpkgs-rustup.url = "github:nixos/nixpkgs/nixos-25.11";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -12,6 +15,7 @@
     systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
     perSystem = { pkgs, system, self', ... }:
       let
+        inherit (inputs.nixpkgs-rustup.legacyPackages.${system}) rustup;
         wrapShell = mkShell: attrs:
           mkShell (attrs // {
             shellHook = ''
@@ -28,6 +32,7 @@
         devShells.default = wrapShell pkgs.mkShellNoCC {
           packages =
             builtins.attrValues {
+              inherit rustup;
               inherit (pkgs)
                 direnv
                 nix-direnv
@@ -36,7 +41,6 @@
                 deadnix
                 shfmt
                 shellcheck
-                rustup
                 clang
                 taplo
                 codespell
