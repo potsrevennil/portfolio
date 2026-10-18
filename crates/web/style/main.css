@@ -16,6 +16,7 @@
   --series-2: #eb6834;
   --series-3: #1baf7a;
   --axis: #c3c2b7;
+  --good: #1d7a1d;
   color-scheme: light dark;
 }
 
@@ -34,6 +35,7 @@
     --series-2: #d95926;
     --series-3: #199e70;
     --axis: #44443f;
+    --good: #4fbf4f;
   }
 }
 
@@ -1172,4 +1174,94 @@ input.currency {
   font-size: 0.85rem;
   margin-left: 0.4rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* 口座 */
+
+.account-page > header,
+.account-page > section:not(.journal) {
+  padding: 0 1rem;
+}
+
+.account-head .trail {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0.8rem 0 0;
+}
+
+.account-head h1 {
+  font-size: 1.5rem;
+  margin: 0.1rem 0 0.3rem;
+}
+
+.account-head .standing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.8rem;
+  align-items: baseline;
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+
+.account-head a,
+.shares a.name {
+  color: var(--accent);
+}
+
+.shares a.name {
+  text-decoration: none;
+}
+
+.shares a.name:hover {
+  text-decoration: underline;
+}
+
+.account-page h2 {
+  font-size: 1.1rem;
+  margin: 1.2rem 0 0.4rem;
+}
+
+.account-page h3 {
+  font-size: 1rem;
+  margin: 0.8rem 0 0.2rem;
+  color: var(--muted);
+}
+
+.account-page .scroll {
+  overflow-x: auto;
+}
+
+table.checks {
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+table.checks th,
+table.checks td {
+  padding: 0.3rem 0.6rem 0.3rem 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+table.checks .figure {
+  text-align: right;
+}
+
+table.checks th {
+  font-weight: 400;
+}
+
+table.checks thead th {
+  color: var(--muted);
+}
+
+.check.ok {
+  color: var(--good);
+}
+
+.check.failed {
+  color: var(--negative);
+  font-weight: 600;
 }

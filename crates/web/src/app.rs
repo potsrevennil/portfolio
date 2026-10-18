@@ -8,6 +8,7 @@ use leptos_router::{
 };
 
 use crate::{
+    account::AccountRoute,
     balance_sheet::BalanceSheetPage,
     charts::ChartsPage,
     journal::JournalPage,
@@ -65,6 +66,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/") view=SummaryPage />
                     <Route path=path!("/balance-sheet") view=BalanceSheetPage />
                     <Route path=path!("/charts") view=ChartsPage />
+                    <Route path=path!("/account") view=AccountRoute />
                     <Route path=path!("/journal") view=JournalPage />
                     <Route path=path!("/review") view=ReviewPage />
                     <Route path=path!("/review/:id") view=EditPage />
