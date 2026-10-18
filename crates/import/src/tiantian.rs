@@ -5,10 +5,11 @@
 //! It relabels the uncategorised line already imported for it. If the
 //! statements don't reach its day yet, it books tagged unverified, and the
 //! next statement verifies it in place. A record the statements should
-//! explain but don't stops the import.
+//! explain but don't stops the import, until a person says in the review
+//! queue which line or account it is.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     path::{Path, PathBuf},
 };
@@ -20,7 +21,8 @@ use db::{
     check,
     import::{insert_deduped, InsertOutcome, Origin, Posting, Transaction},
     import_batch::{self, HeldTransaction},
-    SqliteConnection,
+    stops::{self, Pick, Record, Refused, Stop},
+    SqliteConnection, SqlitePool,
 };
 use ledger::{
     accounts::{in_subtree, Chart},
@@ -38,7 +40,7 @@ use ledger_types::currency::Currency;
 use crate::pairing::{one_to_one, within_window, WINDOW_DAYS};
 
 /// `import_batch.source` for these imports.
-const SOURCE: &str = "tiantian";
+pub const SOURCE: &str = "tiantian";
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -143,11 +145,23 @@ pub async fn run(args: &Args) -> Result<Report> {
     let entries = daily::load_entries(&args.income_expense, &args.transfers)?;
     let frozen = corrected::frozen(&args.frozen)?;
     let pool = db::init_db(&args.database_url).await?;
-    let mut tx = pool.begin().await?;
     let files = Files { income_expense: &args.income_expense, transfers: &args.transfers };
-    let report = import(&mut tx, &chart, &entries, &frozen, files).await?;
-    tx.commit().await?;
-    Ok(report)
+    import_all(&pool, &chart, &entries, &frozen, files).await
+}
+
+/// [`import`] as one database transaction, committed if it succeeds. What
+/// stopped it is kept for the review queue, though nothing else is written;
+/// the next import places the records as a person said there.
+pub async fn import_all(
+    pool: &SqlitePool,
+    chart: &Chart,
+    entries: &[Entry],
+    frozen: &Frozen,
+    files: Files<'_>,
+) -> Result<Report> {
+    let mut tx = pool.begin().await?;
+    let outcome = import(&mut tx, chart, entries, frozen, files).await;
+    stops::finish(pool, SOURCE, tx, outcome).await
 }
 
 /// Where the records came from, for `import_batch`.
@@ -159,8 +173,9 @@ pub struct Files<'a> {
 
 /// A record's statement leg, and how it books.
 enum Fate {
-    /// Relabels this uncategorised line's fallback posting.
-    Pairs { transaction_id: i64, fallback_posting: i64 },
+    /// Stands for this line, relabelling its fallback posting if it still
+    /// has one: a line a person categorised keeps their category.
+    Pairs { transaction_id: i64, fallback_posting: Option<i64> },
     /// Books tagged unverified on this day.
     Waits(NaiveDate),
 }
@@ -195,82 +210,154 @@ pub async fn import(
             fresh.push(entry.clone());
         }
     }
-    let interim::Books { records, unmapped } = interim::book(chart, &fresh)?;
+    let interim::Books { mut records, unmapped } = interim::book(chart, &fresh)?;
     counts.empty = fresh.len() - records.len();
 
-    // Each statement leg pairs with a line already held, or waits for one.
-    let mut legs: BTreeMap<(String, Currency), Vec<usize>> = BTreeMap::new();
-    for (i, r) in records.iter().enumerate() {
-        if let Booking::OnStatement { leg, .. } = &r.booking {
-            legs.entry((leg.account.clone(), leg.currency)).or_default().push(i);
+    // What a person said in the review queue about records an earlier run
+    // could not place: a sibling account books it there, a line is it.
+    let picks = stops::picks(db, SOURCE).await?;
+    for r in &mut records {
+        if let (Booking::OnStatement { leg, transaction }, Some(Pick::Account(to))) =
+            (&mut r.booking, picks.get(&interim::external_ref(&r.id)))
+        {
+            if chart.pool_siblings(&leg.account).contains(to) {
+                for p in transaction.postings.iter_mut().filter(|p| p.account == leg.account) {
+                    p.account = to.clone();
+                }
+                leg.account = to.clone();
+            }
         }
     }
-    let recorded = assertions::load(db).await?;
     let fallbacks: BTreeSet<&str> = [&chart.fallback.income, &chart.fallback.expense]
         .into_iter()
         .chain(chart.fallback.descriptions.values())
         .map(|a| a.as_ref())
         .collect();
     let mut fates: HashMap<usize, Fate> = HashMap::new();
-    let mut problems: Vec<String> = Vec::new();
+    // Lines a record already stands for in this run.
+    let mut taken: HashSet<i64> = HashSet::new();
+    for (i, r) in records.iter().enumerate() {
+        let (Booking::OnStatement { leg, .. }, Some(Pick::Line(line))) =
+            (&r.booking, picks.get(&interim::external_ref(&r.id)))
+        else {
+            continue;
+        };
+        // A pick is checked again: one that no longer fits is no pick.
+        let fits = statement_lines(db, chart, &fallbacks, leg, r.date)
+            .await?
+            .into_iter()
+            .find(|l| l.transaction_id == *line && !taken.contains(line));
+        if let Some(l) = fits {
+            taken.insert(l.transaction_id);
+            let fate =
+                Fate::Pairs { transaction_id: l.transaction_id, fallback_posting: l.fallback };
+            fates.insert(i, fate);
+        }
+    }
+
+    // Each statement leg pairs with a line already held, or waits for one.
+    let mut legs: BTreeMap<(String, Currency), Vec<usize>> = BTreeMap::new();
+    for (i, r) in records.iter().enumerate() {
+        if let Booking::OnStatement { leg, .. } = &r.booking {
+            if !fates.contains_key(&i) {
+                legs.entry((leg.account.clone(), leg.currency)).or_default().push(i);
+            }
+        }
+    }
+    let recorded = assertions::load(db).await?;
+    // The statements vouch through here; a record in their last days may be
+    // booked on the next one, as the bank import defers it.
+    let vouched = |account: &str, currency: Currency| {
+        recorded
+            .iter()
+            .filter(|a| {
+                a.source == AssertionSource::Statement
+                    && a.currency == currency
+                    && in_subtree(account, &a.account)
+            })
+            .map(|a| a.period_end)
+            .max()
+    };
+    let leg_of = |i: usize| match &records[i].booking {
+        Booking::OnStatement { leg, .. } => leg,
+        _ => unreachable!("grouped as a statement leg"),
+    };
+    let record = |i: usize| {
+        let leg = leg_of(i);
+        let r = &records[i];
+        let Booking::OnStatement { transaction, .. } = &r.booking else {
+            unreachable!("grouped as a statement leg")
+        };
+        Record {
+            external_ref: interim::external_ref(&r.id),
+            date: r.date,
+            account: leg.account.clone(),
+            amount: leg.amount,
+            currency: leg.currency,
+            counter: transaction
+                .postings
+                .iter()
+                .filter(|p| p.account != leg.account)
+                .map(|p| p.account.clone())
+                .collect(),
+            narration: transaction.narration.clone(),
+        }
+    };
+    let mut problems: Vec<Stop> = Vec::new();
     for ((account, currency), at) in &legs {
         let held = import_batch::transactions_on(db, account, *currency).await?;
-        let lines: Vec<(&HeldTransaction, i64)> =
-            held.iter().filter_map(|t| uncategorised_line(t, account, &fallbacks)).collect();
-        let leg_of = |i: usize| match &records[i].booking {
-            Booking::OnStatement { leg, .. } => leg,
-            _ => unreachable!("grouped as a statement leg"),
-        };
+        let lines: Vec<(&HeldTransaction, i64)> = held
+            .iter()
+            .filter(|t| !taken.contains(&t.id) && !stands_for_a_record(t))
+            .filter_map(|t| uncategorised_line(t, account, &fallbacks))
+            .collect();
         let fits = |&i: &usize, (t, _): &(&HeldTransaction, i64)| {
             let own = t.postings.iter().find(|p| p.account == *account).expect("on the account");
             own.amount == leg_of(i).amount && within_window(t.date, records[i].date)
         };
         let pairing = one_to_one(at, &lines, fits);
         for (l, many) in &pairing.ambiguous {
-            let r = &records[at[*l]];
-            let days: Vec<String> = many.iter().map(|&m| lines[m].0.date.to_string()).collect();
-            problems.push(format!(
-                "{} {} {} matches {} bank lines within {WINDOW_DAYS} days ({})",
-                r.id,
-                r.date,
-                leg_of(at[*l]).amount,
-                many.len(),
-                days.join(", ")
-            ));
+            let lines = many.iter().map(|&m| lines[m].0.id).collect();
+            problems.push(Stop::RecordAmbiguous { record: record(at[*l]), lines });
         }
         for &(l, m) in &pairing.pairs {
             let (t, fallback_posting) = lines[m];
-            fates.insert(at[l], Fate::Pairs { transaction_id: t.id, fallback_posting });
+            let fate =
+                Fate::Pairs { transaction_id: t.id, fallback_posting: Some(fallback_posting) };
+            fates.insert(at[l], fate);
         }
-        // The statements vouch through here; a record in their last days may
-        // be booked on the next one, as the bank import defers it.
-        let vouched = recorded
-            .iter()
-            .filter(|a| {
-                a.source == AssertionSource::Statement
-                    && a.currency == *currency
-                    && in_subtree(account, &a.account)
-            })
-            .map(|a| a.period_end)
-            .max();
+        let through = vouched(account, *currency);
         let ambiguous: BTreeSet<usize> = pairing.ambiguous.iter().map(|(l, _)| *l).collect();
         for (l, &i) in at.iter().enumerate() {
             if fates.contains_key(&i) || ambiguous.contains(&l) {
                 continue;
             }
             let r = &records[i];
-            match vouched {
+            match through {
                 Some(through) if r.date <= through => {
                     if (through - r.date).num_days() < WINDOW_DAYS {
                         fates.insert(i, Fate::Waits(through.succ_opt().expect("a next day")));
                     } else {
-                        problems.push(format!(
-                            "{} {} {} on {account}: the statements through {through} show no line \
-                             for it",
-                            r.id,
-                            r.date,
-                            leg_of(i).amount
-                        ));
+                        // What it may be all the same: a line of its amount a
+                        // person already categorised, or one on a sibling
+                        // account; or a sibling whose statement is yet to come.
+                        let lines = statement_lines(db, chart, &fallbacks, leg_of(i), r.date)
+                            .await?
+                            .into_iter()
+                            .map(|l| l.transaction_id)
+                            .filter(|id| !taken.contains(id))
+                            .collect();
+                        let accounts = chart
+                            .pool_siblings(account)
+                            .into_iter()
+                            .filter(|a| vouched(a, *currency).is_none_or(|t| t < r.date))
+                            .collect();
+                        problems.push(Stop::RecordUnexplained {
+                            record: record(i),
+                            through,
+                            lines,
+                            accounts,
+                        });
                     }
                 }
                 _ => {
@@ -280,11 +367,7 @@ pub async fn import(
         }
     }
     if !problems.is_empty() {
-        bail!(
-            "records on statement accounts need review; fix them in 天天記帳 and export again. \
-             Nothing was imported.\n  {}",
-            problems.join("\n  ")
-        );
+        return Err(Refused(problems).into());
     }
 
     let labels = Labels::from(chart);
@@ -308,11 +391,13 @@ pub async fn import(
             (Some(leg), Some(Fate::Pairs { transaction_id, fallback_posting })) => {
                 let external_ref = transaction.external_ref.clone().expect("booked with its ref");
                 // The bank line's category now comes from the record.
-                let far: Vec<Posting> = far_legs(&transaction, &leg, placeholder)?
-                    .into_iter()
-                    .map(|p| p.with_origin(Origin::Tiantian))
-                    .collect();
-                import_batch::replace_leg(db, &labels, fallback_posting, &far).await?;
+                if let Some(fallback_posting) = fallback_posting {
+                    let far: Vec<Posting> = far_legs(&transaction, &leg, placeholder)?
+                        .into_iter()
+                        .map(|p| p.with_origin(Origin::Tiantian))
+                        .collect();
+                    import_batch::replace_leg(db, &labels, fallback_posting, &far).await?;
+                }
                 if !transaction.narration.is_empty() {
                     import_batch::append_narration(db, transaction_id, &transaction.narration)
                         .await?;
@@ -351,6 +436,52 @@ pub async fn import(
     Ok(Report { counts, late, frozen_through: frozen.through, span, unmapped, check })
 }
 
+/// Already relabelled or picked for a 天天記帳 record.
+fn stands_for_a_record(t: &HeldTransaction) -> bool {
+    t.external_ref.iter().chain(&t.aliases).any(|r| r.starts_with(interim::REF_PREFIX))
+}
+
+fn from_a_statement(t: &HeldTransaction) -> bool {
+    t.external_ref
+        .as_deref()
+        .is_some_and(|r| Bank::ALL.iter().any(|b| r.starts_with(b.ref_prefix())))
+}
+
+/// A statement line a record could be, though no uncategorised line fits it.
+struct LineFit {
+    transaction_id: i64,
+    /// Its fallback posting, if it is uncategorised still.
+    fallback: Option<i64>,
+}
+
+/// Statement lines of `leg`'s amount within the window of `date`, on its
+/// account or a sibling, that stand for no record yet.
+async fn statement_lines(
+    db: &mut SqliteConnection,
+    chart: &Chart,
+    fallbacks: &BTreeSet<&str>,
+    leg: &StatementLeg,
+    date: NaiveDate,
+) -> Result<Vec<LineFit>> {
+    let mut fits = Vec::new();
+    for account in [leg.account.clone()].into_iter().chain(chart.pool_siblings(&leg.account)) {
+        for t in import_batch::transactions_on(db, &account, leg.currency).await? {
+            let own = t.postings.iter().any(|p| {
+                p.account == account && p.amount == leg.amount && p.currency == leg.currency
+            });
+            if own
+                && from_a_statement(&t)
+                && !stands_for_a_record(&t)
+                && within_window(t.date, date)
+            {
+                let fallback = uncategorised_line(&t, &account, fallbacks).map(|(_, id)| id);
+                fits.push(LineFit { transaction_id: t.id, fallback });
+            }
+        }
+    }
+    Ok(fits)
+}
+
 /// A statement line imported with no record behind it: two legs, one on
 /// `account`, the other on a fallback. Returns it with the fallback's posting.
 fn uncategorised_line<'t>(
@@ -358,12 +489,8 @@ fn uncategorised_line<'t>(
     account: &str,
     fallbacks: &BTreeSet<&str>,
 ) -> Option<(&'t HeldTransaction, i64)> {
-    let from_a_statement = t
-        .external_ref
-        .as_deref()
-        .is_some_and(|r| Bank::ALL.iter().any(|b| r.starts_with(b.ref_prefix())));
     match t.postings.as_slice() {
-        [a, b] if from_a_statement => [(a, b), (b, a)]
+        [a, b] if from_a_statement(t) => [(a, b), (b, a)]
             .into_iter()
             .find(|(own, other)| {
                 own.account == account && fallbacks.contains(other.account.as_str())

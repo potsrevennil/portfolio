@@ -397,6 +397,23 @@ impl Chart {
         }
     }
 
+    /// The other statement accounts behind `account`'s app account: those no
+    /// app account names alone, which the app records only together, so a
+    /// record may be booked on the wrong one. Empty outside that pool.
+    pub fn pool_siblings(&self, account: &str) -> Vec<String> {
+        let pool: BTreeSet<&str> = self
+            .institution
+            .accounts
+            .values()
+            .map(|a| a.as_ref())
+            .filter(|a| matches!(self.app_account_for(a), Ok(None)))
+            .collect();
+        match pool.contains(account) {
+            true => pool.into_iter().filter(|a| *a != account).map(String::from).collect(),
+            false => Vec::new(),
+        }
+    }
+
     pub fn override_for(&self, id: &str) -> Option<&Override> {
         self.overrides.get(id).filter(|o| !o.account.is_empty())
     }
