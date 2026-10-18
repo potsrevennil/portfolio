@@ -5,11 +5,14 @@ use std::path::Path;
 use anyhow::Result;
 use axum::Router;
 use db::{review::StatementAccounts, SqlitePool};
-use ledger::{accounts::Chart, valuation::AtCost};
+use ledger::{accounts::Chart, coverage::Sources, valuation::AtCost};
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
 
-use crate::app::{shell, App};
+use crate::{
+    app::{shell, App},
+    progress,
+};
 
 /// The database the server reads, unless `LEDGER_DATABASE_URL` names another.
 /// The same default `load-journal` writes to.
@@ -19,17 +22,23 @@ const DEFAULT_DATABASE_URL: &str = "sqlite:ledger-app.db";
 /// `LEDGER_MAPPING` overrides it.
 const DEFAULT_MAPPING: &str = "ledger/mapping.toml";
 
+/// The originals' folder, whose manifest the coverage page reads. `LEDGER_RAW`
+/// overrides it.
+const DEFAULT_RAW: &str = "raw";
+
 pub fn router(
     options: LeptosOptions,
     pool: SqlitePool,
     at_cost: AtCost,
     statements: StatementAccounts,
+    coverage: progress::Config,
 ) -> Router {
     let routes = generate_route_list(App);
     let context = move || {
         provide_context(pool.clone());
         provide_context(at_cost.clone());
         provide_context(statements.clone());
+        provide_context(coverage.clone());
     };
     Router::new()
         .leptos_routes_with_context(&options, routes, context, {
@@ -47,10 +56,13 @@ pub async fn run() -> Result<()> {
     let mapping = std::env::var("LEDGER_MAPPING").unwrap_or_else(|_| DEFAULT_MAPPING.into());
     let at_cost = at_cost(Path::new(&mapping))?;
     let statements = statement_accounts(Path::new(&mapping))?;
+    let raw = std::env::var("LEDGER_RAW").unwrap_or_else(|_| DEFAULT_RAW.into());
+    let coverage = coverage(Path::new(&mapping), Path::new(&raw))?;
     let addr = options.site_addr;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log_listening(addr);
-    axum::serve(listener, router(options, pool, at_cost, statements).into_make_service()).await?;
+    axum::serve(listener, router(options, pool, at_cost, statements, coverage).into_make_service())
+        .await?;
     Ok(())
 }
 
@@ -73,6 +85,15 @@ pub fn statement_accounts(mapping: &Path) -> Result<StatementAccounts> {
         true => Ok(StatementAccounts::from(&Chart::load(mapping)?)),
         false => Ok(StatementAccounts::default()),
     }
+}
+
+/// Without a mapping no source is configured, and the page says so.
+pub fn coverage(mapping: &Path, raw: &Path) -> Result<progress::Config> {
+    let sources = match mapping.exists() {
+        true => Sources::load(mapping)?,
+        false => Sources::default(),
+    };
+    Ok(progress::Config { sources, manifest: raw.join("manifest.csv") })
 }
 
 fn log_listening(addr: std::net::SocketAddr) {

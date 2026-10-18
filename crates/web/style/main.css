@@ -10,6 +10,7 @@
   --negative: #b3261e;
   --pending: #9a6700;
   --pending-bg: #fdf6e3;
+  --ok: #2e7d32;
   color-scheme: light dark;
 }
 
@@ -24,6 +25,7 @@
     --negative: #f2877f;
     --pending: #e3b341;
     --pending-bg: #2a2416;
+    --ok: #81c784;
   }
 }
 
@@ -47,7 +49,8 @@ header.top {
 
 header.top nav {
   display: flex;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
   max-width: 76rem;
   margin: 0 auto;
   padding: 0.6rem 1rem;
@@ -56,6 +59,7 @@ header.top nav {
 header.top a {
   color: var(--muted);
   text-decoration: none;
+  white-space: nowrap;
 }
 
 header.top a[aria-current] {
@@ -820,4 +824,135 @@ input.currency {
 .journal .among a.pick:hover {
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* 對帳進度: one row per source on a wide screen, one card each on a phone. */
+.coverage {
+  padding: 0 1rem;
+}
+
+.coverage .as-of {
+  color: var(--muted);
+}
+
+.coverage table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.coverage th,
+.coverage td {
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.coverage thead th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.coverage tbody th {
+  font-weight: 600;
+}
+
+/* A date reads as one word; the detail under it may wrap. */
+.coverage td {
+  white-space: nowrap;
+}
+
+.coverage td .detail,
+.coverage td.tail {
+  white-space: normal;
+}
+
+.coverage a {
+  color: var(--accent);
+}
+
+.coverage .detail {
+  display: block;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.coverage .gap,
+.coverage .missing {
+  display: block;
+}
+
+.badge.status {
+  white-space: nowrap;
+}
+
+.badge.status.checked {
+  color: var(--ok);
+}
+
+.badge.status.unchecked,
+.badge.status.due {
+  color: var(--pending);
+}
+
+.badge.status.overdue {
+  color: var(--negative);
+}
+
+/* What was imported but nothing has checked: marked as the journal marks an
+   unverified entry, so it never reads as part of 已對帳至. */
+.coverage td.tail:not(.none) {
+  background: var(--pending-bg);
+  border-left: 3px solid var(--pending);
+}
+
+.coverage .unsourced h2 {
+  font-size: 1.1rem;
+  margin: 1.5rem 0 0.3rem;
+}
+
+.coverage .unsourced ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+@media (max-width: 52rem) {
+  .coverage thead {
+    display: none;
+  }
+
+  .coverage table,
+  .coverage tbody,
+  .coverage tr,
+  .coverage th,
+  .coverage td {
+    display: block;
+  }
+
+  .coverage tr {
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .coverage th,
+  .coverage td {
+    border: none;
+    padding: 0.15rem 0.5rem;
+  }
+
+  .coverage td.none {
+    display: none;
+  }
+
+  .coverage td[data-label]::before {
+    content: attr(data-label);
+    display: inline-block;
+    min-width: 5rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
 }

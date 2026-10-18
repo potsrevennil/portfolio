@@ -14,6 +14,8 @@
 //! WEB_BROWSER_TESTS=1 cargo test -p web --test browser
 //! ```
 
+#[path = "common/coverage.rs"]
+mod coverage;
 #[path = "common/queue.rs"]
 mod queue;
 
@@ -109,13 +111,18 @@ struct Journey {
 impl Journey {
     async fn start() -> Self {
         let (dir, pool) = ledger().await;
+        Self::serve(dir, pool, Default::default()).await
+    }
+
+    async fn serve(dir: TempDir, pool: SqlitePool, coverage: web::progress::Config) -> Self {
         let site = site();
         let options = LeptosOptions::builder()
             .output_name("web")
             .site_root(site.path().to_string_lossy().to_string())
             .site_pkg_dir("pkg")
             .build();
-        let router = server::router(options, pool.clone(), AtCost::default(), Default::default());
+        let router =
+            server::router(options, pool.clone(), AtCost::default(), Default::default(), coverage);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router.into_make_service()).await });
@@ -249,6 +256,7 @@ async fn journeys() {
     split_in_the_editor().await;
     pick_a_pairing().await;
     enter_cash_by_hand().await;
+    follow_the_unchecked_tail().await;
 }
 
 async fn confirm_from_the_queue() {
@@ -391,5 +399,25 @@ async fn enter_cash_by_hand() {
             .await
             .unwrap();
     assert!(deleted.is_some());
+    j.close().await;
+}
+
+/// From the nav to 對帳進度, and from a source's unchecked records to the
+/// journal showing exactly those.
+async fn follow_the_unchecked_tail() {
+    let l = coverage::ledger().await;
+    let j = Journey::serve(l.dir, l.pool, l.config).await;
+    j.open("/").await;
+    j.find(r#"header a[href="/coverage"]"#).await.click().await.unwrap();
+    j.until_text("已對帳至").await;
+
+    let savings = j.find("tr.source.unchecked").await;
+    let text = savings.text().await.unwrap();
+    assert!(text.contains("已匯入未對帳") && text.contains("1 筆"), "{text}");
+    savings.find(Locator::Css("td.tail a")).await.unwrap().click().await.unwrap();
+    j.until_count("li.entry", 1).await;
+    let url = j.browser.current_url().await.unwrap();
+    assert!(url.as_str().contains("unverified=1"), "{url}");
+    assert!(j.find("li.entry").await.text().await.unwrap().contains("2024-03-05"));
     j.close().await;
 }
