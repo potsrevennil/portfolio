@@ -1,10 +1,11 @@
-//! Builds the review pages from `db`: the queue, and 記一筆's form parsed
-//! into what `db::review` writes.
+//! Builds the review pages from `db`: the queue, a transaction opened for
+//! editing, and the forms' text parsed into what `db::review` writes.
 
 use anyhow::{bail, Context, Result};
 use db::{
+    events,
     journal::{self, Filter},
-    review::Manual,
+    review::{Edit, LegEdit, Manual},
     SqlitePool,
 };
 use ledger_types::currency::Currency;
@@ -12,7 +13,7 @@ use rust_decimal::Decimal;
 
 use crate::{
     entries::{self, Chart},
-    model::{ChartAccount, JournalQuery, ManualInput, Queue, Review},
+    model::{Change, ChartAccount, Editing, JournalQuery, LegInput, ManualInput, Queue, Review},
 };
 
 /// How many transactions wait for review.
@@ -31,6 +32,21 @@ fn postable(chart: &Chart, keep: &[&str]) -> Vec<ChartAccount> {
     chart.accounts_for(keep).into_iter().filter(|a| a.depth > 0).collect()
 }
 
+pub async fn editing(pool: &SqlitePool, id: i64, base: Currency) -> Result<Editing> {
+    let chart = Chart::load(pool).await?;
+    let found =
+        journal::by_ids(pool, &[id]).await?.pop().with_context(|| format!("查無交易 {id}"))?;
+    let entry = chart.entry(found, base, &[]);
+    let keep: Vec<&str> = entry.legs.iter().map(|l| l.path.as_str()).collect();
+    let accounts = postable(&chart, &keep);
+    let history = events::history(pool, id)
+        .await?
+        .into_iter()
+        .map(|e| Change { at: e.at, kind: e.kind.to_string() })
+        .collect();
+    Ok(Editing { entry, accounts, history })
+}
+
 /// The accounts 記一筆 offers.
 pub async fn manual_accounts(pool: &SqlitePool) -> Result<Vec<ChartAccount>> {
     Ok(postable(&Chart::load(pool).await?, &[]))
@@ -44,6 +60,35 @@ fn amount(text: &str) -> Result<Decimal> {
 
 fn currency(text: &str) -> Result<Currency> {
     text.trim().parse().with_context(|| format!("幣別不對：{text}"))
+}
+
+impl TryFrom<&LegInput> for LegEdit {
+    type Error = anyhow::Error;
+
+    fn try_from(leg: &LegInput) -> Result<Self> {
+        let posting = leg.posting.trim();
+        Ok(LegEdit {
+            posting_id: match posting.is_empty() {
+                true => None,
+                false => Some(posting.parse().with_context(|| format!("不明的一筆：{posting}"))?),
+            },
+            account: leg.account.trim().to_string(),
+            amount: amount(&leg.amount)?,
+            currency: currency(&leg.currency)?,
+        })
+    }
+}
+
+/// The edit a submitted form asks for. A row left without an account is one
+/// of the blank rows for splitting, unused; one with an account but no
+/// amount is a mistake.
+pub fn edit(narration: Option<String>, legs: &[LegInput], confirm: bool) -> Result<Edit> {
+    let legs = legs
+        .iter()
+        .filter(|l| !l.account.trim().is_empty())
+        .map(LegEdit::try_from)
+        .collect::<Result<_>>()?;
+    Ok(Edit { narration, legs, confirm })
 }
 
 impl TryFrom<&ManualInput> for Manual {

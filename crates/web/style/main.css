@@ -475,12 +475,14 @@ details.group > summary.row.section {
 }
 
 .review button,
+.edit button,
 .manual button {
   font: inherit;
   padding: 0.2rem 0.8rem;
 }
 
 .review a,
+.edit a,
 .manual a {
   color: var(--accent);
 }
@@ -495,13 +497,52 @@ details.group > summary.row.section {
 }
 
 .field input,
-.field select {
+.field select,
+.legs-edit input,
+.legs-edit select {
   font: inherit;
   max-width: 100%;
 }
 
+/* Narrow screens: the table scrolls inside itself, the page does not. */
+.edit form {
+  overflow-x: auto;
+}
+
+.legs-edit {
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+}
+
+.legs-edit th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: normal;
+}
+
+.legs-edit td {
+  padding: 0.2rem 0.4rem 0.2rem 0;
+}
+
+.legs-edit input[inputmode="decimal"] {
+  width: 8rem;
+  text-align: right;
+}
+
 input.currency {
   width: 4.5rem;
+}
+
+.submit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+}
+
+.history ol {
+  padding-left: 1.2rem;
+  color: var(--muted);
 }
 
 .done {
@@ -532,6 +573,30 @@ input.currency {
 
 .journal .legend .badge {
   margin-right: 0.3rem;
+}
+
+.edit form.unconfirm {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.edit form.unconfirm .note {
+  padding: 0;
+}
+
+.edit form.delete {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  margin-top: 1.5rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--line);
+}
+
+.edit form.delete button {
+  color: var(--negative);
 }
 
 /* The account box and its panel are one control: ▾ drops the panel over the

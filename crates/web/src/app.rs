@@ -11,7 +11,7 @@ use crate::{
     balance_sheet::BalanceSheetPage,
     journal::JournalPage,
     manual::ManualPage,
-    review::{Actions, ReviewCount, ReviewPage},
+    review::{Actions, EditPage, ReviewCount, ReviewPage},
     summary::SummaryPage,
 };
 
@@ -57,6 +57,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/balance-sheet") view=BalanceSheetPage />
                     <Route path=path!("/journal") view=JournalPage />
                     <Route path=path!("/review") view=ReviewPage />
+                    <Route path=path!("/review/:id") view=EditPage />
                     <Route path=path!("/entry") view=ManualPage />
                 </Routes>
             </main>

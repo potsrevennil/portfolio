@@ -358,7 +358,7 @@ pub struct AccountNode {
     pub children: Vec<AccountNode>,
 }
 
-/// An account as 記一筆's pickers list it.
+/// An account as the editor's pickers list it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChartAccount {
     pub path: String,
@@ -419,6 +419,38 @@ pub struct Journal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Queue {
     pub journal: Journal,
+}
+
+/// One change the app recorded on a transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Change {
+    pub at: String,
+    /// The `transaction_events.kind` word.
+    pub kind: String,
+}
+
+/// A transaction as the editor opens it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Editing {
+    pub entry: Entry,
+    /// Where a leg may post: open accounts, and each leg's own.
+    pub accounts: Vec<ChartAccount>,
+    pub history: Vec<Change>,
+}
+
+/// One leg as the editor's form sends it. Text, so the server can refuse a
+/// bad amount by name; a row with no account is a blank one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LegInput {
+    /// The posting's id; blank for a leg the edit adds.
+    #[serde(default)]
+    pub posting: String,
+    #[serde(default)]
+    pub account: String,
+    #[serde(default)]
+    pub amount: String,
+    #[serde(default)]
+    pub currency: String,
 }
 
 /// 記一筆 as its form sends it.
