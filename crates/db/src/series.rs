@@ -114,6 +114,15 @@ impl LedgerData {
     /// The first posting's date, where a history starts.
     pub fn first_date(&self) -> Option<NaiveDate> { self.postings.iter().map(|p| p.date).min() }
 
+    /// The first posting's date in `root`'s subtree.
+    pub fn first_date_under(&self, root: &str) -> Option<NaiveDate> {
+        self.postings
+            .iter()
+            .filter(|p| in_subtree(&self.accounts[&p.account_id].path, root))
+            .map(|p| p.date)
+            .min()
+    }
+
     /// Assets and liabilities at the end of each period over `[start, end]`
     /// (the last point on `end` itself), leaving out what
     /// [`in_net_worth`](crate::query::in_net_worth) leaves out.
