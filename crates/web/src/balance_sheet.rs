@@ -136,7 +136,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         }
     };
     if n.children.is_empty() {
-        return view! { <div class=level.clone() style=indent>{row()}</div> }.into_any();
+        return view! { <div class=level style=indent>{row()}</div> }.into_any();
     }
     let path = n.path.clone();
     let is_open = is_open(path.clone(), open);
@@ -144,7 +144,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     let children = n.children.into_iter().map(|c| node(c, depth + 1, open)).collect_view();
     view! {
         <details class="group" open=is_open on:toggle=on_toggle(path, open)>
-            <summary class=level.clone() style=indent>{head}</summary>
+            <summary class=level style=indent>{head}</summary>
             {children}
         </details>
     }

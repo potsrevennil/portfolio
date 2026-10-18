@@ -57,9 +57,7 @@ impl Broker {
     pub fn reporting_currency(&self) -> Currency {
         match self {
             Broker::Cathay => Currency::TWD,
-            Broker::InteractiveBrokers => Currency::USD,
-            Broker::Pionex => Currency::USD,
-            Broker::Firstrade => Currency::USD,
+            Broker::InteractiveBrokers | Broker::Pionex | Broker::Firstrade => Currency::USD,
         }
     }
 }

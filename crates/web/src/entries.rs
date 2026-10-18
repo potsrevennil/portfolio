@@ -222,7 +222,7 @@ impl Chart {
         if let Some(named) = self.names.get(typed) {
             return Ok(match named {
                 Named::Account(path) => vec![path.clone()],
-                Named::Several(paths) => paths.iter().map(|p| p.to_string()).collect(),
+                Named::Several(paths) => paths.iter().cloned().collect(),
             });
         }
         let offered: Vec<String> = self

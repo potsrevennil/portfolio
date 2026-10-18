@@ -95,7 +95,7 @@ pub fn load_from_csv(
             )
         })?;
 
-        let transaction: Transaction = (record.clone(), symbol.to_string()).into();
+        let transaction: Transaction = (record.clone(), symbol.clone()).into();
 
         events
             .entry(transaction.datetime.date_naive())

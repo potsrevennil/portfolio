@@ -222,12 +222,7 @@ pub async fn edit(
         }
         let same_account =
             leg.posting_id.and_then(|pid| held.get(&pid)).is_some_and(|r| r.path == leg.account);
-        // Changing an amount on an account keeps it; moving money onto one
-        // needs it open.
-        let target = match same_account {
-            true => account(&mut db, &leg.account).await?,
-            false => account(&mut db, &leg.account).await?,
-        };
+        let target = account(&mut db, &leg.account).await?;
         match leg.posting_id {
             Some(pid) => {
                 sqlx::query(
