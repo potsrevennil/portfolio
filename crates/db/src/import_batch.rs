@@ -279,14 +279,15 @@ pub async fn replace_leg(
     for leg in legs {
         let account_id = ensure_account(db, labels, &leg.account).await?;
         sqlx::query(
-            "INSERT INTO postings (transaction_id, account_id, amount, currency, tags) VALUES (?, \
-             ?, ?, ?, ?)",
+            "INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin) \
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(transaction_id)
         .bind(account_id)
         .bind(leg.amount.to_string())
         .bind(leg.currency.to_string())
         .bind(&leg.tags)
+        .bind(leg.origin.map(|o| o.to_string()))
         .execute(&mut *db)
         .await
         .with_context(|| format!("relabelling transaction {transaction_id}"))?;

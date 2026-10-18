@@ -3,12 +3,12 @@
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
-use ledger::journal::UNVERIFIED_TAG;
+use ledger::{journal::UNVERIFIED_TAG, model::Source};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 
-use crate::query::AccountType;
+use crate::{import::Origin, query::AccountType};
 
 /// Which transactions to list. The default lists every one.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -24,13 +24,17 @@ pub struct Filter {
     pub reviewed: Option<bool>,
     /// Only records no statement has checked yet.
     pub unverified: bool,
+    pub source: Option<Source>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Leg {
+    /// The posting's id.
+    pub id: i64,
     pub account: String,
     pub amount: Decimal,
     pub currency: Currency,
+    pub origin: Option<Origin>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +43,7 @@ pub struct Entry {
     pub date: NaiveDate,
     pub payee: Option<String>,
     pub narration: Option<String>,
+    pub source: Source,
     pub reviewed: bool,
     pub unverified: bool,
     pub legs: Vec<Leg>,
@@ -57,16 +62,19 @@ struct EntryRow {
     date: String,
     payee: Option<String>,
     narration: Option<String>,
+    source: String,
     reviewed: bool,
     unverified: bool,
 }
 
 #[derive(sqlx::FromRow)]
 struct LegRow {
+    id: i64,
     transaction_id: i64,
     path: String,
     amount: String,
     currency: String,
+    origin: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -85,6 +93,7 @@ impl TryFrom<EntryRow> for Entry {
             date: r.date.parse().with_context(|| format!("transaction {} date", r.id))?,
             payee: r.payee,
             narration: r.narration,
+            source: r.source.parse().with_context(|| format!("source {:?}", r.source))?,
             reviewed: r.reviewed,
             unverified: r.unverified,
             legs: Vec::new(),
@@ -97,6 +106,8 @@ impl TryFrom<LegRow> for (i64, Leg) {
 
     fn try_from(r: LegRow) -> Result<Self> {
         let leg = Leg {
+            id: r.id,
+            origin: r.origin.map(|o| o.parse()).transpose().context("posting origin")?,
             amount: r.amount.parse().with_context(|| format!("posting amount {:?}", r.amount))?,
             currency: r.currency.parse().with_context(|| format!("currency {:?}", r.currency))?,
             account: r.path,
@@ -131,7 +142,7 @@ fn push_unverified(q: &mut QueryBuilder<'_, Sqlite>) {
 }
 
 fn push_conditions<'a>(q: &mut QueryBuilder<'a, Sqlite>, filter: &'a Filter) {
-    q.push(" WHERE 1 = 1");
+    q.push(" WHERE t.deleted_at IS NULL");
     if !filter.accounts.is_empty() {
         q.push(
             " AND EXISTS (SELECT 1 FROM postings p JOIN accounts a ON a.id = p.account_id WHERE \
@@ -172,6 +183,9 @@ fn push_conditions<'a>(q: &mut QueryBuilder<'a, Sqlite>, filter: &'a Filter) {
         q.push(" AND ");
         push_unverified(q);
     }
+    if let Some(source) = filter.source {
+        q.push(" AND t.source = ").push_bind(source.to_string());
+    }
 }
 
 /// Typed text matches itself, never as a LIKE wildcard.
@@ -201,24 +215,48 @@ pub async fn entries(
     limit: u32,
     offset: u64,
 ) -> Result<Vec<Entry>> {
-    let mut page = QueryBuilder::new(
-        "SELECT t.id, t.date, t.payee, t.narration, t.reviewed != 0 AS reviewed, ",
-    );
-    push_unverified(&mut page);
-    page.push(" AS unverified FROM transactions t");
+    let mut page = select();
     push_conditions(&mut page, filter);
     page.push(" ORDER BY t.date DESC, t.id DESC LIMIT ")
         .push_bind(i64::from(limit))
         .push(" OFFSET ")
         .push_bind(i64::try_from(offset).context("journal offset")?);
+    with_legs(pool, page).await
+}
+
+/// The transactions with these ids, newest first; unknown ids are skipped.
+pub async fn by_ids(pool: &SqlitePool, ids: &[i64]) -> Result<Vec<Entry>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut page = select();
+    page.push(" WHERE t.deleted_at IS NULL AND t.id IN (");
+    let mut list = page.separated(", ");
+    for id in ids {
+        list.push_bind(*id);
+    }
+    page.push(") ORDER BY t.date DESC, t.id DESC");
+    with_legs(pool, page).await
+}
+
+fn select<'a>() -> QueryBuilder<'a, Sqlite> {
+    let mut page = QueryBuilder::new(
+        "SELECT t.id, t.date, t.payee, t.narration, t.source, t.reviewed != 0 AS reviewed, ",
+    );
+    push_unverified(&mut page);
+    page.push(" AS unverified FROM transactions t");
+    page
+}
+
+async fn with_legs(pool: &SqlitePool, mut page: QueryBuilder<'_, Sqlite>) -> Result<Vec<Entry>> {
     let rows: Vec<EntryRow> =
         page.build_query_as().fetch_all(pool).await.context("reading the journal")?;
     let mut entries = rows.into_iter().map(Entry::try_from).collect::<Result<Vec<_>>>()?;
 
     if !entries.is_empty() {
         let mut legs = QueryBuilder::new(
-            "SELECT p.transaction_id, a.path, p.amount, p.currency FROM postings p JOIN accounts \
-             a ON a.id = p.account_id WHERE p.transaction_id IN (",
+            "SELECT p.id, p.transaction_id, a.path, p.amount, p.currency, p.origin FROM postings \
+             p JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id IN (",
         );
         let mut ids = legs.separated(", ");
         for e in &entries {
