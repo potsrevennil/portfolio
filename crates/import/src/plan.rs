@@ -266,7 +266,7 @@ pub fn plan(
             }));
         }
         // A record within the window of the end may be booked on the next
-        // statement; an earlier one still breaks the chain below.
+        // statement; an earlier one is not on it.
         let settled = st.settled_through();
         let after = settled.succ_opt().expect("a day after a statement");
         let verifying: HashSet<i64> = line_status

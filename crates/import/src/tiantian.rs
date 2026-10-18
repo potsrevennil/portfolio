@@ -228,6 +228,22 @@ pub async fn import(
             }
         }
     }
+    // What each statement account holds, read once: the accounts the records
+    // book on, and their siblings a record may turn out to be on.
+    let mut held: HashMap<(String, Currency), Vec<HeldTransaction>> = HashMap::new();
+    for r in &records {
+        if let Booking::OnStatement { leg, .. } = &r.booking {
+            for account in
+                [leg.account.clone()].into_iter().chain(chart.pool_siblings(&leg.account))
+            {
+                let key = (account, leg.currency);
+                if !held.contains_key(&key) {
+                    let on = import_batch::transactions_on(db, &key.0, key.1).await?;
+                    held.insert(key, on);
+                }
+            }
+        }
+    }
     let fallbacks: BTreeSet<&str> = [&chart.fallback.income, &chart.fallback.expense]
         .into_iter()
         .chain(chart.fallback.descriptions.values())
@@ -243,9 +259,7 @@ pub async fn import(
             continue;
         };
         // A pick is checked again: one that no longer fits is no pick.
-        let fits = statement_lines(db, chart, &fallbacks, leg, r.date)
-            .await?
-            .into_iter()
+        let fits = statement_lines(&held, chart, &fallbacks, leg, r.date)
             .find(|l| l.transaction_id == *line && !taken.contains(line));
         if let Some(l) = fits {
             taken.insert(l.transaction_id);
@@ -304,9 +318,11 @@ pub async fn import(
         }
     };
     let mut problems: Vec<Stop> = Vec::new();
+    // Records the statements vouch for with no line, and through when: what
+    // they may be is asked once every account has paired what it can.
+    let mut unexplained: Vec<(usize, NaiveDate)> = Vec::new();
     for ((account, currency), at) in &legs {
-        let held = import_batch::transactions_on(db, account, *currency).await?;
-        let lines: Vec<(&HeldTransaction, i64)> = held
+        let lines: Vec<(&HeldTransaction, i64)> = held[&(account.clone(), *currency)]
             .iter()
             .filter(|t| !taken.contains(&t.id) && !stands_for_a_record(t))
             .filter_map(|t| uncategorised_line(t, account, &fallbacks))
@@ -322,6 +338,7 @@ pub async fn import(
         }
         for &(l, m) in &pairing.pairs {
             let (t, fallback_posting) = lines[m];
+            taken.insert(t.id);
             let fate =
                 Fate::Pairs { transaction_id: t.id, fallback_posting: Some(fallback_posting) };
             fates.insert(at[l], fate);
@@ -338,26 +355,7 @@ pub async fn import(
                     if (through - r.date).num_days() < WINDOW_DAYS {
                         fates.insert(i, Fate::Waits(through.succ_opt().expect("a next day")));
                     } else {
-                        // What it may be all the same: a line of its amount a
-                        // person already categorised, or one on a sibling
-                        // account; or a sibling whose statement is yet to come.
-                        let lines = statement_lines(db, chart, &fallbacks, leg_of(i), r.date)
-                            .await?
-                            .into_iter()
-                            .map(|l| l.transaction_id)
-                            .filter(|id| !taken.contains(id))
-                            .collect();
-                        let accounts = chart
-                            .pool_siblings(account)
-                            .into_iter()
-                            .filter(|a| vouched(a, *currency).is_none_or(|t| t < r.date))
-                            .collect();
-                        problems.push(Stop::RecordUnexplained {
-                            record: record(i),
-                            through,
-                            lines,
-                            accounts,
-                        });
+                        unexplained.push((i, through));
                     }
                 }
                 _ => {
@@ -365,6 +363,22 @@ pub async fn import(
                 }
             }
         }
+    }
+    // What each may be all the same: a line of its amount no other record
+    // takes (one a person categorised, or on a sibling account), or a
+    // sibling whose statement is yet to come.
+    for (i, through) in unexplained {
+        let leg = leg_of(i);
+        let lines = statement_lines(&held, chart, &fallbacks, leg, records[i].date)
+            .map(|l| l.transaction_id)
+            .filter(|id| !taken.contains(id))
+            .collect();
+        let accounts = chart
+            .pool_siblings(&leg.account)
+            .into_iter()
+            .filter(|a| vouched(a, leg.currency).is_none_or(|t| t < records[i].date))
+            .collect();
+        problems.push(Stop::RecordUnexplained { record: record(i), through, lines, accounts });
     }
     if !problems.is_empty() {
         return Err(Refused(problems).into());
@@ -456,30 +470,27 @@ struct LineFit {
 
 /// Statement lines of `leg`'s amount within the window of `date`, on its
 /// account or a sibling, that stand for no record yet.
-async fn statement_lines(
-    db: &mut SqliteConnection,
+fn statement_lines<'h>(
+    held: &'h HashMap<(String, Currency), Vec<HeldTransaction>>,
     chart: &Chart,
-    fallbacks: &BTreeSet<&str>,
-    leg: &StatementLeg,
+    fallbacks: &'h BTreeSet<&str>,
+    leg: &'h StatementLeg,
     date: NaiveDate,
-) -> Result<Vec<LineFit>> {
-    let mut fits = Vec::new();
-    for account in [leg.account.clone()].into_iter().chain(chart.pool_siblings(&leg.account)) {
-        for t in import_batch::transactions_on(db, &account, leg.currency).await? {
+) -> impl Iterator<Item = LineFit> + 'h {
+    let accounts = [leg.account.clone()].into_iter().chain(chart.pool_siblings(&leg.account));
+    accounts.flat_map(move |account| {
+        let on = held.get(&(account.clone(), leg.currency)).map(Vec::as_slice).unwrap_or_default();
+        on.iter().filter_map(move |t| {
             let own = t.postings.iter().any(|p| {
                 p.account == account && p.amount == leg.amount && p.currency == leg.currency
             });
-            if own
-                && from_a_statement(&t)
-                && !stands_for_a_record(&t)
-                && within_window(t.date, date)
-            {
-                let fallback = uncategorised_line(&t, &account, fallbacks).map(|(_, id)| id);
-                fits.push(LineFit { transaction_id: t.id, fallback });
-            }
-        }
-    }
-    Ok(fits)
+            (own && from_a_statement(t) && !stands_for_a_record(t) && within_window(t.date, date))
+                .then(|| LineFit {
+                    transaction_id: t.id,
+                    fallback: uncategorised_line(t, &account, fallbacks).map(|(_, id)| id),
+                })
+        })
+    })
 }
 
 /// A statement line imported with no record behind it: two legs, one on

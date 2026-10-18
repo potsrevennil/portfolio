@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use common::{
@@ -97,13 +97,22 @@ impl Fixture {
     }
 
     async fn import_tiantian(&self, records: &[String]) -> Result<tiantian::Report> {
+        let transfers = self.write("轉帳.csv", TRANSFER_HEADER)?;
+        self.import_tiantian_with(records, &transfers).await
+    }
+
+    /// Imports `records` beside the 轉帳 export at `transfers`.
+    async fn import_tiantian_with(
+        &self,
+        records: &[String],
+        transfers: &Path,
+    ) -> Result<tiantian::Report> {
         let export: String =
             [EXPORT_HEADER].into_iter().chain(records.iter().map(String::as_str)).collect();
         let income_expense = self.write("收支.csv", &export)?;
-        let transfers = self.write("轉帳.csv", TRANSFER_HEADER)?;
-        let entries = daily::load_entries(&income_expense, &transfers)?;
+        let entries = daily::load_entries(&income_expense, transfers)?;
         let frozen = corrected::frozen(self.dir.path().join("frozen.csv"))?;
-        let files = Files { income_expense: &income_expense, transfers: &transfers };
+        let files = Files { income_expense: &income_expense, transfers };
         tiantian::import_all(&self.pool, &self.chart, &entries, &frozen, files).await
     }
 
@@ -225,6 +234,26 @@ async fn a_record_on_the_wrong_sibling_is_placed_on_the_line_picked() -> Result<
     ]);
     assert_eq!(f.refs(line).await?, ["tiantian:U1"]);
     assert!(stops::open(&f.pool).await?.is_empty());
+    Ok(())
+}
+
+/// A line another record of the same export pairs with is not offered: the
+/// record that pairs with it keeps it.
+#[tokio::test]
+async fn a_line_another_record_pairs_with_is_not_offered() -> Result<()> {
+    let f = Fixture::new().await?;
+    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850", "", "")];
+    let investment: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700", "", "")];
+    f.import_bank(&[(SAVINGS, "2026/02/01", savings), (INVESTMENT, "2026/02/01", investment)])
+        .await?;
+    // U2 is the 投資 line, booked through 券商; U1 on 活存 has no line.
+    let settled = "20260120,國泰,200,TWD,券商,200,TWD,,,x,U2\n";
+    let transfers = f.write("轉帳.csv", &[TRANSFER_HEADER, settled].concat())?;
+    let records = [memoed("20260120", 200, "國泰", "U1", "午餐")];
+    f.import_tiantian_with(&records, &transfers).await.expect_err("no 活存 line is U1");
+    let stop = f.the_stop().await?;
+    let Stop::RecordUnexplained { lines, .. } = &stop.stop else { panic!("{stop:?}") };
+    assert!(lines.is_empty(), "U2 takes the 投資 line: {lines:?}");
     Ok(())
 }
 

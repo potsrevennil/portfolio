@@ -59,6 +59,16 @@ pub async fn record(db: &mut SqliteConnection, source: &str, stops: &[Stop]) -> 
             lines.push(a.clone());
             continue;
         }
+        // Met now for another reason, it is one stop still: the old row and
+        // its pick go.
+        sqlx::query(
+            "UPDATE import_stop SET cleared_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE subject = ? AND kind <> ? AND cleared_at IS NULL",
+        )
+        .bind(stop.subject())
+        .bind(<&str>::from(stop))
+        .execute(&mut *db)
+        .await?;
         sqlx::query(
             "INSERT INTO import_stop (source, kind, subject, problem) VALUES (?, ?, ?, ?)
              ON CONFLICT (kind, subject) DO UPDATE SET source = excluded.source,

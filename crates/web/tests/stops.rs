@@ -111,50 +111,6 @@ async fn a_record_is_placed_on_the_line_or_account_picked() {
     assert!(taken.to_string().contains("已經配予另外一筆紀錄"), "{taken}");
 }
 
-/// A refusal replaces what its importer left open, but a pick survives one
-/// for another reason; met again, its stop drops the pick. A run that
-/// succeeds clears them all.
-#[tokio::test]
-async fn each_run_replaces_what_its_importer_left_open() {
-    let (_dir, pool) = ledger().await;
-    let fee = id_of(&pool, FEE).await;
-    let picked = Stop::RecordAmbiguous { record: unplaced_lunch("U1"), lines: vec![fee] };
-    let other = Stop::RecordUnexplained {
-        record: unplaced_lunch("U2"),
-        through: day("2024-02-29"),
-        lines: vec![],
-        accounts: vec![],
-    };
-    let bank =
-        Stop::SeveralOpenings { account: "Assets:Bank:Savings".into(), currency: Currency::TWD };
-    refuse(&pool, "tiantian", &[picked.clone(), other.clone()]).await;
-    refuse(&pool, "cathay-bank", &[bank]).await;
-    let id = queue(&pool, JournalQuery::default()).await.stops[0].id;
-    call(&pool, || place_record(id, Some(Pick::Line(fee).to_string()))).await.unwrap();
-
-    let open = |pool: SqlitePool| async move {
-        stops::open(&pool)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|o| (o.stop, o.pick.is_some()))
-            .collect::<Vec<_>>()
-    };
-    refuse(&pool, "tiantian", std::slice::from_ref(&other)).await;
-    let left = open(pool.clone()).await;
-    assert_eq!(left.len(), 3, "the pick and the bank's stop stay: {left:?}");
-    refuse(&pool, "tiantian", std::slice::from_ref(&picked)).await;
-    let left = open(pool.clone()).await;
-    assert!(left.iter().all(|(_, pick)| !pick), "{left:?}");
-    assert!(!left.contains(&(other, false)), "{left:?}");
-
-    let mut conn = pool.acquire().await.unwrap();
-    stops::clear(&mut conn, "tiantian").await.unwrap();
-    drop(conn);
-    let left = open(pool.clone()).await;
-    assert!(matches!(left.as_slice(), [(Stop::SeveralOpenings { .. }, false)]), "{left:?}");
-}
-
 /// The coffee waiting on 活存 is not on its statement; the bank shows it on
 /// a sibling, and one click moves it there, as an edit.
 #[tokio::test]

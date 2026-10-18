@@ -58,6 +58,7 @@ pub fn Stops(stops: Vec<ImportStop>) -> impl IntoView {
 
 #[component]
 fn Stop(stop: ImportStop) -> impl IntoView {
+    // A pick can be made again until the import uses it; a write is done.
     let ImportStop { id, kind, picked, resolved } = stop;
     let done = resolved.then(|| match &picked {
         Some(_) => view! { <p class="chosen">"已選，後一擺匯入就會對著"</p> },
@@ -85,7 +86,7 @@ fn Stop(stop: ImportStop) -> impl IntoView {
             view! {
                 <Record entry />
                 <p class="why">{format!("這筆猶未對帳，毋過「{account}」的對帳單到 {through} 攏無這筆。")}</p>
-                <Moves id siblings />
+                {(!resolved).then(|| view! { <Moves id siblings /> })}
                 <p class="note">
                     "金額抑是日期無著的話：" <a href=edit>"修改"</a>
                 </p>
@@ -99,7 +100,7 @@ fn Stop(stop: ImportStop) -> impl IntoView {
                     "這筆轉帳「{account}」的對帳單猶未出現，毋過伊嘛記佇「{other}」，規筆徙去後一期袂使得。拆做兩筆，逐筆家己對帳。",
                 )}
             </p>
-            <Split id />
+            {(!resolved).then(|| view! { <Split id /> })}
         }
         .into_any(),
         StopKind::TwoDates { entry, dates } => {
@@ -109,7 +110,7 @@ fn Stop(stop: ImportStop) -> impl IntoView {
                 <p class="why">
                     {format!("這筆轉帳兩間銀行記佇無仝日：{}。拆做兩筆，逐筆用家己的日子。", days.join("、"))}
                 </p>
-                <Split id />
+                {(!resolved).then(|| view! { <Split id /> })}
             }
             .into_any()
         }

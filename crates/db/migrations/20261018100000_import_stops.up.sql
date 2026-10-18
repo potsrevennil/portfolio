@@ -15,7 +15,9 @@
 CREATE TABLE import_stop (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     source      TEXT NOT NULL,                     -- the importer, as import_batch.source names it
-    kind        TEXT NOT NULL,
+    kind        TEXT NOT NULL                      -- a db::stops::Stop variant, as strum names it
+        CHECK (kind IN ('record_ambiguous', 'record_unexplained', 'not_on_statement',
+                        'shared_deferral', 'two_dates', 'several_openings', 'unchained')),
     subject     TEXT NOT NULL,                     -- what it is about: a record's ref, a transaction id
     problem     TEXT NOT NULL CHECK (json_valid(problem)),
     pick        TEXT CHECK (pick IS NULL OR json_valid(pick)),
