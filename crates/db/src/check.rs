@@ -18,7 +18,7 @@ use super::{
     assertions::{self, AssertionSource, BalanceAssertion},
     broker,
     holdings::{self, HoldingAssertion},
-    query::{in_subtree, AccountBalance, AccountType, LedgerData},
+    query::{in_subtree, AccountType, LedgerData},
 };
 
 /// An outside figure: a balance held to the postings, or a holding held to
@@ -197,25 +197,50 @@ fn passed(report: CheckReport) -> Result<CheckReport> {
     }
 }
 
+/// One figure an assertion states, against what the postings sum to on
+/// that day.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Point {
+    /// The day whose balance is compared: the day before `period_start` for
+    /// the opening, `period_end` for the closing.
+    pub as_of: NaiveDate,
+    pub expected: Decimal,
+    pub computed: Decimal,
+}
+
+impl Point {
+    pub fn ok(&self) -> bool { self.expected == self.computed }
+}
+
+/// Each figure `a` states (opening, then closing) against the postings.
+pub fn points(data: &LedgerData, a: &BalanceAssertion) -> Vec<Point> {
+    a.points()
+        .map(|(as_of, expected)| Point {
+            as_of,
+            expected,
+            computed: data.subtree_balance(&a.account, a.currency, as_of),
+        })
+        .collect()
+}
+
 /// The pure part of [`check`].
 pub fn check_data(data: &LedgerData, assertions: &[BalanceAssertion]) -> CheckReport {
     let mut report = CheckReport::default();
     for a in assertions {
-        let points = a.points().count();
-        let failed: Vec<Mismatch> = a
-            .points()
-            .filter_map(|(as_of, expected)| {
-                let computed = subtree_balance(&data.balances_as_of(as_of), &a.account, a.currency);
-                if computed == expected {
-                    None
-                } else {
-                    Some(Mismatch { figure: Figure::Balance(a.clone()), as_of, expected, computed })
-                }
+        let points = points(data, a);
+        let failed: Vec<Mismatch> = points
+            .iter()
+            .filter(|p| !p.ok())
+            .map(|p| Mismatch {
+                figure: Figure::Balance(a.clone()),
+                as_of: p.as_of,
+                expected: p.expected,
+                computed: p.computed,
             })
             .collect();
 
         let summary = report.accounts.entry(a.account.clone()).or_default();
-        summary.checked += points;
+        summary.checked += points.len();
         summary.failed += failed.len();
         summary.vouched_through = summary.vouched_through.max(Some(a.period_end));
         report.mismatches.extend(failed);
@@ -308,16 +333,6 @@ pub fn uncounted(
         })
         .map(|b| (b.path, b.currency))
         .collect()
-}
-
-/// An assertion on an account covers its subtree, as a Beancount `balance`
-/// does.
-fn subtree_balance(balances: &[AccountBalance], root: &str, currency: Currency) -> Decimal {
-    balances
-        .iter()
-        .filter(|b| b.currency == currency && in_subtree(&b.path, root))
-        .map(|b| b.amount)
-        .sum()
 }
 
 /// The newest date an assertion vouches for this balance. Only the currency it

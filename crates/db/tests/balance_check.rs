@@ -5,6 +5,7 @@ use chrono::NaiveDate;
 use db::{
     assertions::{self, AssertionSource, BalanceAssertion},
     check::{self, Unchecked},
+    query,
 };
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
@@ -94,6 +95,19 @@ async fn matching_figures_pass_and_cover_the_subtree() {
     assert!(report.ok(), "{report}");
     assert_eq!(report.figures(), 2, "a statement period states an opening and a closing");
     assert_eq!(report.accounts["Assets:Bank"].vouched_through, Some(d(2024, 4, 1)));
+}
+
+#[tokio::test]
+async fn each_figure_is_listed_with_what_the_books_say() {
+    let (_dir, pool) = ledger().await;
+    let data = query::LedgerData::load(&pool).await.unwrap();
+    // The opening is the end of the day before the period; the closing is off.
+    let points = check::points(&data, &statement(dec!(1000), dec!(950)));
+    assert_eq!(points, [
+        check::Point { as_of: d(2024, 3, 9), expected: dec!(1000), computed: dec!(1000) },
+        check::Point { as_of: d(2024, 4, 1), expected: dec!(950), computed: dec!(900) },
+    ]);
+    assert_eq!(points.iter().map(check::Point::ok).collect::<Vec<_>>(), [true, false]);
 }
 
 #[tokio::test]

@@ -3,7 +3,7 @@
 use leptos::prelude::*;
 
 use super::{axis::plotted, figure::FigureText};
-use crate::model::Share;
+use crate::model::{JournalQuery, Share};
 
 /// Where a flow came from or went: a bar per account, largest first, its
 /// sub-accounts folded beneath it. Bars share one scale, the largest
@@ -36,7 +36,9 @@ fn share_row(s: Share, depth: usize, largest: f64, whole: Option<f64>, hue: usiz
     let part = value.zip(whole).map(|(v, w)| format!("{:.0}%", v / w * 100.0));
     let row = view! {
         <span class="marker" aria-hidden="true"></span>
-        <span class="name">{s.label}</span>
+        <a class="name" href=format!("/account{}", JournalQuery::account(&s.path))>
+            {s.label}
+        </a>
         <span class="track" aria-hidden="true">
             {width.map(|w| view! { <span class=format!("fill s{hue}") style=format!("width:{w:.2}%")></span> })}
         </span>

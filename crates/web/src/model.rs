@@ -590,6 +590,60 @@ pub struct Charts {
     pub expense: Share,
 }
 
+/// Who vouches for a balance check's figure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Voucher {
+    Statement,
+    Tiantian,
+    Counted,
+}
+
+impl fmt::Display for Voucher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Voucher::Statement => "對帳單",
+            Voucher::Tiantian => "天天記帳",
+            Voucher::Counted => "盤點",
+        })
+    }
+}
+
+/// One figure an outside source states for the account, against the books.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BalanceCheck {
+    pub date: String,
+    pub voucher: Voucher,
+    /// The sub-account the figure is for, when not the page's own.
+    pub account: Option<String>,
+    pub expected: Money,
+    pub computed: Money,
+    /// The books less the figure, unrounded.
+    pub difference: Money,
+    /// Decided on the exact figures: rounding for display could hide a
+    /// difference of cents.
+    pub ok: bool,
+}
+
+/// One account's page: where it stands, how it got there, and what vouches
+/// for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountPage {
+    pub path: String,
+    pub label: String,
+    /// Its place in the chart, from the root down.
+    pub trail: String,
+    /// The balance now, per currency, as its statements show it.
+    pub balance: Vec<Money>,
+    pub total: Converted,
+    /// Income and expense show what moved each month; the rest, the balance.
+    pub flow: bool,
+    /// One per currency: amounts in different currencies share no axis.
+    pub trends: Vec<Trend>,
+    /// Newest first.
+    pub checks: Vec<BalanceCheck>,
+    pub journal: Journal,
+}
+
 #[cfg(test)]
 mod tests {
     use rust_decimal_macros::dec;

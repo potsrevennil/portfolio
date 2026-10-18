@@ -16,6 +16,7 @@
   --series-2: #eb6834;
   --series-3: #1baf7a;
   --axis: #c3c2b7;
+  --good: #1d7a1d;
   color-scheme: light dark;
 }
 
@@ -34,6 +35,7 @@
     --series-2: #d95926;
     --series-3: #199e70;
     --axis: #44443f;
+    --good: #4fbf4f;
   }
 }
 
@@ -853,7 +855,8 @@ input.currency {
   align-items: start;
 }
 
-.charts h2 {
+.charts h2,
+.account-page h2 {
   font-size: 1.1rem;
   margin: 1.2rem 0 0.4rem;
 }
@@ -1076,14 +1079,17 @@ input.currency {
   overflow-x: auto;
 }
 
-.table-view table {
+.table-view table,
+table.checks {
   border-collapse: collapse;
   font-size: 0.9rem;
   margin: 0.4rem 0;
 }
 
 .table-view th,
-.table-view td {
+.table-view td,
+table.checks th,
+table.checks td {
   padding: 0.25rem 0.8rem 0.25rem 0;
   border-bottom: 1px solid var(--line);
   text-align: right;
@@ -1172,4 +1178,81 @@ input.currency {
   font-size: 0.85rem;
   margin-left: 0.4rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* 口座 */
+
+.account-page > header,
+.account-page > section:not(.journal) {
+  padding: 0 1rem;
+}
+
+.account-head .trail {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0.8rem 0 0;
+}
+
+.account-head h1 {
+  font-size: 1.5rem;
+  margin: 0.1rem 0 0.3rem;
+}
+
+.account-head .standing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.8rem;
+  align-items: baseline;
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+
+.account-head a,
+.shares a.name {
+  color: var(--accent);
+}
+
+.shares a.name {
+  text-decoration: none;
+}
+
+.shares a.name:hover {
+  text-decoration: underline;
+}
+
+
+.account-page h3 {
+  font-size: 1rem;
+  margin: 0.8rem 0 0.2rem;
+  color: var(--muted);
+}
+
+.account-page .scroll {
+  overflow-x: auto;
+}
+
+
+
+/* Words read from the left; only the figures line up on the right. */
+table.checks th,
+table.checks td:not(.figure) {
+  text-align: left;
+}
+
+table.checks th {
+  font-weight: 400;
+}
+
+table.checks thead th {
+  color: var(--muted);
+}
+
+.check.ok {
+  color: var(--good);
+}
+
+.check.failed {
+  color: var(--negative);
+  font-weight: 600;
 }

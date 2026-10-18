@@ -1,12 +1,13 @@
 //! A small ledger in three currencies over 2024's first quarter: what the
-//! charts are drawn from. All values are invented. Not every test binary
-//! uses every item.
+//! charts and account pages are drawn from. All values are invented. Not every
+//! test binary uses every item.
 #![allow(dead_code)]
 
 use chrono::NaiveDate;
 use db::assertions::{AssertionSource, BalanceAssertion};
 use ledger::journal::Journal;
 use ledger_types::currency::Currency;
+use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
@@ -55,30 +56,45 @@ fn journal() -> Journal {
             ("Assets:Bank:FX", "5000", JPY),
             ("Equity:Opening-Balances", "-5000", JPY),
         ]),
+        // Euros that came and went within March: zero at every month's end.
+        ("2024-03-10", &[("Assets:Bank:FX", "20", EUR), ("Equity:Opening-Balances", "-20", EUR)]),
+        ("2024-03-20", &[("Assets:Bank:FX", "-20", EUR), ("Equity:Opening-Balances", "20", EUR)]),
         // A foreign expense, converted at its own date.
         ("2024-03-05", &[("Expenses:Food", "10", USD), ("Assets:Bank:FX", "-10", USD)]),
     ];
     build::journal(txns)
 }
 
+/// A statement for 活存 over the quarter and a count of the card at its end.
 fn assertions() -> Vec<BalanceAssertion> {
-    [("Assets:Bank:Savings", "25000"), ("Liabilities:Card", "-500")]
-        .into_iter()
-        .map(|(account, closing)| BalanceAssertion {
+    let end = TODAY.parse().unwrap();
+    vec![
+        BalanceAssertion {
+            source: AssertionSource::Statement,
+            account: "Assets:Bank:Savings".into(),
+            currency: Currency::TWD,
+            period_start: Some("2024-01-02".parse().unwrap()),
+            opening: Some(Decimal::from(10000)),
+            period_end: end,
+            closing: Decimal::from(25000),
+        },
+        BalanceAssertion {
             source: AssertionSource::Counted,
-            account: account.into(),
+            account: "Liabilities:Card".into(),
             currency: Currency::TWD,
             period_start: None,
             opening: None,
-            period_end: TODAY.parse().unwrap(),
-            closing: closing.parse().unwrap(),
-        })
-        .collect()
+            period_end: end,
+            closing: Decimal::from(-500),
+        },
+    ]
 }
 
 pub async fn ledger() -> (TempDir, SqlitePool) {
     let (dir, pool) = build::load(MAPPING, &journal(), &assertions()).await;
     build::usd_rate(&pool, "2024-01-01", 30.0).await;
+    // A later rate: an expense keeps the rate of its own day.
+    build::usd_rate(&pool, "2024-03-31", 31.0).await;
     (dir, pool)
 }
 

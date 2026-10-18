@@ -129,7 +129,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     let row = || {
         view! {
             <span class="marker" aria-hidden="true"></span>
-            <a class="name" href=format!("/journal{}", JournalQuery::account(&n.path))>
+            <a class="name" href=format!("/account{}", JournalQuery::account(&n.path))>
                 {n.label.clone()}
             </a>
             <Figures total=n.total.clone() native=n.native.clone() />
