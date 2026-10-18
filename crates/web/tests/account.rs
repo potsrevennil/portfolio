@@ -4,24 +4,19 @@
 
 mod common;
 
-use chrono::NaiveDate;
 use common::{
-    page::{position, visible, Site},
-    sample::{ledger, TODAY},
+    page::{call, position, table, visible, Site},
+    sample::{ledger, today},
 };
 use db::assertions::{self, AssertionSource, BalanceAssertion};
-use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
-use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use leptos::prelude::*;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use web::{
     account::{load_account, AccountView},
     model::{AccountPage, JournalQuery},
-    server,
 };
-
-fn today() -> NaiveDate { TODAY.parse().unwrap() }
 
 async fn page(pool: &SqlitePool, path: &str) -> AccountPage {
     web::detail::load(pool, &JournalQuery::account(path), today(), Currency::TWD).await.unwrap()
@@ -29,13 +24,6 @@ async fn page(pool: &SqlitePool, path: &str) -> AccountPage {
 
 fn render(page: AccountPage) -> String {
     Owner::new().with(|| view! { <AccountView page /> }.to_html())
-}
-
-/// The `nth` table's rows as a reader sees them.
-fn table(html: &str, nth: usize) -> Vec<String> {
-    let body = html.split("<tbody>").nth(nth + 1).expect("the table");
-    let body = &body[..body.find("</tbody>").unwrap()];
-    body.split("<tr").skip(1).map(|row| visible(&format!("<tr{row}"))).collect()
 }
 
 /// A figure no import ever checked: wrong by one dollar, recorded after the
@@ -119,14 +107,8 @@ async fn income_and_expense_show_what_moved_each_month() {
     assert!(text.contains("2024-01 30,000 TWD"), "{text}");
 }
 
-/// Calls the server function as the server would, with the pool in context.
 async fn load(pool: &SqlitePool, query: JournalQuery) -> Result<AccountPage, ServerFnError> {
-    let owner = Owner::new();
-    let call = owner.with(|| {
-        provide_context(pool.clone());
-        ScopedFuture::new(load_account(query))
-    });
-    call.await
+    call(pool, || load_account(query)).await
 }
 
 #[tokio::test]
@@ -143,18 +125,9 @@ async fn the_server_function_names_what_it_cannot_find() {
     assert!(found.checks[0].ok);
 }
 
-async fn site() -> Site {
-    Site::new(|| async {
-        let (dir, pool) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default(), Default::default()), dir)
-    })
-    .await
-}
-
 #[tokio::test]
 async fn the_server_renders_the_account_route_and_pages_its_journal_there() {
-    let site = site().await;
+    let site = Site::serving(ledger).await;
     let html = site.page("/account?account=Assets%3ABank%3ASavings").await;
     // The head is sent before the account is read; the client names the tab.
     assert!(html.contains("口座 · 帳簿"), "{html}");
