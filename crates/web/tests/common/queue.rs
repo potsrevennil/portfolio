@@ -3,18 +3,16 @@
 //! invented. Not every test binary uses every item.
 #![allow(dead_code)]
 
-use db::{
-    assertions::{AssertionSource, BalanceAssertion},
-    load,
-};
+use db::assertions::{AssertionSource, BalanceAssertion};
 use ledger::{
-    journal::{self, Journal, Posting, UNVERIFIED_TAG},
+    journal::{Journal, Posting, UNVERIFIED_TAG},
     model::Source,
 };
 use ledger_types::currency::Currency;
-use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
+
+use super::fixture::{self, posting};
 
 pub const MAPPING: &str = r#"
 [display]
@@ -104,16 +102,10 @@ pub fn journal() -> Journal {
         .enumerate()
         .flat_map(|(group, t)| {
             t.legs.iter().map(move |(account, amount)| Posting {
-                group: group as u64,
                 source: t.source,
-                date: t.date.parse().unwrap(),
-                payee: None,
                 narration: t.narration.into(),
-                external_ref: None,
-                account: account.to_string(),
-                amount: amount.parse::<Decimal>().unwrap(),
-                currency: Currency::TWD,
                 tags: t.unverified.then(|| UNVERIFIED_TAG.to_string()),
+                ..posting(group, t.date, account, amount, Currency::TWD)
             })
         })
         .collect();
@@ -138,21 +130,7 @@ pub fn assertions() -> Vec<BalanceAssertion> {
 }
 
 pub async fn ledger() -> (TempDir, SqlitePool) {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    std::fs::write(root.join("mapping.toml"), MAPPING).unwrap();
-    let journal_path = root.join("journal.csv");
-    journal::write(&journal_path, &journal()).unwrap();
-    journal::write_assertions(&journal::assertions_path(&journal_path), &assertions()).unwrap();
-    let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    load::run(&load::Args {
-        journal: journal_path,
-        database_url: url.clone(),
-        mapping: root.join("mapping.toml"),
-    })
-    .await
-    .unwrap();
-    let pool = db::init_db(&url).await.unwrap();
+    let (dir, pool) = fixture::load(MAPPING, &journal(), &assertions()).await;
     for narration in UNREVIEWED {
         sqlx::query("UPDATE transactions SET reviewed = 0 WHERE narration = ?")
             .bind(narration)

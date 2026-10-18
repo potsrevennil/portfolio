@@ -14,10 +14,7 @@
 //! WEB_BROWSER_TESTS=1 cargo test -p web --test browser
 //! ```
 
-#[path = "common/coverage.rs"]
-mod coverage;
-#[path = "common/queue.rs"]
-mod queue;
+mod common;
 
 use std::{
     net::SocketAddr,
@@ -26,13 +23,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+use common::{
+    coverage,
+    queue::{ledger, COFFEE, LUNCH, TAXI},
+};
 use db::pairing::{self, Ambiguity};
 use fantoccini::{elements::Element, Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use leptos::prelude::LeptosOptions;
-use queue::{ledger, COFFEE, LUNCH, TAXI};
 use rust_decimal_macros::dec;
 use serde_json::json;
 use sqlx::SqlitePool;

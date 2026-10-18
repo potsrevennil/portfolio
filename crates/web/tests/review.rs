@@ -6,16 +6,15 @@ mod common;
 
 use chrono::NaiveDate;
 use common::{
-    page::{position, visible, Site},
+    page::{position, router, visible, Site},
     queue::{ledger, COFFEE, FEE, LUNCH, TAXI},
 };
 use db::{
     pairing::{self, Ambiguity},
     review::StatementAccounts,
 };
-use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
-use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use leptos::prelude::*;
 use rust_decimal_macros::dec;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -35,13 +34,11 @@ async fn call<T, F>(pool: &SqlitePool, f: impl FnOnce() -> F) -> Result<T, Serve
 where
     F: std::future::Future<Output = Result<T, ServerFnError>>,
 {
-    let owner = Owner::new();
-    let call = owner.with(|| {
+    let provide = || {
         provide_context(pool.clone());
         provide_context(statement_accounts());
-        ScopedFuture::new(f())
-    });
-    call.await
+    };
+    common::page::call(provide, f).await
 }
 
 /// What the chart would name: the savings account, and a card whose first
@@ -129,17 +126,7 @@ fn with_actions<T>(f: impl FnOnce() -> T) -> T {
 async fn site() -> Site {
     Site::new(|| async {
         let (dir, pool) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        (
-            server::router(
-                options,
-                pool,
-                AtCost::default(),
-                statement_accounts(),
-                Default::default(),
-            ),
-            dir,
-        )
+        (router(pool, statement_accounts(), Default::default()), dir)
     })
     .await
 }

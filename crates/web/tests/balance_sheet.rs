@@ -7,16 +7,12 @@ mod common;
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
-use common::page::{position, visible, Site};
-use db::{
-    assertions::{AssertionSource, BalanceAssertion},
-    load,
+use common::{
+    fixture::{self, posting},
+    page::{position, router, visible, Site},
 };
-use ledger::{
-    journal::{self, Journal, Posting},
-    model::Source,
-    valuation::AtCost,
-};
+use db::assertions::{AssertionSource, BalanceAssertion};
+use ledger::{journal::Journal, valuation::AtCost};
 use ledger_types::currency::Currency;
 use leptos::prelude::*;
 use prices::YFinanceSource;
@@ -99,17 +95,8 @@ fn journal() -> Journal {
         .iter()
         .enumerate()
         .flat_map(|(group, (date, legs))| {
-            legs.iter().map(move |(account, amount, currency)| Posting {
-                group: group as u64,
-                source: Source::Manual,
-                date: date.parse().unwrap(),
-                payee: None,
-                narration: "test".into(),
-                external_ref: None,
-                account: account.to_string(),
-                amount: amount.parse::<Decimal>().unwrap(),
-                currency: *currency,
-                tags: None,
+            legs.iter().map(move |(account, amount, currency)| {
+                posting(group, date, account, amount, *currency)
             })
         })
         .collect();
@@ -133,21 +120,7 @@ fn assertions() -> Vec<BalanceAssertion> {
 }
 
 async fn ledger() -> (TempDir, SqlitePool) {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    std::fs::write(root.join("mapping.toml"), MAPPING).unwrap();
-    let journal_path = root.join("journal.csv");
-    journal::write(&journal_path, &journal()).unwrap();
-    journal::write_assertions(&journal::assertions_path(&journal_path), &assertions()).unwrap();
-    let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    load::run(&load::Args {
-        journal: root.join("journal.csv"),
-        database_url: url.clone(),
-        mapping: root.join("mapping.toml"),
-    })
-    .await
-    .unwrap();
-    let pool = db::init_db(&url).await.unwrap();
+    let (dir, pool) = fixture::load(MAPPING, &journal(), &assertions()).await;
     let ticker = YFinanceSource::get_exchange_rate_ticker(Currency::USD, Currency::TWD).unwrap();
     sqlx::query(
         "INSERT INTO stock_prices (symbol, date, close_price) VALUES (?, '2024-06-01', 30)",
@@ -263,17 +236,7 @@ async fn every_row_is_one_figure_in_twd() {
 async fn site() -> Site {
     Site::new(|| async {
         let (dir, pool) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        (
-            server::router(
-                options,
-                pool,
-                AtCost::default(),
-                Default::default(),
-                Default::default(),
-            ),
-            dir,
-        )
+        (router(pool, Default::default(), Default::default()), dir)
     })
     .await
 }

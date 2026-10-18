@@ -1,23 +1,19 @@
-//! The coverage page's synthetic ledger: one source in each state it can be
-//! in on [`TODAY`], loaded by the real load-journal. All values are invented.
+//! The coverage page's synthetic ledger as it stands on [`TODAY`]: a bank
+//! account, a multi-currency account, a card, cash and a broker, each with
+//! its own cadence. All values are invented.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
-
-use db::{
-    assertions::{AssertionSource, BalanceAssertion},
-    load,
-};
+use db::assertions::{AssertionSource, BalanceAssertion};
 use ledger::{
     coverage::Sources,
-    journal::{self, Journal, Posting, UNVERIFIED_TAG},
-    model::Source,
+    journal::{Journal, Posting, UNVERIFIED_TAG},
 };
 use ledger_types::currency::Currency;
-use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 use web::progress::Config;
+
+use super::fixture::{self, posting};
 
 pub const TODAY: &str = "2024-03-10";
 
@@ -130,17 +126,9 @@ fn journal() -> Journal {
         .enumerate()
         .flat_map(|(group, (date, unverified, legs))| {
             legs.iter().map(move |(account, amount, currency)| Posting {
-                group: group as u64,
-                source: Source::Manual,
-                date: date.parse().unwrap(),
-                payee: None,
-                narration: "test".into(),
-                external_ref: None,
-                account: account.to_string(),
-                amount: amount.parse::<Decimal>().unwrap(),
-                currency: *currency,
                 tags: (*unverified && account.starts_with("Assets"))
                     .then(|| UNVERIFIED_TAG.to_string()),
+                ..posting(group, date, account, amount, *currency)
             })
         })
         .collect();
@@ -217,25 +205,11 @@ pub struct Ledger {
 }
 
 pub async fn ledger() -> Ledger {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    let mapping = root.join("mapping.toml");
-    std::fs::write(&mapping, MAPPING).unwrap();
-    let manifest: PathBuf = root.join("manifest.csv");
-    std::fs::write(&manifest, MANIFEST.join("\n")).unwrap();
-    let journal_path = root.join("journal.csv");
-    journal::write(&journal_path, &journal()).unwrap();
-    journal::write_assertions(&journal::assertions_path(&journal_path), &assertions()).unwrap();
-    let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    load::run(&load::Args {
-        journal: journal_path,
-        database_url: url.clone(),
-        mapping: mapping.clone(),
-    })
-    .await
-    .unwrap();
-    let pool = db::init_db(&url).await.unwrap();
+    let (dir, pool) = fixture::load(MAPPING, &journal(), &assertions()).await;
     sqlx::raw_sql(BROKER).execute(&pool).await.unwrap();
-    let config = Config { sources: Sources::load(&mapping).unwrap(), manifest };
+    let manifest = dir.path().join("manifest.csv");
+    std::fs::write(&manifest, MANIFEST.join("\n")).unwrap();
+    let config =
+        Config { sources: Sources::load(dir.path().join("mapping.toml")).unwrap(), manifest };
     Ledger { dir, pool, config }
 }
