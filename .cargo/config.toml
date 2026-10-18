@@ -2,4 +2,4 @@
 protocol = "sparse"
 
 [env]
-DATABASE_URL = "sqlite:sqlite.db"
+DATABASE_URL = "sqlite:sqlx-check.db"

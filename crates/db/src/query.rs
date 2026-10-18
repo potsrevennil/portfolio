@@ -6,7 +6,7 @@
 //! and the report methods on it are pure functions of that snapshot plus an
 //! injected price table. The database-backed wrappers ([`account_balances`],
 //! [`net_worth_over_time`], [`periodic_report`]) just wire the two together and
-//! pull FX rates from the shared `stock_prices` table.
+//! pull FX rates from the market cache ([`Market`]).
 //!
 //! Sign convention follows Beancount, as the bake emits it: assets and expenses
 //! are debit-positive, liabilities/equity/income credit-negative. A balance is
@@ -30,11 +30,17 @@ pub use ledger::accounts::in_subtree;
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use portfolio::portfolio::{holding::Holding, statement::Statement, Portfolio};
-use prices::{source::YFinanceSource, PriceStore, StockPrice};
+use prices::{
+    rates::{routes, Leg},
+    source::YFinanceSource,
+    PriceStore, StockPrice,
+};
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 use strum_macros::{Display, EnumIter, EnumString};
+
+use crate::market::Market;
 
 // --- Report vocabulary ---------------------------------------------------
 
@@ -440,9 +446,10 @@ pub async fn account_balances(pool: &SqlitePool, as_of: NaiveDate) -> Result<Vec
 }
 
 /// Net worth sampled at the end of each period across `[start, end]`, in
-/// `base`. FX rates are read from the `stock_prices` table.
+/// `base`.
 pub async fn net_worth_over_time(
     pool: &SqlitePool,
+    market: &Market,
     base: Currency,
     at_cost: &AtCost,
     start: NaiveDate,
@@ -450,7 +457,7 @@ pub async fn net_worth_over_time(
     grain: Grain,
 ) -> Result<NetWorthSeries> {
     let data = LedgerData::load(pool).await?;
-    let prices = load_fx_prices(pool, &data.currencies(), base, end).await?;
+    let prices = load_fx_prices(market, &data.currencies(), base, end).await?;
     let points = generate_periods(start, end, grain)
         .into_iter()
         .map(|(_, period_end)| data.net_worth_as_of(base, at_cost, period_end.min(end), &prices))
@@ -458,34 +465,30 @@ pub async fn net_worth_over_time(
     Ok(NetWorthSeries { base, grain, points })
 }
 
-/// Income/expense flow grouped by period across `[start, end]`, in `base`. FX
-/// rates are read from the `stock_prices` table.
+/// Income/expense flow grouped by period across `[start, end]`, in `base`.
 pub async fn periodic_report(
     pool: &SqlitePool,
+    market: &Market,
     base: Currency,
     start: NaiveDate,
     end: NaiveDate,
     grain: Grain,
 ) -> Result<PeriodicReport> {
     let data = LedgerData::load(pool).await?;
-    let prices = load_fx_prices(pool, &data.currencies(), base, end).await?;
+    let prices = load_fx_prices(market, &data.currencies(), base, end).await?;
     data.periodic_report(base, start, end, grain, &prices)
 }
 
-/// Loads the FX pairs needed to quote every ledger currency in `base` from the
-/// shared `stock_prices` table, up to `end`. Both directions of each pair are
-/// fetched so an inverse rate can stand in when only one side was recorded.
+/// Loads every quote a route to price each ledger currency in `base` reads,
+/// up to `end`, from the market cache.
 pub async fn load_fx_prices(
-    pool: &SqlitePool,
+    market: &Market,
     currencies: &BTreeSet<Currency>,
     base: Currency,
     end: NaiveDate,
 ) -> Result<PriceTable> {
-    let mut tickers: BTreeSet<String> = BTreeSet::new();
-    for &c in currencies.iter().filter(|&&c| c != base) {
-        tickers.extend(YFinanceSource::get_exchange_rate_ticker(c, base));
-        tickers.extend(YFinanceSource::get_exchange_rate_ticker(base, c));
-    }
+    let tickers: BTreeSet<String> =
+        currencies.iter().flat_map(|&c| prices::rates::tickers(c, base)).collect();
     match tickers.is_empty() {
         true => Ok(PriceTable::new()),
         false => {
@@ -493,10 +496,11 @@ pub async fn load_fx_prices(
             let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
             // A date far enough back to pick up every recorded quote.
             let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid epoch date");
-            crate::quotes::StockPriceStore::new(pool.clone())
+            market
+                .prices()
                 .get_stock_prices_in_range(&refs, epoch, end)
                 .await
-                .context("loading FX rates from stock_prices")
+                .context("loading FX rates from the market cache")
         }
     }
 }
@@ -602,25 +606,54 @@ fn convert_as_of(
     }
 }
 
-/// The rate to multiply a `from` amount by to express it in `to`, as of a date.
-/// Tries the direct ticker, then the inverse. A missing pair is an error, never
-/// 1:1: that would silently count a foreign amount as the base currency.
+/// The rate to multiply a `from` amount by to express it in `to`, as of a date:
+/// from whichever route ([`routes`]) has a quote dated nearest it, the direct
+/// one on a tie. A missing rate is an error, never 1:1: that would silently
+/// count a foreign amount as the base currency.
 fn rate_as_of(
     from: Currency,
     to: Currency,
     as_of: NaiveDate,
     prices: &PriceTable,
 ) -> Result<Decimal> {
-    let inverse =
-        || ticker_rate(to, from, as_of, prices).filter(|r| !r.is_zero()).map(|r| Decimal::ONE / r);
-    match (from == to, ticker_rate(from, to, as_of, prices).or_else(inverse)) {
+    // A route is as stale as its stalest leg.
+    let route = |legs: &Vec<Leg>| {
+        legs.iter()
+            .map(|leg| leg_rate(leg.from, leg.to, as_of, prices))
+            .try_fold((0, Decimal::ONE), |(off, rate), leg| {
+                leg.map(|(o, r)| (off.max(o), rate * r))
+            })
+    };
+    let best = routes(from, to)
+        .iter()
+        .enumerate()
+        .filter_map(|(rank, legs)| route(legs).map(|(off, rate)| ((off, rank), rate)))
+        .min_by_key(|(key, _)| *key);
+    match (from == to, best) {
         (true, _) => Ok(Decimal::ONE),
-        (false, Some(rate)) => Ok(rate),
+        (false, Some((_, rate))) => Ok(rate),
         (false, None) => anyhow::bail!(
-            "no {from}→{to} exchange rate in stock_prices (needed for {as_of}); fetch it with \
-             `portfolio rates`"
+            "no {from}→{to} exchange rate in the market cache (needed for {as_of}); fetch it with \
+             `rates`"
         ),
     }
+}
+
+/// One leg's rate and how many days its quote is off `as_of`: the pair, or its
+/// inverse when that is quoted nearer.
+fn leg_rate(
+    from: Currency,
+    to: Currency,
+    as_of: NaiveDate,
+    prices: &PriceTable,
+) -> Option<(i64, Decimal)> {
+    let inverse = ticker_rate(to, from, as_of, prices)
+        .filter(|(_, r)| !r.is_zero())
+        .map(|(off, r)| (off, Decimal::ONE / r));
+    [ticker_rate(from, to, as_of, prices), inverse]
+        .into_iter()
+        .flatten()
+        .min_by_key(|(off, _)| *off)
 }
 
 /// `rate_as_of` as an option: a page that shows several currencies names the
@@ -634,16 +667,17 @@ pub fn rate(
     rate_as_of(from, to, as_of, prices).ok()
 }
 
-/// The recorded rate for one ticker as of a date: the last quote dated on or
-/// before `as_of`, or the earliest quote if the date precedes all of them.
+/// The recorded rate for one ticker as of a date, with how many days its quote
+/// is off: the last quote dated on or before `as_of`, or the earliest quote if
+/// the date precedes all of them.
 fn ticker_rate(
     from: Currency,
     to: Currency,
     as_of: NaiveDate,
     prices: &PriceTable,
-) -> Option<Decimal> {
-    YFinanceSource::get_exchange_rate_ticker(from, to)
-        .and_then(|ticker| prices.get(&ticker))
+) -> Option<(i64, Decimal)> {
+    prices
+        .get(&YFinanceSource::ticker(from, to))
         .and_then(|quotes| {
             let idx = quotes.partition_point(|p| p.date <= as_of);
             if idx > 0 {
@@ -652,7 +686,10 @@ fn ticker_rate(
                 quotes.first()
             }
         })
-        .and_then(|quote| Decimal::from_f64(quote.close_price))
+        .and_then(|quote| {
+            let off = (quote.date - as_of).num_days().abs();
+            Decimal::from_f64(quote.close_price).map(|rate| (off, rate))
+        })
 }
 
 /// True when a balance adds to net worth: an asset or liability not carried

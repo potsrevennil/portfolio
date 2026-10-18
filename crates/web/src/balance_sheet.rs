@@ -19,9 +19,10 @@ pub async fn load_balance_sheet() -> Result<BalanceSheet, ServerFnError> {
     use ledger_types::currency::Currency;
 
     let pool = expect_context::<db::SqlitePool>();
+    let market = expect_context::<db::market::Market>();
     let at_cost = expect_context::<ledger::valuation::AtCost>();
     let today = chrono::Local::now().date_naive();
-    crate::sheet::load(&pool, today, Currency::TWD, &at_cost)
+    crate::sheet::load(&pool, &market, today, Currency::TWD, &at_cost)
         .await
         .map_err(|e| ServerFnError::new(format!("{e:#}")))
 }

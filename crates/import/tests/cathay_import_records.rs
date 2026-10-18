@@ -81,6 +81,7 @@ async fn importing_every_download_into_the_frozen_ledger_adds_nothing() -> Resul
     load::run(&load::Args {
         journal,
         database_url: url.clone(),
+        market_url: format!("{url}.market"),
         mapping: records.join("ledger/mapping.toml"),
     })
     .await?;

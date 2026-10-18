@@ -31,7 +31,7 @@ pub struct Split {
 
 impl Securities {
     /// Where the CLI looks, relative to the working directory, like
-    /// `sqlite.db`.
+    /// `market.db`.
     pub const PATH: &'static str = "securities.toml";
 
     pub fn load(path: &str) -> Result<Self> {

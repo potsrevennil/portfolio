@@ -130,7 +130,8 @@ async fn site() -> Site {
     Site::new(|| async {
         let (dir, pool) = ledger().await;
         let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default(), statement_accounts()), dir)
+        let market = common::market::beside(dir.path()).await;
+        (server::router(options, pool, market, AtCost::default(), statement_accounts()), dir)
     })
     .await
 }

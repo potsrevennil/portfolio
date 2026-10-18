@@ -289,6 +289,7 @@ async fn a_frozen_ledger_holds_every_line() -> Result<()> {
     load::run(&load::Args {
         journal: args.journal.clone(),
         database_url: url.clone(),
+        market_url: format!("{url}.market"),
         mapping: f.dir.path().join("mapping.toml"),
     })
     .await?;
@@ -427,6 +428,7 @@ async fn frozen_with(f: &Fixture, name: &str, records: &str) -> Result<SqlitePoo
     load::run(&load::Args {
         journal: args.journal.clone(),
         database_url: url.clone(),
+        market_url: format!("{url}.market"),
         mapping: f.dir.path().join("mapping.toml"),
     })
     .await?;

@@ -74,13 +74,14 @@ impl SplitStore for StockSplitStore {
     }
 
     async fn get_splits(&self, start_date: NaiveDate, end_date: NaiveDate) -> Result<StockSplits> {
-        let records = query_as!(
-            StockSplitRow,
+        // A runtime query: stock_splits lives in market.db, not in the
+        // ledger schema the sqlx macros check against.
+        let records: Vec<StockSplitRow> = query_as(
             "SELECT symbol, date, ratio FROM stock_splits WHERE date >= ? AND date <= ? ORDER BY \
              symbol, date ASC",
-            start_date,
-            end_date
         )
+        .bind(start_date)
+        .bind(end_date)
         .fetch_all(&self.pool)
         .await?;
 
