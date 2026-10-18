@@ -2689,8 +2689,12 @@ dependencies = [
  "futures",
  "ledger-types",
  "log",
+ "reqwest",
  "rust_decimal",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "yfinance-rs",
 ]
 
