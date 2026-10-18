@@ -26,14 +26,14 @@ use std::{
 
 use db::{
     pairing::{self, Ambiguity},
-    stops::{self, Record, Stop},
+    stops::{self, Stop},
 };
 use fantoccini::{elements::Element, Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use leptos::prelude::LeptosOptions;
-use queue::{ledger, COFFEE, FEE, LUNCH, TAXI};
+use queue::{id_of, ledger, unplaced_lunch, COFFEE, FEE, LUNCH, TAXI};
 use rust_decimal_macros::dec;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -362,21 +362,8 @@ async fn pick_a_pairing() {
 /// banks dated differently is split: each from the 匯入卡牢 section.
 async fn settle_import_stops() {
     let j = Journey::start().await;
-    let id = |narration: &'static str| {
-        sqlx::query_scalar::<_, i64>("SELECT id FROM transactions WHERE narration = ?")
-            .bind(narration)
-            .fetch_one(&j.pool)
-    };
-    let (fee, transfer) = (id(FEE).await.unwrap(), id("代墊").await.unwrap());
-    let record = Record {
-        external_ref: "tiantian:U9".into(),
-        date: "2024-02-01".parse().unwrap(),
-        account: "Assets:Bank:Savings".into(),
-        amount: dec!(-500),
-        currency: Currency::TWD,
-        counter: vec!["Expenses:Food".into()],
-        narration: "午餐".into(),
-    };
+    let (fee, transfer) = (id_of(&j.pool, FEE).await, id_of(&j.pool, "代墊").await);
+    let record = unplaced_lunch("U9");
     let mut conn = j.pool.acquire().await.unwrap();
     stops::record(&mut conn, "tiantian", &[Stop::RecordAmbiguous { record, lines: vec![fee] }])
         .await

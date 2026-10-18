@@ -61,11 +61,22 @@ pub struct Manual {
 }
 
 #[derive(sqlx::FromRow)]
-struct PostingRow {
-    id: i64,
-    path: String,
-    amount: String,
-    currency: String,
+pub(crate) struct PostingRow {
+    pub id: i64,
+    pub path: String,
+    pub amount: String,
+    pub currency: String,
+}
+
+/// A transaction's legs, in posting order.
+pub(crate) async fn postings(db: &mut SqliteConnection, id: i64) -> Result<Vec<PostingRow>> {
+    Ok(sqlx::query_as(
+        "SELECT p.id, a.path, p.amount, p.currency FROM postings p
+         JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?)
 }
 
 #[derive(sqlx::FromRow)]
@@ -203,13 +214,7 @@ pub(crate) async fn edit_in(
 ) -> Result<()> {
     live(&mut *db, id).await?;
     let before = events::snapshot(&mut *db, id).await?;
-    let rows: Vec<PostingRow> = sqlx::query_as(
-        "SELECT p.id, a.path, p.amount, p.currency FROM postings p
-         JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
-    )
-    .bind(id)
-    .fetch_all(&mut *db)
-    .await?;
+    let rows = postings(&mut *db, id).await?;
     let held: HashMap<i64, &PostingRow> = rows.iter().map(|r| (r.id, r)).collect();
 
     balanced(edit.legs.iter().map(|l| (l.amount, l.currency)))?;

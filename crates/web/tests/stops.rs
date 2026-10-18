@@ -7,44 +7,22 @@ mod common;
 
 use chrono::NaiveDate;
 use common::{
+    call::{call, queue},
     page::{position, visible, Site},
-    queue::{ledger, COFFEE, FEE, LUNCH},
+    queue::{events, id_of, ledger, unplaced_lunch, COFFEE, FEE, LUNCH},
 };
-use db::{
-    review::StatementAccounts,
-    stops::{self, Record, Stop},
-};
+use db::stops::{self, Stop};
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
-use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use leptos::prelude::*;
 use rust_decimal_macros::dec;
-use serde_json::Value;
 use sqlx::SqlitePool;
 use web::{
-    model::{ImportStop, JournalQuery, Queue, StopKind},
-    review::{load_queue, Actions},
+    model::{ImportStop, JournalQuery, Pick, StopKind},
+    review::Actions,
     server,
     stops::{move_record, place_record, split_record, Stops},
 };
-
-async fn call<T, F>(pool: &SqlitePool, f: impl FnOnce() -> F) -> Result<T, ServerFnError>
-where
-    F: std::future::Future<Output = Result<T, ServerFnError>>,
-{
-    let owner = Owner::new();
-    let call = owner.with(|| {
-        provide_context(pool.clone());
-        provide_context(
-            ["Assets:Bank:Savings", "Liabilities:Card"].into_iter().collect::<StatementAccounts>(),
-        );
-        ScopedFuture::new(f())
-    });
-    call.await
-}
-
-async fn queue(pool: &SqlitePool) -> Queue {
-    call(pool, || load_queue(JournalQuery::default())).await.unwrap()
-}
 
 /// The stops section as the queue renders it, as text.
 fn rendered(stops: &[ImportStop]) -> String {
@@ -54,25 +32,6 @@ fn rendered(stops: &[ImportStop]) -> String {
         view! { <Stops stops /> }.to_html()
     });
     visible(&html)
-}
-
-async fn id_of(pool: &SqlitePool, narration: &str) -> i64 {
-    sqlx::query_scalar("SELECT id FROM transactions WHERE narration = ?")
-        .bind(narration)
-        .fetch_one(pool)
-        .await
-        .unwrap()
-}
-
-async fn events(pool: &SqlitePool, id: i64) -> Vec<(String, Value)> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT kind, payload FROM transaction_events WHERE transaction_id = ? ORDER BY id",
-    )
-    .bind(id)
-    .fetch_all(pool)
-    .await
-    .unwrap();
-    rows.into_iter().map(|(k, p)| (k, serde_json::from_str(&p).unwrap())).collect()
 }
 
 async fn accounts_of(pool: &SqlitePool, id: i64) -> Vec<String> {
@@ -93,19 +52,6 @@ async fn refuse(pool: &SqlitePool, source: &str, found: &[Stop]) {
 
 fn day(d: &str) -> NaiveDate { d.parse().unwrap() }
 
-/// A 天天記帳 lunch paid from 活存 that no statement line explains.
-fn lunch_record(id: &str) -> Record {
-    Record {
-        external_ref: format!("tiantian:{id}"),
-        date: day("2024-02-01"),
-        account: "Assets:Bank:Savings".into(),
-        amount: dec!(-500),
-        currency: Currency::TWD,
-        counter: vec!["Expenses:Food".into()],
-        narration: "午餐".into(),
-    }
-}
-
 /// The record is offered the bank line of its amount and a sibling account;
 /// the pick is kept for the next import, and the line's history says so.
 #[tokio::test]
@@ -113,14 +59,14 @@ async fn a_record_is_placed_on_the_line_or_account_picked() {
     let (_dir, pool) = ledger().await;
     let fee = id_of(&pool, FEE).await;
     refuse(&pool, "tiantian", &[Stop::RecordUnexplained {
-        record: lunch_record("U9"),
+        record: unplaced_lunch("U9"),
         through: day("2024-02-29"),
         lines: vec![fee],
         accounts: vec!["Assets:Cash".into()],
     }])
     .await;
 
-    let q = queue(&pool).await;
+    let q = queue(&pool, JournalQuery::default()).await;
     let [stop] = q.stops.as_slice() else { panic!("{:?}", q.stops) };
     let StopKind::RecordUnexplained { lines, accounts, .. } = &stop.kind else {
         panic!("{stop:?}")
@@ -137,18 +83,16 @@ async fn a_record_is_placed_on_the_line_or_account_picked() {
     let none = call(&pool, || place_record(id, None)).await.unwrap_err();
     assert!(none.to_string().contains("請揀一个"), "{none}");
     let salary = id_of(&pool, "薪水").await;
-    let stranger = call(&pool, || place_record(id, Some(ImportStop::line(salary)))).await;
+    let stranger = call(&pool, || place_record(id, Some(Pick::Line(salary).to_string()))).await;
     assert!(stranger.unwrap_err().to_string().contains("無佇會使配的明細內底"));
-    let elsewhere =
-        call(&pool, || place_record(id, Some(ImportStop::account("Assets:Old-Wallet"))));
+    let elsewhere = call(&pool, || {
+        place_record(id, Some(Pick::Account("Assets:Old-Wallet".into()).to_string()))
+    });
     assert!(elsewhere.await.unwrap_err().to_string().contains("袂使記佇這个帳戶"));
 
-    call(&pool, || place_record(id, Some(ImportStop::line(fee)))).await.unwrap();
-    let q = queue(&pool).await;
-    assert_eq!(
-        (q.stops[0].picked.clone(), q.stops[0].resolved),
-        (Some(ImportStop::line(fee)), true)
-    );
+    call(&pool, || place_record(id, Some(Pick::Line(fee).to_string()))).await.unwrap();
+    let q = queue(&pool, JournalQuery::default()).await;
+    assert_eq!((q.stops[0].picked.clone(), q.stops[0].resolved), (Some(Pick::Line(fee)), true));
     position(&rendered(&q.stops), "已選，後一擺匯入就會對著");
     let history = events(&pool, fee).await;
     assert_eq!(history[0].0, "paired");
@@ -156,13 +100,14 @@ async fn a_record_is_placed_on_the_line_or_account_picked() {
 
     // One line is one record: another record cannot take it too.
     refuse(&pool, "tiantian", &[Stop::RecordAmbiguous {
-        record: lunch_record("U10"),
+        record: unplaced_lunch("U10"),
         lines: vec![fee],
     }])
     .await;
-    let q = queue(&pool).await;
+    let q = queue(&pool, JournalQuery::default()).await;
     let other = q.stops.iter().find(|s| !s.resolved).unwrap().id;
-    let taken = call(&pool, || place_record(other, Some(ImportStop::line(fee)))).await.unwrap_err();
+    let taken =
+        call(&pool, || place_record(other, Some(Pick::Line(fee).to_string()))).await.unwrap_err();
     assert!(taken.to_string().contains("已經配予另外一筆紀錄"), "{taken}");
 }
 
@@ -173,9 +118,9 @@ async fn a_record_is_placed_on_the_line_or_account_picked() {
 async fn each_run_replaces_what_its_importer_left_open() {
     let (_dir, pool) = ledger().await;
     let fee = id_of(&pool, FEE).await;
-    let picked = Stop::RecordAmbiguous { record: lunch_record("U1"), lines: vec![fee] };
+    let picked = Stop::RecordAmbiguous { record: unplaced_lunch("U1"), lines: vec![fee] };
     let other = Stop::RecordUnexplained {
-        record: lunch_record("U2"),
+        record: unplaced_lunch("U2"),
         through: day("2024-02-29"),
         lines: vec![],
         accounts: vec![],
@@ -184,8 +129,8 @@ async fn each_run_replaces_what_its_importer_left_open() {
         Stop::SeveralOpenings { account: "Assets:Bank:Savings".into(), currency: Currency::TWD };
     refuse(&pool, "tiantian", &[picked.clone(), other.clone()]).await;
     refuse(&pool, "cathay-bank", &[bank]).await;
-    let id = queue(&pool).await.stops[0].id;
-    call(&pool, || place_record(id, Some(ImportStop::line(fee)))).await.unwrap();
+    let id = queue(&pool, JournalQuery::default()).await.stops[0].id;
+    call(&pool, || place_record(id, Some(Pick::Line(fee).to_string()))).await.unwrap();
 
     let open = |pool: SqlitePool| async move {
         stops::open(&pool)
@@ -226,7 +171,7 @@ async fn a_record_its_statement_passes_by_moves_to_the_sibling() {
         siblings: vec!["Assets:Cash".into()],
     }])
     .await;
-    let q = queue(&pool).await;
+    let q = queue(&pool, JournalQuery::default()).await;
     let text = rendered(&q.stops);
     position(&text, "這筆猶未對帳，毋過「活存」的對帳單到 2024-03-31 攏無這筆");
     position(&text, "改記佇「現金」");
@@ -238,7 +183,10 @@ async fn a_record_its_statement_passes_by_moves_to_the_sibling() {
     call(&pool, || move_record(id, "Assets:Cash".into())).await.unwrap();
     assert_eq!(accounts_of(&pool, coffee).await, ["Assets:Cash", "Expenses:Food"]);
     assert_eq!(events(&pool, coffee).await[0].0, "edited");
-    position(&rendered(&queue(&pool).await.stops), "已處理，閣匯入一擺就好");
+    position(
+        &rendered(&queue(&pool, JournalQuery::default()).await.stops),
+        "已處理，閣匯入一擺就好",
+    );
 }
 
 /// A transfer two banks dated differently is split through the clearing
@@ -256,7 +204,7 @@ async fn a_transfer_dated_twice_is_split_in_two() {
         clearing: "Assets:Bank:Clearing".into(),
     }])
     .await;
-    let q = queue(&pool).await;
+    let q = queue(&pool, JournalQuery::default()).await;
     let text = rendered(&q.stops);
     position(&text, "這筆轉帳兩間銀行記佇無仝日：「活存」2024-01-05、「甲公司分帳」2024-01-06");
     position(&text, "拆做兩筆");
@@ -311,7 +259,7 @@ async fn stops_the_downloads_settle_are_only_shown() {
         .execute(&pool)
         .await
         .unwrap();
-    let q = queue(&pool).await;
+    let q = queue(&pool, JournalQuery::default()).await;
     assert_eq!(q.stops.len(), 1, "{:?}", q.stops);
     let text = rendered(&q.stops);
     position(&text, "「活存」2024-02-10 的餘額，帳裡是 12,300 TWD，對帳單是 12,400 TWD");
@@ -326,7 +274,7 @@ async fn the_queue_page_shows_what_stopped_the_import() {
         let (dir, pool) = ledger().await;
         let fee = id_of(&pool, FEE).await;
         refuse(&pool, "tiantian", &[Stop::RecordAmbiguous {
-            record: lunch_record("U9"),
+            record: unplaced_lunch("U9"),
             lines: vec![fee],
         }])
         .await;

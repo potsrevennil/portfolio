@@ -6,20 +6,18 @@ use leptos::prelude::*;
 use crate::{
     balance_sheet::MoneyText,
     journal::{EntryHead, EntryLegs},
-    model::{Entry, ImportStop, Place, StopKind, Unplaced},
+    model::{Entry, ImportStop, Pick, Place, StopKind, Unplaced},
     review::{ActionError, Actions},
 };
 
-/// Where a 天天記帳 record belongs: `place` is a radio value of
-/// [`ImportStop`].
+/// Where a 天天記帳 record belongs: `place` is a [`Pick`]'s text.
 #[server]
 pub async fn place_record(stop: i64, place: Option<String>) -> Result<(), ServerFnError> {
     use crate::review::failed;
 
     let pool = expect_context::<db::SqlitePool>();
-    let place = place.ok_or_else(|| ServerFnError::new("請揀一个"))?;
-    let pick = crate::queue::pick(&place).map_err(failed)?;
-    db::stops::choose(&pool, stop, &pick).await.map_err(failed)
+    let pick: Pick = place.unwrap_or_default().parse().map_err(ServerFnError::new)?;
+    db::stops::choose(&pool, stop, &pick.into()).await.map_err(failed)
 }
 
 /// Moves a record its statement passes by to the sibling that shows it.
@@ -162,14 +160,9 @@ fn Record(entry: Entry) -> impl IntoView {
 
 /// The statement lines the record may be, and the accounts it may book on.
 #[component]
-fn Places(
-    id: i64,
-    picked: Option<String>,
-    lines: Vec<Entry>,
-    accounts: Vec<Place>,
-) -> impl IntoView {
+fn Places(id: i64, picked: Option<Pick>, lines: Vec<Entry>, accounts: Vec<Place>) -> impl IntoView {
     let place = expect_context::<Actions>().place;
-    let is = move |value: &str| picked.as_deref() == Some(value);
+    let is = move |pick: &Pick| picked.as_ref() == Some(pick);
     view! {
         <ActionForm action=place>
             <input type="hidden" name="stop" value=id />
@@ -177,11 +170,11 @@ fn Places(
                 {lines
                     .into_iter()
                     .map(|e| {
-                        let value = ImportStop::line(e.id);
+                        let pick = Pick::Line(e.id);
                         view! {
                             <li>
                                 <label>
-                                    <input type="radio" name="place" checked=is(&value) value=value />
+                                    <input type="radio" name="place" checked=is(&pick) value=pick.to_string() />
                                     <EntryHead entry=e.clone() />
                                     <EntryLegs legs=e.legs />
                                 </label>
@@ -192,11 +185,11 @@ fn Places(
                 {accounts
                     .into_iter()
                     .map(|a| {
-                        let value = ImportStop::account(&a.path);
+                        let pick = Pick::Account(a.path.clone());
                         view! {
                             <li>
                                 <label>
-                                    <input type="radio" name="place" checked=is(&value) value=value />
+                                    <input type="radio" name="place" checked=is(&pick) value=pick.to_string() />
                                     <span>{format!("記佇「{}」，等伊的對帳單", a.label)}</span>
                                 </label>
                             </li>

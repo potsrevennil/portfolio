@@ -2,9 +2,15 @@
 //! accounts the app knows only together as 國泰: refused and rolled back, kept
 //! for the review queue, settled there, and imported again.
 
+mod common;
+
 use std::path::PathBuf;
 
 use anyhow::Result;
+use common::{
+    cathay::{period, Line},
+    tiantian::{memoed, EXPORT_HEADER, TRANSFER_HEADER},
+};
 use db::{
     review::{self, Manual, StatementAccounts},
     stops::{self, Open, Pick, Stop},
@@ -49,38 +55,8 @@ const SAVINGS: &str = "111111111111";
 const INVESTMENT: &str = "333333333333";
 const KOKO: &str = "444444444444";
 
-/// A line as (date, 說明, 提出, 存入, 餘額), oldest first.
-type Line<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str);
-
 /// The first download of each account: one spend on January 2.
-const OPENING: &[Line] = &[("2026/01/02", "消費", "100", "", "900")];
-
-/// A download of `account_no` through the day before `to`.
-fn statement(account_no: &str, to: &str, lines: &[Line]) -> String {
-    let columns = ["交易日期", "帳務日期", "說明", "提出", "存入", "餘額", "交易資訊", "備註"]
-        .map(|c| format!("\"{c}\""))
-        .join(",");
-    let mut out = format!(
-        "\u{feff}\"{account_no} 活存\"\r\n\"筆數\",\"(自 2025/12/01 至 \
-         {to})\"\r\n\"幣別：TWD\"\r\n\"\r\n\"\r\n{columns}\r\n"
-    );
-    for (date, desc, out_, in_, bal) in lines.iter().rev() {
-        out.push_str(&format!(
-            "\"{date}\",\"{date}\",\"{desc}\",\"{out_}\",\"{in_}\",\"{bal}\",\"\",\"\"\r\n"
-        ));
-    }
-    out
-}
-
-const EXPORT_HEADER: &str =
-    "日期,類別,大類別,金額,幣別,成員,帳戶,標籤,備註,收支區分,上次更新,UUID\n";
-const TRANSFER_HEADER: &str =
-    "日期,從帳戶,轉出金額,幣別,到帳戶,轉入金額,幣別,標籤,備註,上次更新,UUID\n";
-
-/// A 天天記帳 spend from 國泰.
-fn spend(date: &str, amount: u32, id: &str) -> String {
-    format!("{date},飲食,食食,{amount},TWD,自己,國泰,,午餐,支,{date},{id}\n")
-}
+const OPENING: &[Line] = &[("2026/01/02", "消費", "100", "", "900", "", "")];
 
 struct Fixture {
     dir: TempDir,
@@ -114,7 +90,7 @@ impl Fixture {
         let mut paths = Vec::new();
         for (account, to, lines) in downloads {
             let name = format!("{account}-{}.csv", to.replace('/', ""));
-            paths.push(self.write(&name, &statement(account, to, lines))?);
+            paths.push(self.write(&name, &period(account, Some(to), lines))?);
         }
         let merged = Bank::Cathay.load_merged(&paths)?;
         bank::import_all(&self.pool, &self.chart, Bank::Cathay, &merged, &[]).await
@@ -214,14 +190,14 @@ impl Fixture {
 #[tokio::test]
 async fn a_record_on_the_wrong_sibling_is_placed_on_the_line_picked() -> Result<()> {
     let f = Fixture::new().await?;
-    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850")];
-    let investment: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700")];
+    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850", "", "")];
+    let investment: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700", "", "")];
     f.import_bank(&[(SAVINGS, "2026/02/01", savings), (INVESTMENT, "2026/02/01", investment)])
         .await?;
     let line = f.line("Assets:Cathay:Investment", "2026-01-20").await?;
     let before = f.transactions().await?;
 
-    let records = [spend("20260120", 200, "U1")];
+    let records = [memoed("20260120", 200, "國泰", "U1", "午餐")];
     let err = f.import_tiantian(&records).await.expect_err("no 活存 line is U1");
     assert!(format!("{err:#}").contains("U1"), "{err:#}");
     assert_eq!(f.transactions().await?, before);
@@ -257,10 +233,10 @@ async fn a_record_on_the_wrong_sibling_is_placed_on_the_line_picked() -> Result<
 #[tokio::test]
 async fn a_record_placed_on_a_sibling_waits_for_its_statement() -> Result<()> {
     let f = Fixture::new().await?;
-    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850")];
+    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850", "", "")];
     f.import_bank(&[(SAVINGS, "2026/02/01", savings)]).await?;
 
-    let records = [spend("20260120", 200, "U1")];
+    let records = [memoed("20260120", 200, "國泰", "U1", "午餐")];
     f.import_tiantian(&records).await.expect_err("活存 shows no 200");
     let stop = f.the_stop().await?;
     let Stop::RecordUnexplained { lines, accounts, .. } = &stop.stop else { panic!("{stop:?}") };
@@ -274,7 +250,7 @@ async fn a_record_placed_on_a_sibling_waits_for_its_statement() -> Result<()> {
     assert_eq!(report.counts.unverified, 1, "{report}");
     assert_eq!(f.unverified().await?, 1);
 
-    let koko: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700")];
+    let koko: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700", "", "")];
     let bank = f.import_bank(&[(KOKO, "2026/02/01", koko)]).await?;
     assert_eq!((bank.counts.verified, bank.inserted), (1, 0), "{bank}");
     assert_eq!(f.unverified().await?, 0);
@@ -288,8 +264,8 @@ async fn an_ambiguous_record_pairs_with_the_line_picked() -> Result<()> {
     let f = Fixture::new().await?;
     let savings: &[Line] = &[
         OPENING[0],
-        ("2026/01/18", "消費", "200", "", "700"),
-        ("2026/01/20", "消費", "200", "", "500"),
+        ("2026/01/18", "消費", "200", "", "700", "", ""),
+        ("2026/01/20", "消費", "200", "", "500", "", ""),
     ];
     f.import_bank(&[(SAVINGS, "2026/02/01", savings)]).await?;
     let (first, second) = (
@@ -297,7 +273,7 @@ async fn an_ambiguous_record_pairs_with_the_line_picked() -> Result<()> {
         f.line("Assets:Cathay:Savings", "2026-01-20").await?,
     );
 
-    let records = [spend("20260120", 200, "U1")];
+    let records = [memoed("20260120", 200, "國泰", "U1", "午餐")];
     f.import_tiantian(&records).await.expect_err("two lines of 200");
     let stop = f.the_stop().await?;
     let Stop::RecordAmbiguous { lines, .. } = &stop.stop else { panic!("{stop:?}") };
@@ -316,7 +292,7 @@ async fn an_ambiguous_record_pairs_with_the_line_picked() -> Result<()> {
 #[tokio::test]
 async fn a_line_already_categorised_keeps_its_category_when_picked() -> Result<()> {
     let f = Fixture::new().await?;
-    let savings: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700")];
+    let savings: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700", "", "")];
     f.import_bank(&[(SAVINGS, "2026/02/01", savings)]).await?;
     let line = f.line("Assets:Cathay:Savings", "2026-01-20").await?;
     // The category a person gives it is one the ledger already has.
@@ -348,7 +324,7 @@ async fn a_line_already_categorised_keeps_its_category_when_picked() -> Result<(
     review::edit(&f.pool, &StatementAccounts::from(&f.chart), line, &edit).await?;
     assert_ne!(f.legs(line).await?, legs);
 
-    let records = [lunch, spend("20260120", 200, "U1")];
+    let records = [lunch, memoed("20260120", 200, "國泰", "U1", "午餐")];
     f.import_tiantian(&records).await.expect_err("no uncategorised line is U1");
     let stop = f.the_stop().await?;
     stops::choose(&f.pool, stop.id, &Pick::Line(line)).await?;
@@ -367,15 +343,15 @@ async fn a_line_already_categorised_keeps_its_category_when_picked() -> Result<(
 #[tokio::test]
 async fn an_unverified_record_moves_to_the_sibling_that_shows_it() -> Result<()> {
     let f = Fixture::new().await?;
-    f.import_tiantian(&[spend("20260120", 200, "U1")]).await?;
+    f.import_tiantian(&[memoed("20260120", 200, "國泰", "U1", "午餐")]).await?;
     let record: i64 =
         sqlx::query_scalar("SELECT id FROM transactions WHERE external_ref = 'tiantian:U1'")
             .fetch_one(&f.pool)
             .await?;
     let before = f.transactions().await?;
 
-    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850")];
-    let investment: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700")];
+    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850", "", "")];
+    let investment: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700", "", "")];
     let downloads = [(SAVINGS, "2026/02/01", savings), (INVESTMENT, "2026/02/01", investment)];
     let err = f.import_bank(&downloads).await.expect_err("活存 never shows U1");
     assert!(format!("{err:#}").contains("not on the statement"), "{err:#}");
@@ -412,7 +388,7 @@ async fn a_shared_record_left_to_the_next_statement_is_split_first() -> Result<(
     let f = Fixture::new().await?;
     let record = f.transfer("2026-01-28", "Assets:Cathay:Savings", "Assets:Cathay:Koko").await?;
 
-    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850")];
+    let savings: &[Line] = &[OPENING[0], ("2026/01/25", "消費", "50", "", "850", "", "")];
     let downloads = [(SAVINGS, "2026/02/01", savings)];
     let err = f.import_bank(&downloads).await.expect_err("Koko's leg would move");
     assert!(format!("{err:#}").contains("Assets:Cathay:Koko"), "{err:#}");
@@ -449,8 +425,8 @@ async fn a_record_two_lines_date_differently_is_split_into_one_per_bank() -> Res
     let f = Fixture::new().await?;
     let record = f.transfer("2026-01-20", "Assets:Cathay:Savings", "Assets:Cathay:Koko").await?;
 
-    let savings: &[Line] = &[OPENING[0], ("2026/01/20", "轉出", "300", "", "600")];
-    let koko: &[Line] = &[OPENING[0], ("2026/01/21", "轉入", "", "300", "1200")];
+    let savings: &[Line] = &[OPENING[0], ("2026/01/20", "轉出", "300", "", "600", "", "")];
+    let koko: &[Line] = &[OPENING[0], ("2026/01/21", "轉入", "", "300", "1200", "", "")];
     let downloads = [(SAVINGS, "2026/02/01", savings), (KOKO, "2026/02/01", koko)];
     let err = f.import_bank(&downloads).await.expect_err("two days");
     assert!(format!("{err:#}").contains("split it"), "{err:#}");

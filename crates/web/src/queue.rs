@@ -8,7 +8,7 @@ use db::{
     journal::{self, Filter},
     pairing,
     review::{Edit, LegEdit, Manual},
-    stops::{self, Pick, Record, Stop},
+    stops::{self, Record, Stop},
     SqlitePool,
 };
 use ledger_types::currency::Currency;
@@ -18,7 +18,7 @@ use crate::{
     entries::{self, Chart},
     model::{
         Change, ChartAccount, Choice, Editing, Entry, ImportStop, JournalQuery, LegInput,
-        ManualInput, Money, Place, Queue, Review, StopKind, Unplaced,
+        ManualInput, Money, Pick, Place, Queue, Review, StopKind, Unplaced,
     },
 };
 
@@ -124,23 +124,27 @@ async fn import_stops(pool: &SqlitePool, chart: &Chart, base: Currency) -> Resul
                 statement: Money::new(statement, currency, base),
             },
         };
-        let picked = open.pick.map(|p| match p {
-            Pick::Line(id) => ImportStop::line(id),
-            Pick::Account(path) => ImportStop::account(&path),
-        });
+        let picked = open.pick.map(Pick::from);
         out.push(ImportStop { id: open.id, kind, picked, resolved: open.resolved });
     }
     Ok(out)
 }
 
-/// The pick a radio value names.
-pub fn pick(value: &str) -> Result<Pick> {
-    match value.split_once(':') {
-        Some(("line", id)) => {
-            Ok(Pick::Line(id.parse().with_context(|| format!("毋知是佗一筆明細：{id}"))?))
+impl From<stops::Pick> for Pick {
+    fn from(p: stops::Pick) -> Self {
+        match p {
+            stops::Pick::Line(id) => Pick::Line(id),
+            stops::Pick::Account(path) => Pick::Account(path),
         }
-        Some(("account", path)) => Ok(Pick::Account(path.to_string())),
-        _ => bail!("請揀一个"),
+    }
+}
+
+impl From<Pick> for stops::Pick {
+    fn from(p: Pick) -> Self {
+        match p {
+            Pick::Line(id) => stops::Pick::Line(id),
+            Pick::Account(path) => stops::Pick::Account(path),
+        }
     }
 }
 

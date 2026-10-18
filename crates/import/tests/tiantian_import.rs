@@ -4,9 +4,15 @@
 //! transfer between two statement accounts, one the statements contradict,
 //! and counted balances.
 
+mod common;
+
 use std::path::PathBuf;
 
 use anyhow::Result;
+use common::{
+    cathay::{period, Line},
+    tiantian::{flow, memoed, EXPORT_HEADER, TRANSFER_HEADER},
+};
 use db::{check, load};
 use import::{
     bank,
@@ -65,19 +71,6 @@ a:2,active,2026-01-05,,expense,100,TWD,國泰,,,,飲食,,,,,app,x,U2,raw,,
 a:3,active,2026-01-06,,expense,50,TWD,現金,,,,飲食,,,,,app,x,U3,raw,,
 ";
 
-const EXPORT_HEADER: &str =
-    "日期,類別,大類別,金額,幣別,成員,帳戶,標籤,備註,收支區分,上次更新,UUID\n";
-const TRANSFER_HEADER: &str =
-    "日期,從帳戶,轉出金額,幣別,到帳戶,轉入金額,幣別,標籤,備註,上次更新,UUID\n";
-
-fn flow(date: &str, amount: u32, account: &str, id: &str) -> String {
-    memoed(date, amount, account, id, "")
-}
-
-fn memoed(date: &str, amount: u32, account: &str, id: &str, memo: &str) -> String {
-    format!("{date},飲食,食食,{amount},TWD,自己,{account},,{memo},支,{date},{id}\n")
-}
-
 /// A later export: the frozen records, one entered late (U4), and three new:
 /// cash (U5), and two on the bank account, a purchase and a withdrawal.
 fn export() -> (String, String) {
@@ -98,19 +91,18 @@ fn export() -> (String, String) {
     (income_expense, transfers)
 }
 
-/// A line as (date, 說明, 提出, 存入, 餘額, 備註), oldest first.
-type Line<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
-
-const THROUGH_JANUARY_10: &[Line] =
-    &[("2026/01/02", "存入", "", "1000", "1000", ""), ("2026/01/05", "消費", "100", "", "900", "")];
+const THROUGH_JANUARY_10: &[Line] = &[
+    ("2026/01/02", "存入", "", "1000", "1000", "", ""),
+    ("2026/01/05", "消費", "100", "", "900", "", ""),
+];
 /// A line past the frozen records' last day that no record explains.
-const AFTER_THE_RECORDS: Line = ("2026/01/09", "消費", "40", "", "860", "");
+const AFTER_THE_RECORDS: Line = ("2026/01/09", "消費", "40", "", "860", "", "");
 const THROUGH_JANUARY: &[Line] = &[
-    ("2026/01/02", "存入", "", "1000", "1000", ""),
-    ("2026/01/05", "消費", "100", "", "900", ""),
-    ("2026/01/20", "消費", "200", "", "700", ""),
-    ("2026/01/21", "自行提款", "300", "", "400", "無卡提款"),
-    ("2026/01/22", "網銀外存", "320", "", "80", "222222222222"),
+    ("2026/01/02", "存入", "", "1000", "1000", "", ""),
+    ("2026/01/05", "消費", "100", "", "900", "", ""),
+    ("2026/01/20", "消費", "200", "", "700", "", ""),
+    ("2026/01/21", "自行提款", "300", "", "400", "", "無卡提款"),
+    ("2026/01/22", "網銀外存", "320", "", "80", "", "222222222222"),
 ];
 
 /// The 外幣 account's own statement, holding the far half of that transfer.
@@ -122,24 +114,6 @@ const FX_JANUARY: &str = "\
 \"交易日期\",\"帳務日期\",\"提出\",\"存入\",\"餘額\",\"成交匯率\",\"交易資訊\"
 \"2026/01/22\",\"2026/01/22\",\"−\",\"USD 10.00\",\"USD 10.00\",\"32\",\"台幣存 111111111111TWD\"
 ";
-
-/// A dated download, newest line first; it vouches through the day before
-/// `to`.
-fn statement(to: &str, lines: &[Line]) -> String {
-    let columns = ["交易日期", "帳務日期", "說明", "提出", "存入", "餘額", "交易資訊", "備註"]
-        .map(|c| format!("\"{c}\""))
-        .join(",");
-    let mut out = format!(
-        "\u{feff}\"111111111111 活存\"\r\n\"筆數\",\"(自 2025/12/01 至 \
-         {to})\"\r\n\"幣別：TWD\"\r\n\"\r\n\"\r\n{columns}\r\n"
-    );
-    for (date, desc, out_, in_, bal, memo) in lines.iter().rev() {
-        out.push_str(&format!(
-            "\"{date}\",\"{date}\",\"{desc}\",\"{out_}\",\"{in_}\",\"{bal}\",\"\",\"{memo}\"\r\n"
-        ));
-    }
-    out
-}
 
 struct Fixture {
     dir: TempDir,
@@ -165,7 +139,10 @@ impl Fixture {
         let args = freeze::FreezeArgs {
             journal: dir.path().join("journal.csv"),
             build: BuildArgs {
-                cathay_statements: vec![write("2026-01-11.csv", &statement("2026/01/11", lines))?],
+                cathay_statements: vec![write(
+                    "2026-01-11.csv",
+                    &period("111111111111", Some("2026/01/11"), lines),
+                )?],
                 line_bank_statements: Vec::new(),
                 daily_income_expense: None,
                 daily_transfers: None,
@@ -186,7 +163,7 @@ impl Fixture {
         let (income_expense, transfers) = export();
         write("收支.csv", &income_expense)?;
         write("轉帳.csv", &transfers)?;
-        write("2026-02-01.csv", &statement("2026/02/01", THROUGH_JANUARY))?;
+        write("2026-02-01.csv", &period("111111111111", Some("2026/02/01"), THROUGH_JANUARY))?;
         write("2026-02-01-USD.csv", FX_JANUARY)?;
         let pool = db::init_db(&url).await?;
         Ok(Fixture { dir, chart, pool })

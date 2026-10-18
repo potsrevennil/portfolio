@@ -495,24 +495,47 @@ pub enum StopKind {
     },
 }
 
+/// Where a record the import could not place belongs; its text is the
+/// radio button's value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Pick {
+    /// The statement line it is.
+    Line(i64),
+    /// The account it books on, by path.
+    Account(String),
+}
+
+impl fmt::Display for Pick {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Pick::Line(id) => write!(f, "line:{id}"),
+            Pick::Account(path) => write!(f, "account:{path}"),
+        }
+    }
+}
+
+impl FromStr for Pick {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.split_once(':') {
+            Some(("line", id)) => {
+                id.parse().map(Pick::Line).map_err(|_| format!("毋知是佗一筆明細：{id}"))
+            }
+            Some(("account", path)) => Ok(Pick::Account(path.to_string())),
+            _ => Err("請揀一个".to_string()),
+        }
+    }
+}
+
 /// A stop the last run of an import left.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportStop {
     pub id: i64,
     pub kind: StopKind,
-    /// The option picked, as its radio value: [`ImportStop::line`] or
-    /// [`ImportStop::account`].
-    pub picked: Option<String>,
+    pub picked: Option<Pick>,
     /// Settled by a write: the next import is all that is left.
     pub resolved: bool,
-}
-
-impl ImportStop {
-    /// The radio value of picking line `id`.
-    pub fn line(id: i64) -> String { format!("line:{id}") }
-
-    /// The radio value of picking the account at `path`.
-    pub fn account(path: &str) -> String { format!("account:{path}") }
 }
 
 /// 待確認: the journal held to unreviewed records, the lines waiting to be
