@@ -4,20 +4,15 @@
 
 mod common;
 
-use common::page::{position, visible, Site};
-use db::{
-    assertions::{AssertionSource, BalanceAssertion},
-    load,
+use common::{
+    fixture::{self, posting},
+    page::{call, position, router, visible, Site},
 };
-use ledger::{
-    journal::{self, Journal, Posting, UNVERIFIED_TAG},
-    model::Source,
-    valuation::AtCost,
-};
+use db::assertions::{AssertionSource, BalanceAssertion};
+use ledger::journal::{Journal, Posting, UNVERIFIED_TAG};
 use ledger_types::currency::Currency;
-use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use leptos::prelude::*;
 use leptos_router::params::ParamsMap;
-use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 use web::{
@@ -26,7 +21,6 @@ use web::{
         offered_for, AccountChoice, AccountNode, Journal as Page, JournalQuery, Review,
         Source as TxnSource,
     },
-    server,
 };
 
 const MAPPING: &str = r#"
@@ -148,16 +142,10 @@ fn journal() -> Journal {
         .enumerate()
         .flat_map(|(group, t)| {
             t.legs.iter().map(move |(account, amount, currency)| Posting {
-                group: group as u64,
-                source: Source::Manual,
-                date: t.date.parse().unwrap(),
                 payee: t.payee.map(Into::into),
                 narration: t.narration.clone(),
-                external_ref: None,
-                account: account.to_string(),
-                amount: amount.parse::<Decimal>().unwrap(),
-                currency: *currency,
                 tags: t.unverified.then(|| UNVERIFIED_TAG.to_string()),
+                ..posting(group, &t.date, account, amount, *currency)
             })
         })
         .collect();
@@ -181,21 +169,7 @@ fn assertions() -> Vec<BalanceAssertion> {
 
 /// The dinner and the juice await review.
 async fn ledger() -> (TempDir, SqlitePool) {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    std::fs::write(root.join("mapping.toml"), MAPPING).unwrap();
-    let journal_path = root.join("journal.csv");
-    journal::write(&journal_path, &journal()).unwrap();
-    journal::write_assertions(&journal::assertions_path(&journal_path), &assertions()).unwrap();
-    let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    load::run(&load::Args {
-        journal: journal_path,
-        database_url: url.clone(),
-        mapping: root.join("mapping.toml"),
-    })
-    .await
-    .unwrap();
-    let pool = db::init_db(&url).await.unwrap();
+    let (dir, pool) = fixture::load(MAPPING, &journal(), &assertions()).await;
     sqlx::query("UPDATE transactions SET reviewed = 0 WHERE payee = ? OR narration = ?")
         .bind(DINNER)
         .bind(JUICE)
@@ -207,12 +181,7 @@ async fn ledger() -> (TempDir, SqlitePool) {
 
 /// Calls the server function as the server would, with the pool in context.
 async fn load(pool: &SqlitePool, query: JournalQuery) -> Result<Page, ServerFnError> {
-    let owner = Owner::new();
-    let call = owner.with(|| {
-        provide_context(pool.clone());
-        ScopedFuture::new(load_journal(query))
-    });
-    call.await
+    call(|| provide_context(pool.clone()), || load_journal(query)).await
 }
 
 async fn journal_page(pool: &SqlitePool, query: JournalQuery) -> Page {
@@ -278,8 +247,7 @@ fn narrations(journal: &Page) -> Vec<String> {
 async fn site() -> Site {
     Site::new(|| async {
         let (dir, pool) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default(), Default::default()), dir)
+        (router(pool, Default::default(), Default::default()), dir)
     })
     .await
 }

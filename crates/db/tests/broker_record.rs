@@ -1,6 +1,8 @@
 //! The broker sub-ledger's storage: a record must come back exactly as it
 //! went in.
 
+mod common;
+
 use db::{
     broker::{self, NewRecord},
     import::ensure_account,
@@ -13,12 +15,10 @@ use sqlx::SqlitePool;
 
 const ACCOUNT: &str = "Assets:Broker:Test";
 
-async fn fixture() -> (tempfile::TempDir, SqlitePool) {
-    let dir = tempfile::tempdir().unwrap();
-    let url = format!("sqlite:{}", dir.path().join("test.db").display());
-    let pool = db::init_db(&url).await.unwrap();
+async fn fixture() -> (tempfile::NamedTempFile, SqlitePool) {
+    let (pool, file) = common::create_temp_db().await.unwrap();
     ensure_account(&mut *pool.acquire().await.unwrap(), &Labels::default(), ACCOUNT).await.unwrap();
-    (dir, pool)
+    (file, pool)
 }
 
 /// Every field holds a different value, so two columns that swapped places in
@@ -58,27 +58,16 @@ async fn a_record_round_trips_field_for_field() {
 #[tokio::test]
 async fn a_trade_date_is_filled_in_but_never_overwritten() {
     let (_dir, pool) = fixture().await;
-    let undated = BrokerRecord {
-        kind: RecordKind::Buy,
-        trade_date: None,
-        settle_date: "2026-03-04".parse().unwrap(),
-        executed_at: None,
+    let mut new =
+        common::broker::line(ACCOUNT, RecordKind::Buy, "2026-03-04", "2026-03-04:purchase");
+    new.record = BrokerRecord {
         symbol: Some("ZZA".into()),
         quantity: dec!(1),
         price: dec!(10),
         amount: dec!(-10),
-        commission: dec!(0),
-        currency: Currency::USD,
-        description: "an invented purchase".into(),
-        key: "2026-03-04:purchase".into(),
+        ..new.record
     };
-    let external_ref = format!("test:{}", undated.key);
-    let new = NewRecord {
-        account: ACCOUNT.into(),
-        external_ref: external_ref.clone(),
-        import_batch_id: None,
-        record: undated,
-    };
+    let external_ref = new.external_ref.clone();
     let mut conn = pool.acquire().await.unwrap();
     broker::insert(&mut conn, &new).await.unwrap();
 

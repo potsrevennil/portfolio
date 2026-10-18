@@ -1,11 +1,18 @@
-//! Reading rendered pages: the text a reader sees, and the router serving them.
+//! Reading rendered pages: the text a reader sees, the router serving them,
+//! and server functions run as the server runs them.
+#![allow(dead_code)]
 
 use std::future::Future;
 
 use axum::{body::Body, http::Request};
+use db::review::StatementAccounts;
 use http_body_util::BodyExt;
+use ledger::valuation::AtCost;
+use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use sqlx::SqlitePool;
 use tempfile::TempDir;
 use tower::ServiceExt;
+use web::{progress, server};
 
 /// The text a reader sees: markup and scripts removed.
 pub fn visible(html: &str) -> String {
@@ -62,4 +69,28 @@ impl Site {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         String::from_utf8(body.to_vec()).unwrap()
     }
+}
+
+/// The app's router over `pool`, configured as a test needs.
+pub fn router(
+    pool: SqlitePool,
+    statements: StatementAccounts,
+    coverage: progress::Config,
+) -> axum::Router {
+    let options = LeptosOptions::builder().output_name("web").build();
+    server::router(options, pool, AtCost::default(), statements, coverage)
+}
+
+/// Runs a server function as the server would, with what `provide` puts in
+/// context.
+pub async fn call<T, F>(provide: impl FnOnce(), f: impl FnOnce() -> F) -> Result<T, ServerFnError>
+where
+    F: Future<Output = Result<T, ServerFnError>>,
+{
+    let owner = Owner::new();
+    let call = owner.with(|| {
+        provide();
+        ScopedFuture::new(f())
+    });
+    call.await
 }

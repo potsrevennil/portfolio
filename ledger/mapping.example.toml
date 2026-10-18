@@ -116,6 +116,35 @@ roots = ["Assets:Cash"]
   "example",
 ] }
 
+# Where each account's own figure comes from and how often it should arrive,
+# for the 對帳進度 page. One entry per source; the account covers its subtree.
+# cadence: monthly (with day = the statement's closing day), quarterly,
+# on-demand (never late), live (current any day, e.g. Splitwise) or count
+# (with every = days between counts). grace = days a figure may run late
+# (default 10). raw = its folder under raw/, as raw/manifest.csv lists it;
+# url = where its statements are downloaded. A balance under no source is
+# listed on the page as one nothing checks.
+[[sources]]
+account = "Assets:Bank:Main:Savings"
+cadence = "on-demand"
+raw     = "main-bank/savings-123456789012"
+
+[[sources]]
+account = "Liabilities:Card"
+cadence = "monthly"
+day     = 25
+raw     = "main-card"
+url     = "https://bank.example/statements"
+
+[[sources]]
+account = "Assets:Broker:Main"
+cadence = "quarterly"
+
+[[sources]]
+account = "Assets:Cash"
+cadence = "count"
+every   = 30
+
 # Chinese labels for the account tree, used to relabel Fava's reports. A
 # category or institution above is relabelled from its own key; this covers the
 # grouping levels, the accounts the app names in Latin script, and any account
