@@ -1,7 +1,7 @@
 {
   description = "plonky-exp";
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -47,13 +47,14 @@
                 sccache
                 # LINE Bank statements are PDFs; the importer reads them through
                 # `pdftotext -raw`.
-                poppler_utils
+                poppler-utils
 
                 # Web UI build (crates/web): cargo-leptos drives the server and wasm
-                # builds; its bundled wasm-bindgen must match the crate's,
-                # which crates/web/Cargo.toml pins. binaryen's wasm-opt shrinks the
-                # release wasm.
+                # builds. It runs the wasm-bindgen-cli on PATH, which must match
+                # the wasm-bindgen crates/web/Cargo.toml pins; without one it
+                # downloads its own. binaryen's wasm-opt shrinks the release wasm.
                 cargo-leptos
+                wasm-bindgen-cli_0_2_100
                 binaryen
 
                 beancount

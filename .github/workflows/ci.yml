@@ -25,6 +25,11 @@ concurrency:
 # machine without them would SIGILL rather than fall back to a soft path.
 env:
   RUSTFLAGS: -C target-feature=+aes
+  # The runner images preinstall a stable toolchain in ~/.rustup. Keeping the
+  # devShell's rustup out of it leaves rust-toolchain.toml's nightly as the only
+  # toolchain rust-cache finds, so stable releases don't change the cache key.
+  # Outside the checkout, so the lint gate never scans it.
+  RUSTUP_HOME: ${{ github.workspace }}/../rustup
 
 jobs:
   # The tools .pre-commit-config.yaml drives, invoked directly rather than via
