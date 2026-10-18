@@ -147,6 +147,11 @@ fn the_example_config_is_valid() -> anyhow::Result<()> {
         Chart::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ledger/mapping.example.toml"))?;
     assert!(!chart.institution.accounts.is_empty(), "example names no statement account");
     assert!(!chart.expenses.is_empty(), "example maps no expense category");
+    let sources = ledger::coverage::Sources::load(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../ledger/mapping.example.toml"
+    ))?;
+    assert!(!sources.0.is_empty(), "example configures no source");
     Ok(())
 }
 
