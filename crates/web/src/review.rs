@@ -10,6 +10,7 @@ use crate::{
     balance_sheet::MoneyText,
     journal::{EntryHead, EntryLegs, JournalFilter, JournalList, OriginNote},
     model::{ChartAccount, Choice, Editing, JournalQuery, LegInput, Queue},
+    stops::{MoveRecord, PlaceRecord, SplitRecord, Stops},
 };
 
 /// Blank rows the editor offers for splitting a leg.
@@ -104,6 +105,9 @@ pub struct Actions {
     pub choose: ServerAction<ChoosePairing>,
     pub delete: ServerAction<DeleteEntry>,
     pub unconfirm: ServerAction<UnconfirmEntry>,
+    pub place: ServerAction<PlaceRecord>,
+    pub relocate: ServerAction<MoveRecord>,
+    pub split: ServerAction<SplitRecord>,
 }
 
 impl Actions {
@@ -114,6 +118,9 @@ impl Actions {
             choose: ServerAction::new(),
             delete: ServerAction::new(),
             unconfirm: ServerAction::new(),
+            place: ServerAction::new(),
+            relocate: ServerAction::new(),
+            split: ServerAction::new(),
         }
     }
 
@@ -124,6 +131,9 @@ impl Actions {
             + self.choose.version().get()
             + self.delete.version().get()
             + self.unconfirm.version().get()
+            + self.place.version().get()
+            + self.relocate.version().get()
+            + self.split.version().get()
     }
 }
 
@@ -158,10 +168,11 @@ pub fn ReviewPage() -> impl IntoView {
         <Transition fallback=|| view! { <p class="note">"載入中…"</p> }>
             {move || Suspend::new(async move {
                 match queue.await {
-                    Ok(Queue { journal, choices }) => {
+                    Ok(Queue { journal, choices, stops }) => {
                         view! {
                             <div class="journal review">
                                 <ActionError result=actions.confirm.value() />
+                                <Stops stops />
                                 <Pairings choices />
                                 <JournalFilter
                                     action="/review"
@@ -405,6 +416,7 @@ pub fn Editor(editing: Editing) -> impl IntoView {
                                             "paired" => "選為配對",
                                             "deleted" => "刪除",
                                             "unconfirmed" => "改回未確認",
+                                            "detached" => "對另外一筆拆出來",
                                             other => other,
                                         }
                                         .to_string();
