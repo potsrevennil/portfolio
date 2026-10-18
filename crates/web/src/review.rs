@@ -449,7 +449,7 @@ fn leg_row(
     }
 }
 
-/// A plain select of accounts, indented by depth.
+/// A plain select of accounts, indented by depth; a closed one is marked.
 #[component]
 pub fn AccountSelect(
     name: String,
@@ -467,7 +467,8 @@ pub fn AccountSelect(
                 .map(|a| {
                     let is_selected = a.path == selected;
                     // Full-width spaces: a select draws no tree.
-                    let text = format!("{}{}", "\u{3000}".repeat(a.depth), a.label);
+                    let closed = if a.closed { "（已結清）" } else { "" };
+                    let text = format!("{}{}{closed}", "\u{3000}".repeat(a.depth), a.label);
                     view! {
                         <option value=a.path selected=is_selected>
                             {text}

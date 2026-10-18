@@ -382,7 +382,7 @@ async fn enter_cash_by_hand() {
     j.hydrated().await;
     j.find(r#"form.delete input[name="sure"]"#).await.click().await.unwrap();
     j.find("form.delete button").await.click().await.unwrap();
-    j.until_count("li.entry", 8).await;
+    j.until_count("li.entry", 10).await;
     assert!(j.browser.current_url().await.unwrap().path().ends_with("/journal"));
     assert!(!j.text().await.contains("豆漿"));
     let deleted: Option<String> =
