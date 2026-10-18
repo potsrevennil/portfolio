@@ -5,7 +5,7 @@ mod common;
 
 use db::{
     assertions::{self, AssertionSource, BalanceAssertion},
-    broker::{self, NewRecord},
+    broker,
     coverage::{self, Figure, Record},
     holdings::{self, HoldingAssertion},
     import::ensure_account,
@@ -137,15 +137,16 @@ async fn ledger_records_cover_the_subtree_and_carry_the_unverified_mark() {
     spend(&pool, "2024-01-09", "Expenses:Food", "0", None).await;
 
     let records = coverage::ledger_records(&mut pool.acquire().await.unwrap(), BANK).await.unwrap();
-    let record = |id, date: &str, unverified| Record {
+    let record = |id, account: &str, date: &str, unverified| Record {
         id,
+        account: account.into(),
         date: date.parse().unwrap(),
         commodity: "TWD".into(),
         unverified,
     };
     assert_eq!(records, [
-        record(checked, "2024-01-05", false),
-        record(waiting, "2024-01-06", true)
+        record(checked, BANK, "2024-01-05", false),
+        record(waiting, "Assets:Bank:Test:Sub", "2024-01-06", true)
     ]);
 }
 
@@ -153,24 +154,11 @@ async fn ledger_records_cover_the_subtree_and_carry_the_unverified_mark() {
 async fn a_broker_record_moves_cash_and_the_security() {
     let (pool, _file) = fixture().await;
     let mut conn = pool.acquire().await.unwrap();
-    let line = |kind, symbol: Option<&str>, quantity, amount, key: &str| NewRecord {
-        account: BROKER.into(),
-        external_ref: format!("test:{key}"),
-        import_batch_id: None,
-        record: BrokerRecord {
-            kind,
-            trade_date: None,
-            settle_date: "2024-02-02".parse().unwrap(),
-            executed_at: None,
-            symbol: symbol.map(Into::into),
-            quantity,
-            price: dec!(0),
-            amount,
-            commission: dec!(0),
-            currency: Currency::USD,
-            description: "invented".into(),
-            key: key.into(),
-        },
+    let line = |kind, symbol: Option<&str>, quantity, amount, key| {
+        let mut line = common::broker::line(BROKER, kind, "2024-02-02", key);
+        line.record =
+            BrokerRecord { symbol: symbol.map(Into::into), quantity, amount, ..line.record };
+        line
     };
     let deposit =
         broker::insert(&mut conn, &line(RecordKind::Deposit, None, dec!(0), dec!(50), "a"))
