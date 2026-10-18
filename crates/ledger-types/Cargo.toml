@@ -5,6 +5,9 @@ edition.workspace = true
 
 # Compiles to wasm too: nothing here may pull in SQLite, the network or the
 # filesystem.
+[lints]
+workspace = true
+
 [dependencies]
 chrono       = { workspace = true }
 clap         = { workspace = true, optional = true }

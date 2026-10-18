@@ -49,3 +49,21 @@ ledger       = { path = "crates/ledger" }
 ledger-types = { path = "crates/ledger-types" }
 portfolio    = { path = "crates/portfolio" }
 prices       = { path = "crates/prices" }
+
+# Denied so `scripts/format --check` fails on them: each one flags a look-alike
+# of a standard trait, or code that duplicates instead of sharing.
+[workspace.lints.clippy]
+from_over_into                    = "deny"
+implicit_clone                    = "deny"
+inherent_to_string                = "deny"
+inherent_to_string_shadow_display = "deny"
+into_iter_without_iter            = "deny"
+iter_not_returning_iterator       = "deny"
+iter_without_into_iter            = "deny"
+match_same_arms                   = "deny"
+new_without_default               = "deny"
+redundant_clone                   = "deny"
+should_implement_trait            = "deny"
+to_string_trait_impl              = "deny"
+wrong_self_convention             = "deny"
+derivable_impls                   = "deny"

@@ -1,0 +1,11 @@
+# The deny list scripts/scan-sensitive adds to .gitleaks.toml. Copy it to
+# sensitive-patterns in the main checkout (gitignored; worktrees read it from
+# there) and replace these placeholders, which match nothing, with your own
+# account-number shapes. One RE2 regex per line; blank and # lines are skipped.
+# A finding names the line number, never the value.
+
+# One bank account, with or without the dashes a statement prints.
+\b999-?99-?999999-?9\b
+
+# Every account at one branch: its fixed prefix, then any digits.
+\b9999\d{8}\b

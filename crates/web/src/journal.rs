@@ -208,7 +208,7 @@ pub fn JournalFilter(
                     name="account"
                     placeholder="全部"
                     node_ref=box_ref
-                    value=chosen.clone()
+                    value=chosen
                     on:input=move |ev| {
                         text.set(event_target_value(&ev));
                         typing.set(true);
@@ -232,7 +232,7 @@ pub fn JournalFilter(
                     </summary>
                     <div class="panel">
                         <ul class="tree" class:hidden=searching>
-                            <li><a class="pick" href=clear.clone()>"全部"</a></li>
+                            <li><a class="pick" href=clear>"全部"</a></li>
                             {rows.into_iter().map(branch).collect_view()}
                         </ul>
                         <ul class="matches" class:hidden=move || !searching()>

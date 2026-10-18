@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
+set -o errexit
+set -o errtrace
+set -o nounset
+set -o pipefail
+
+# Scans for secrets and personal data with gitleaks: its own rules, the shapes
+# in .gitleaks.toml, and one rule per line of the deny list `sensitive-patterns`
+# (gitignored, read from the main checkout so every worktree shares it;
+# sensitive-patterns.example stands in when it is missing, as on CI).
+#
+# By default it scans the working tree minus gitignored files, which is what
+# `format --check` runs. --history scans every commit on every ref instead.
+# Findings name the rule, file, line and commit, never the matched value.
+
+history=0
+case "${1:-}" in
+  --history) history=1 ;;
+  "") ;;
+  *)
+    echo "usage: ${0##*/} [--history]" >&2
+    exit 2
+    ;;
+esac
+
+ROOT="$(realpath "$(dirname "$0")"/../)"
+cd "$ROOT"
+
+main_checkout="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+patterns="$main_checkout/sensitive-patterns"
+if [ ! -f "$patterns" ]; then
+  echo "no $patterns; using sensitive-patterns.example" >&2
+  patterns="$ROOT/sensitive-patterns.example"
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# Rules are named by line number so the report never repeats a pattern.
+config="$tmp/gitleaks.toml"
+cat .gitleaks.toml >"$config"
+n=0
+while IFS= read -r pattern || [ -n "$pattern" ]; do
+  n=$((n + 1))
+  if [[ $pattern =~ ^[[:space:]]*(#|$) ]]; then
+    continue
+  fi
+  printf "\n[[rules]]\nid = \"sensitive-patterns-line-%d\"\nregex = '''%s'''\n" \
+    "$n" "$pattern" >>"$config"
+done <"$patterns"
+
+cat >"$tmp/report.tmpl" <<'EOF'
+{{ range . }}{{ .RuleID }}  {{ .File }}:{{ .StartLine }}{{ with .Commit }}  {{ printf "%.12s" . }}{{ end }}
+{{ end }}
+EOF
+
+scan=(--config "$config" --no-banner --log-level warn --redact
+  --report-format template --report-template "$tmp/report.tmpl" --report-path "$tmp/report")
+
+status=0
+if [ "$history" -eq 1 ]; then
+  gitleaks git "${scan[@]}" --log-opts=--all . || status=$?
+else
+  # gitleaks dir ignores .gitignore, so scan a copy of the files git would see.
+  mkdir "$tmp/tree"
+  git ls-files -z --cached --others --exclude-standard |
+    while IFS= read -r -d '' f; do
+      if [ -e "$f" ]; then
+        printf '%s\0' "$f"
+      fi
+    done |
+    tar --null -T - -cf - | tar -xf - -C "$tmp/tree"
+  (cd "$tmp/tree" && gitleaks dir "${scan[@]}" .) || status=$?
+fi
+
+if [ "$status" -ne 0 ]; then
+  if [ -f "$tmp/report" ]; then
+    cat "$tmp/report" >&2
+  fi
+  exit "$status"
+fi

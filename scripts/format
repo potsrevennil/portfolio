@@ -7,8 +7,9 @@ set -o nounset
 set -o pipefail
 
 # Formats the tree. With --check nothing is written: the formatters report drift
-# instead, and the lint-only tools (deadnix, shellcheck, codespell) run too, so
-# `format --check` is exactly the CI lint gate — the workflow just calls this.
+# instead, and the lint-only checks run too (mod.rs, sensitive data, deadnix,
+# shell lint, codespell, clippy), so `format --check` is exactly the CI lint
+# gate — the workflow just calls this.
 # A plain `format` only formats; it does not run the linters. Run inside
 # `nix develop`, which puts every tool on PATH.
 
@@ -64,6 +65,12 @@ if [ "$check" -eq 1 ]; then
 
   # Lint-only tools: they never format, so they run only in --check, not on a
   # plain `format`.
+  info "Checking mod.rs holds declarations only"
+  scripts/check-mod-rs
+
+  info "Scanning for secrets and personal data"
+  scripts/scan-sensitive
+
   info "Scanning nix for dead code"
   deadnix --fail --hidden .
 
@@ -72,6 +79,11 @@ if [ "$check" -eq 1 ]; then
 
   info "Checking spelling"
   codespell .
+
+  # Last: the only check that compiles. The denied lints are in Cargo.toml's
+  # [workspace.lints.clippy].
+  info "Linting Rust"
+  cargo clippy --workspace --all-targets --quiet
 else
   info "Formatting Rust"
   cargo fmt

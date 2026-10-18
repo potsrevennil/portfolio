@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 # The command keeps its name: `portfolio freeze …`, `portfolio load-journal …`.
+[lints]
+workspace = true
+
 [[bin]]
 name = "portfolio"
 path = "src/main.rs"

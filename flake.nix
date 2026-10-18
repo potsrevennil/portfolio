@@ -40,6 +40,7 @@
                 clang
                 taplo
                 codespell
+                gitleaks
                 protobuf
                 sqlx-cli
                 sqlite

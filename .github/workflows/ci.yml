@@ -45,10 +45,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/install-nix
+      # clippy compiles the workspace, so this job caches it as build-test does
+      # (see there for why the toolchain goes on PATH first).
+      - name: Put the devShell toolchain on PATH
+        shell: nix develop -c bash -e {0}
+        run: dirname "$(command -v cargo)" >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-all-crates: true
       # scripts/format --check is the whole gate: format-checks plus the
-      # lint-only tools (deadnix, shellcheck, codespell). The same script, run
-      # without --check, is how formatting is applied locally, so the two cannot
-      # drift. It covers every `repo: local` hook in .pre-commit-config.yaml.
+      # lint-only checks (clippy, mod.rs, sensitive data, deadnix, shellcheck,
+      # codespell). The same script, run without --check, is how formatting is
+      # applied locally, so the two cannot drift. It covers every `repo: local`
+      # hook in .pre-commit-config.yaml.
       - shell: nix develop -c bash -e {0}
         run: scripts/format --check
       # The script is listed alongside the migrations so a change to the check
