@@ -1,10 +1,7 @@
 {
   description = "plonky-exp";
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-25.05";
-    # rustup alone: 25.05's 1.27 lacks the `toolchain list --quiet` that
-    # Swatinem/rust-cache runs to key its cache.
-    nixpkgs-rustup.url = "github:nixos/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-26.05";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
@@ -15,7 +12,6 @@
     systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
     perSystem = { pkgs, system, self', ... }:
       let
-        inherit (inputs.nixpkgs-rustup.legacyPackages.${system}) rustup;
         wrapShell = mkShell: attrs:
           mkShell (attrs // {
             shellHook = ''
@@ -32,7 +28,6 @@
         devShells.default = wrapShell pkgs.mkShellNoCC {
           packages =
             builtins.attrValues {
-              inherit rustup;
               inherit (pkgs)
                 direnv
                 nix-direnv
@@ -41,6 +36,7 @@
                 deadnix
                 shfmt
                 shellcheck
+                rustup
                 clang
                 taplo
                 codespell
@@ -51,13 +47,14 @@
                 sccache
                 # LINE Bank statements are PDFs; the importer reads them through
                 # `pdftotext -raw`.
-                poppler_utils
+                poppler-utils
 
                 # Web UI build (crates/web): cargo-leptos drives the server and wasm
-                # builds; its bundled wasm-bindgen must match the crate's,
-                # which crates/web/Cargo.toml pins. binaryen's wasm-opt shrinks the
-                # release wasm.
+                # builds. It runs the wasm-bindgen-cli on PATH, which must match
+                # the wasm-bindgen crates/web/Cargo.toml pins; without one it
+                # downloads its own. binaryen's wasm-opt shrinks the release wasm.
                 cargo-leptos
+                wasm-bindgen-cli_0_2_100
                 binaryen
 
                 beancount

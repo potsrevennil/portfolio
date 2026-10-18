@@ -25,8 +25,8 @@ leptos_router   = "0.8"
 rust_decimal = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
-# Pinned to the wasm-bindgen the devShell's cargo-leptos bundles (nixpkgs); the
-# two must match exactly. web-sys is the release built against it.
+# Pinned to the devShell's wasm-bindgen-cli (nixpkgs); the two must match
+# exactly. web-sys is the release built against it.
 wasm-bindgen = { version = "=0.2.100", optional = true }
 web-sys      = { version = "=0.3.77", features = ["HtmlDetailsElement", "Storage", "Window"] }
 
@@ -83,3 +83,6 @@ bin-features         = ["ssr"]
 bin-default-features = false
 lib-features         = ["hydrate"]
 lib-default-features = false
+# cargo-leptos 0.3 erases components in debug builds by default, and the
+# locked leptos_macro then calls into a leptos newer than the locked one.
+disable-erase-components = true
