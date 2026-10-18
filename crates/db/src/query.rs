@@ -36,6 +36,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 use strum_macros::{Display, EnumIter, EnumString};
 
+mod series;
+pub use series::{Flows, Valued, WorthPoint};
+
 // --- Report vocabulary ---------------------------------------------------
 
 /// One of the five account roots, carrying the sign convention a report needs.
@@ -658,8 +661,12 @@ fn ticker_rate(
 /// True when a balance adds to net worth: an asset or liability not carried
 /// at cost. Equity is out, so the `Equity:Conversions` plug never counts.
 pub fn in_net_worth(b: &AccountBalance, at_cost: &AtCost) -> bool {
-    matches!(b.account_type, AccountType::Asset | AccountType::Liability)
-        && !at_cost.covers(&b.path)
+    counts(b.account_type, &b.path, at_cost)
+}
+
+/// [`in_net_worth`] for an account not yet summed into a balance.
+fn counts(account_type: AccountType, path: &str, at_cost: &AtCost) -> bool {
+    matches!(account_type, AccountType::Asset | AccountType::Liability) && !at_cost.covers(path)
 }
 
 /// The first day of the period a date falls in.
