@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Context, Result};
 use chrono::{Datelike, NaiveDate};
 use db::{
+    chart::{root_label, tree_label},
     query::{self, Grain, LedgerData},
     series::{Flows, Valued, WorthPoint},
     SqlitePool,
@@ -78,12 +79,8 @@ pub async fn load(
     let prices = query::load_fx_prices(pool, &data.currencies(), base, range.to).await?;
     let grain = Grain::from(range.step);
     let labels = data.labels();
-    let label = |path: &str| -> String {
-        labels
-            .get(path)
-            .map(|l| l.to_string())
-            .unwrap_or_else(|| path.rsplit(':').next().unwrap_or(path).to_string())
-    };
+    let label = |path: &str| tree_label(&labels, path);
+    let root = |(path, fallback): (&str, &str)| root_label(&labels, path, fallback);
 
     let points = data.worth_points(base, at_cost, range.from, range.to, grain, &prices);
     let periods = points.iter().map(|p| period_name(p.date, range.step)).collect();
@@ -95,8 +92,8 @@ pub async fn load(
         periods,
         series: vec![
             series("淨資產", &|p| p.net()),
-            series(&root_label(&label, ASSETS), &|p| p.assets.clone()),
-            series(&root_label(&label, LIABILITIES), &|p| p.liabilities.clone()),
+            series(&root(ASSETS), &|p| p.assets.clone()),
+            series(&root(LIABILITIES), &|p| p.liabilities.clone()),
         ],
         noted: Vec::new(),
     };
@@ -107,8 +104,8 @@ pub async fn load(
     let figures = |of: &dyn Fn(&Flows) -> Valued| -> Vec<Converted> {
         flows.iter().map(|f| converted(&of(f), base)).collect()
     };
-    let income_name = root_label(&label, INCOME);
-    let expense_name = root_label(&label, EXPENSE);
+    let income_name = root(INCOME);
+    let expense_name = root(EXPENSE);
     let flow_trend = Trend {
         periods: flows.iter().map(|f| period_name(f.start, range.step)).collect(),
         series: vec![Series { name: income_name.clone(), figures: figures(&income_of) }, Series {
@@ -136,14 +133,6 @@ pub async fn load(
     let expense = share(EXPENSE.0, expense_name, &totals, false, &label, base);
 
     Ok(Charts { query: ChartQuery::from(&range), worth, flows: flow_trend, income, expense })
-}
-
-/// A root's own label, or its Taiwanese name where the chart gives none.
-fn root_label(label: &dyn Fn(&str) -> String, (path, fallback): (&str, &str)) -> String {
-    match label(path) {
-        own if own == path => fallback.to_string(),
-        own => own,
-    }
 }
 
 fn sum_under(f: &Flows, root: &str) -> Valued {

@@ -9,8 +9,7 @@ use super::{
 };
 use crate::model::Trend;
 
-/// The parts a line and a column chart share: the readout, the axes and
-/// grid, a band per period, and the table.
+/// Wraps a chart's `layer` of marks; `marks` draws the hovered period's.
 pub fn frame<M: IntoView + 'static>(
     trend: Trend,
     scale: Scale,
@@ -21,6 +20,9 @@ pub fn frame<M: IntoView + 'static>(
     let n = trend.periods.len();
     let last = n.saturating_sub(1);
     let hovered = RwSignal::new(None::<usize>);
+    // Only a keyboard reader is told each period as it moves: a pointer
+    // sweeping the plot would queue one announcement per period crossed.
+    let keyed = RwSignal::new(false);
     let shown = move || hovered.get().unwrap_or(last).min(last);
     let area: NodeRef<html::Div> = NodeRef::new();
     let at = move |x: f64| -> Option<usize> {
@@ -39,6 +41,7 @@ pub fn frame<M: IntoView + 'static>(
         };
         if let Some(next) = next {
             ev.prevent_default();
+            keyed.set(true);
             hovered.set(Some(next));
         }
     };
@@ -125,7 +128,9 @@ pub fn frame<M: IntoView + 'static>(
 
     view! {
         <div class=format!("chart {kind}")>
-            <div class="readout" aria-live="polite">{readout}</div>
+            <div class="readout" aria-live=move || if keyed.get() { "polite" } else { "off" }>
+                {readout}
+            </div>
             <div class="plot">
                 <div class="y-axis" aria-hidden="true">{y_labels}</div>
                 <div
@@ -133,8 +138,14 @@ pub fn frame<M: IntoView + 'static>(
                     node_ref=area
                     tabindex="0"
                     aria-label="用左右鍵看每期"
-                    on:pointermove=move |ev| hovered.set(at(f64::from(ev.client_x())))
-                    on:pointerdown=move |ev| hovered.set(at(f64::from(ev.client_x())))
+                    on:pointermove=move |ev| {
+                        keyed.set(false);
+                        hovered.set(at(f64::from(ev.client_x())));
+                    }
+                    on:pointerdown=move |ev| {
+                        keyed.set(false);
+                        hovered.set(at(f64::from(ev.client_x())));
+                    }
                     on:pointerleave=move |_| hovered.set(None)
                     // A press focuses the plot after placing the readout;
                     // focus only starts one that is not placed yet.

@@ -61,16 +61,23 @@ pub struct Compact(pub f64);
 impl fmt::Display for Compact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let v = self.0;
-        let (unit, size) = match v.abs() {
-            a if a >= 1e8 => ("億", 1e8),
-            a if a >= 1e4 => ("萬", 1e4),
-            _ => ("", 1.0),
+        let decimals_of = |unit: &str| -> usize {
+            match (unit, v.fract() == 0.0) {
+                ("", true) => 0,
+                ("", false) => 2,
+                _ => 1,
+            }
         };
-        let decimals = match (unit, v.fract() == 0.0) {
-            ("", true) => 0,
-            ("", false) => 2,
-            _ => 1,
-        };
+        // The largest unit the value still fills once rounded as that unit
+        // shows it, so 99,999,600 reads 1億, not 10000萬.
+        let (unit, size) = [("億", 1e8), ("萬", 1e4)]
+            .into_iter()
+            .find(|(unit, size)| {
+                let scale = 10_f64.powi(decimals_of(unit) as i32);
+                (v.abs() / size * scale).round() / scale >= 1.0
+            })
+            .unwrap_or(("", 1.0));
+        let decimals = decimals_of(unit);
         let text = format!("{:.*}", decimals, v / size);
         let text = match text.contains('.') {
             true => text.trim_end_matches('0').trim_end_matches('.').to_string(),
@@ -129,6 +136,8 @@ mod tests {
             (-25000.0, "-2.5萬"),
             (1234500.0, "123.5萬"),
             (150000000.0, "1.5億"),
+            (99999600.0, "1億"),
+            (9999.96, "1萬"),
         ];
         for (v, text) in cases {
             assert_eq!(Compact(v).to_string(), text, "{v}");

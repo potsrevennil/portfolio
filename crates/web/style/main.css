@@ -315,7 +315,8 @@ details.group > summary.row.section {
   padding: 0 1rem;
 }
 
-.journal .filter {
+.journal .filter,
+.charts .filter {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 1rem;
@@ -324,7 +325,8 @@ details.group > summary.row.section {
   border-bottom: 1px solid var(--line);
 }
 
-.journal .filter label {
+.journal .filter label,
+.charts .filter label {
   display: flex;
   gap: 0.4rem;
   align-items: center;
@@ -337,13 +339,17 @@ details.group > summary.row.section {
 
 .journal .filter select,
 .journal .filter input,
-.journal .filter button {
+.journal .filter button,
+.charts .filter select,
+.charts .filter input,
+.charts .filter button {
   font: inherit;
   max-width: 100%;
 }
 
 .journal .filter a,
-.journal .pager a {
+.journal .pager a,
+.charts .filter a {
   color: var(--accent);
 }
 
@@ -840,33 +846,6 @@ input.currency {
   padding: 0 1rem;
 }
 
-.charts .filter {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1rem;
-  align-items: center;
-  padding: 0.6rem 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.charts .filter label {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.charts .filter select,
-.charts .filter input,
-.charts .filter button {
-  font: inherit;
-}
-
-.charts .filter a {
-  color: var(--accent);
-}
-
 .charts .split {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(24rem, 100%), 1fr));
@@ -1077,7 +1056,6 @@ input.currency {
   border-radius: 0 0 4px 4px;
 }
 
-.chart .band.hovered ~ .cols,
 .chart .band.hovered {
   background-color: var(--hover);
 }

@@ -161,28 +161,36 @@ impl LedgerData {
         grain: Grain,
         prices: &PriceTable,
     ) -> Vec<Flows> {
-        let mut periods: BTreeMap<NaiveDate, Flows> = generate_periods(start, end, grain)
-            .into_iter()
-            .map(|(from, to)| {
-                (from, Flows {
-                    start: from.max(start),
-                    end: to.min(end),
-                    accounts: BTreeMap::new(),
-                })
-            })
-            .collect();
+        // By account id while summing, so a path is cloned once per period and
+        // account rather than once per posting.
+        let mut sums: BTreeMap<NaiveDate, BTreeMap<i64, Valued>> = BTreeMap::new();
         for p in self.postings.iter().filter(|p| p.date >= start && p.date <= end) {
-            let meta = &self.accounts[&p.account_id];
-            if !matches!(meta.account_type, AccountType::Income | AccountType::Expense) {
+            if !matches!(
+                self.accounts[&p.account_id].account_type,
+                AccountType::Income | AccountType::Expense
+            ) {
                 continue;
             }
-            let period = periods
-                .get_mut(&period_start_of(p.date, grain))
-                .expect("the periods cover every date in [start, end]");
             let valued = Valued::of(p.amount, p.currency, rate(p.currency, base, p.date, prices));
-            *period.accounts.entry(meta.path.clone()).or_default() += &valued;
+            *sums
+                .entry(period_start_of(p.date, grain))
+                .or_default()
+                .entry(p.account_id)
+                .or_default() += &valued;
         }
-        periods.into_values().collect()
+        generate_periods(start, end, grain)
+            .into_iter()
+            .map(|(from, to)| Flows {
+                start: from.max(start),
+                end: to.min(end),
+                accounts: sums
+                    .remove(&from)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(id, v)| (self.accounts[&id].path.clone(), v))
+                    .collect(),
+            })
+            .collect()
     }
 
     /// `root` and its subtree's balance per currency at the end of each
