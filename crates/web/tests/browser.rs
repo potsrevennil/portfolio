@@ -30,7 +30,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use leptos::prelude::LeptosOptions;
-use queue::{ledger, COFFEE, LUNCH, TAXI};
+use queue::{is_closed, ledger, COFFEE, LUNCH, OLD_WALLET, TAXI};
 use rust_decimal_macros::dec;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -249,6 +249,7 @@ async fn journeys() {
     split_in_the_editor().await;
     pick_a_pairing().await;
     enter_cash_by_hand().await;
+    close_and_reopen_an_account().await;
 }
 
 async fn confirm_from_the_queue() {
@@ -391,5 +392,26 @@ async fn enter_cash_by_hand() {
             .await
             .unwrap();
     assert!(deleted.is_some());
+    j.close().await;
+}
+
+async fn close_and_reopen_an_account() {
+    let j = Journey::start().await;
+    j.open("/accounts").await;
+    // Groups start folded; 全部展開 opens every one.
+    let tab = r#".account-row:has(a[href="/journal?account=Assets%3ASplit%3AAlpha%3ATab"])"#;
+    assert!(!j.find(tab).await.is_displayed().await.unwrap());
+    j.find(".tools button").await.click().await.unwrap();
+    assert!(j.find(tab).await.is_displayed().await.unwrap());
+
+    let wallet = r#".account-row:has(a[href="/journal?account=Assets%3AOld-Wallet"])"#;
+    j.find(&format!("{wallet} button")).await.click().await.unwrap();
+    // Closed, it stays in the list, marked.
+    j.until_count(&format!("{wallet}.closed"), 1).await;
+    let row = j.find(wallet).await;
+    assert!(row.text().await.unwrap().contains("已結清"));
+    row.find(Locator::Css("button")).await.unwrap().click().await.unwrap();
+    j.until_count(&format!("{wallet}.closed"), 0).await;
+    assert!(!is_closed(&j.pool, OLD_WALLET).await);
     j.close().await;
 }
