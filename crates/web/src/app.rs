@@ -10,6 +10,7 @@ use leptos_router::{
 use crate::{
     balance_sheet::BalanceSheetPage,
     journal::JournalPage,
+    manual::ManualPage,
     review::{Actions, ReviewCount, ReviewPage},
     summary::SummaryPage,
 };
@@ -47,6 +48,7 @@ pub fn App() -> impl IntoView {
                     <A href="/balance-sheet">"資產負債表"</A>
                     <A href="/journal">"日記帳"</A>
                     <A href="/review">"待確認" <ReviewCount /></A>
+                    <A href="/entry">"記一筆"</A>
                 </nav>
             </header>
             <main>
@@ -55,6 +57,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/balance-sheet") view=BalanceSheetPage />
                     <Route path=path!("/journal") view=JournalPage />
                     <Route path=path!("/review") view=ReviewPage />
+                    <Route path=path!("/entry") view=ManualPage />
                 </Routes>
             </main>
         </Router>

@@ -6,7 +6,7 @@ use leptos_router::hooks::use_query_map;
 
 use crate::{
     journal::{JournalFilter, JournalList},
-    model::{JournalQuery, Queue},
+    model::{ChartAccount, JournalQuery, Queue},
 };
 
 #[server]
@@ -130,5 +130,35 @@ where
         result.get().and_then(Result::err).map(|e| {
             view! { <p class="note error">{crate::error::said(&e)}</p> }
         })
+    }
+}
+
+/// A plain select of accounts, indented by depth.
+#[component]
+pub fn AccountSelect(
+    name: String,
+    accounts: Vec<ChartAccount>,
+    #[prop(optional)] selected: String,
+    /// The text of the empty choice.
+    #[prop(default = "—")]
+    blank: &'static str,
+) -> impl IntoView {
+    view! {
+        <select name=name>
+            <option value="">{blank}</option>
+            {accounts
+                .into_iter()
+                .map(|a| {
+                    let is_selected = a.path == selected;
+                    // Full-width spaces: a select draws no tree.
+                    let text = format!("{}{}", "\u{3000}".repeat(a.depth), a.label);
+                    view! {
+                        <option value=a.path selected=is_selected>
+                            {text}
+                        </option>
+                    }
+                })
+                .collect_view()}
+        </select>
     }
 }
