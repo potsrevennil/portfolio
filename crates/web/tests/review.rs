@@ -4,13 +4,19 @@
 
 mod common;
 
+use chrono::NaiveDate;
 use common::{
     page::{position, visible, Site},
     queue::{ledger, COFFEE, FEE, LUNCH, TAXI},
 };
-use db::review::StatementAccounts;
+use db::{
+    pairing::{self, Ambiguity},
+    review::StatementAccounts,
+};
 use ledger::valuation::AtCost;
+use ledger_types::currency::Currency;
 use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use rust_decimal_macros::dec;
 use serde_json::Value;
 use sqlx::SqlitePool;
 use web::{
@@ -18,8 +24,8 @@ use web::{
     manual::enter_manual,
     model::{Editing, JournalQuery, LegInput, Origin, Queue, Source as TxnSource},
     review::{
-        confirm_entry, delete_entry, load_entry, load_queue, review_count, save_entry,
-        unconfirm_entry, Actions, Editor, SPARE_ROWS,
+        choose_pairing, confirm_entry, delete_entry, load_entry, load_queue, review_count,
+        save_entry, unconfirm_entry, Actions, Editor, SPARE_ROWS,
     },
     server,
 };
@@ -426,6 +432,86 @@ async fn the_editor_offers_each_leg_and_spare_rows() {
     assert!(!offered.iter().any(|p| p.starts_with("Equity") || !p.contains(':')), "{offered:?}");
 }
 
+// --- Pairing a statement line -----------------------------------------------
+
+#[tokio::test]
+async fn an_ambiguous_line_is_paired_by_a_pick() {
+    let (_dir, pool) = ledger().await;
+    let coffee = id_of(&pool, COFFEE).await;
+    let lunch = id_of(&pool, LUNCH).await;
+    let mut conn = pool.acquire().await.unwrap();
+    pairing::record(&mut conn, &[Ambiguity {
+        account: "Assets:Bank:Savings".into(),
+        currency: Currency::TWD,
+        statement_ref: "bank:line:1".into(),
+        date: NaiveDate::from_ymd_opt(2024, 3, 2).unwrap(),
+        amount: dec!(-150),
+        description: "範例店".into(),
+        candidates: vec![coffee, lunch],
+    }])
+    .await
+    .unwrap();
+    drop(conn);
+
+    let q = queue(&pool, JournalQuery::default()).await;
+    let [choice] = q.choices.as_slice() else { panic!("{:?}", q.choices) };
+    let offered: Vec<_> = choice.candidates.iter().map(|e| e.id).collect();
+    assert_eq!(offered, [coffee, lunch]);
+    let html = with_actions(|| {
+        let choices = q.choices.clone();
+        view! { <web::review::Pairings choices /> }.to_html()
+    });
+    position(&visible(&html), "待配對");
+    position(&visible(&html), "2024-03-02 活存 -150 TWD 範例店");
+    assert_eq!(html.matches(r#"type="radio" name="record""#).count(), 2, "{html}");
+
+    let id = choice.id;
+    let none = call(&pool, || choose_pairing(id, None)).await.unwrap_err().to_string();
+    assert!(none.contains("請選一筆紀錄"), "{none}");
+    let salary = id_of(&pool, "薪水").await;
+    let stranger = call(&pool, || choose_pairing(id, Some(salary))).await.unwrap_err();
+    assert!(stranger.to_string().contains("不在可配對的紀錄裡"), "{stranger}");
+    // A candidate deleted since is no longer one.
+    call(&pool, || delete_entry(lunch, Some("1".into()))).await.unwrap();
+    let gone = call(&pool, || choose_pairing(id, Some(lunch))).await.unwrap_err();
+    assert!(gone.to_string().contains("不在可配對的紀錄裡"), "{gone}");
+
+    call(&pool, || choose_pairing(id, Some(coffee))).await.unwrap();
+    let q = queue(&pool, JournalQuery::default()).await;
+    assert_eq!(q.choices[0].chosen, Some(coffee));
+    let chosen = with_actions(|| {
+        let choices = q.choices.clone();
+        view! { <web::review::Pairings choices /> }.to_html()
+    });
+    position(&visible(&chosen), "已選，下次匯入時對帳");
+    let events = events(&pool, coffee).await;
+    assert_eq!(events[0].0, "paired");
+    assert_eq!(events[0].1["statement_ref"], "bank:line:1");
+
+    // Refused again, the line's pick no longer fit its record: the pick is
+    // dropped, to be made again from the candidates seen now.
+    let mut conn = pool.acquire().await.unwrap();
+    pairing::record(&mut conn, &[Ambiguity {
+        account: "Assets:Bank:Savings".into(),
+        currency: Currency::TWD,
+        statement_ref: "bank:line:1".into(),
+        date: NaiveDate::from_ymd_opt(2024, 3, 2).unwrap(),
+        amount: dec!(-150),
+        description: "範例店".into(),
+        candidates: vec![lunch, coffee],
+    }])
+    .await
+    .unwrap();
+    drop(conn);
+    let q = queue(&pool, JournalQuery::default()).await;
+    assert_eq!(q.choices[0].chosen, None);
+    // The deleted lunch is no longer offered.
+    let offered: Vec<_> = q.choices[0].candidates.iter().map(|e| e.id).collect();
+    assert_eq!(offered, [coffee]);
+}
+
+/// An opening balance's equity leg: hidden from every picker but its own
+/// entry's, so the entry still saves from the editor.
 #[tokio::test]
 async fn an_equity_leg_stays_editable() {
     let (_dir, pool) = ledger().await;
