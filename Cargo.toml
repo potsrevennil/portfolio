@@ -50,6 +50,15 @@ ledger-types = { path = "crates/ledger-types" }
 portfolio    = { path = "crates/portfolio" }
 prices       = { path = "crates/prices" }
 
+# Debug builds fill the disk: every test binary links every dependency with
+# full debug info, once per worktree. Our crates keep line tables, so
+# backtraces still show file:line; dependencies keep none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Denied so `scripts/format --check` fails on them: each one flags a look-alike
 # of a standard trait, or code that duplicates instead of sharing.
 [workspace.lints.clippy]
