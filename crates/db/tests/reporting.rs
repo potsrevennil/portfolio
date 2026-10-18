@@ -32,65 +32,9 @@ use rust_decimal_macros::dec;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
-fn d(y: i32, m: u32, day: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(y, m, day).expect("valid date")
-}
-
-/// A fresh, migrated, empty database in a temp dir (absolute path in the URL).
-async fn fresh_db() -> (TempDir, SqlitePool) {
-    let dir = TempDir::new().expect("temp dir");
-    let url = format!("sqlite:{}", dir.path().join("reporting.db").display());
-    let pool = db::init_db(&url).await.expect("init db");
-    (dir, pool)
-}
-
-async fn add_account(pool: &SqlitePool, path: &str, label: &str, ty: &str) -> i64 {
-    sqlx::query("INSERT INTO accounts (path, label, type, closed) VALUES (?, ?, ?, 0)")
-        .bind(path)
-        .bind(label)
-        .bind(ty)
-        .execute(pool)
-        .await
-        .expect("insert account")
-        .last_insert_rowid()
-}
-
-/// Inserts a transaction and its legs. `legs` are `(account_id, amount,
-/// currency)`.
-async fn add_txn(pool: &SqlitePool, date: &str, narration: &str, legs: &[(i64, &str, &str)]) {
-    let txn_id = sqlx::query(
-        "INSERT INTO transactions (date, narration, source, reviewed) VALUES (?, ?, 'manual', 0)",
-    )
-    .bind(date)
-    .bind(narration)
-    .execute(pool)
-    .await
-    .expect("insert transaction")
-    .last_insert_rowid();
-    for (account_id, amount, currency) in legs {
-        sqlx::query(
-            "INSERT INTO postings (transaction_id, account_id, amount, currency) VALUES (?, ?, ?, \
-             ?)",
-        )
-        .bind(txn_id)
-        .bind(account_id)
-        .bind(amount)
-        .bind(currency)
-        .execute(pool)
-        .await
-        .expect("insert posting");
-    }
-}
-
-async fn add_price(pool: &SqlitePool, symbol: &str, date: &str, close: f64) {
-    sqlx::query("INSERT INTO stock_prices (symbol, date, close_price) VALUES (?, ?, ?)")
-        .bind(symbol)
-        .bind(date)
-        .bind(close)
-        .execute(pool)
-        .await
-        .expect("insert price");
-}
+#[path = "common/seed.rs"]
+mod seed;
+use seed::{add_account, add_price, add_txn, d, fresh_db, seed_multicurrency};
 
 fn balance_of<'a>(
     balances: &'a [query::AccountBalance],
@@ -98,59 +42,6 @@ fn balance_of<'a>(
     currency: Currency,
 ) -> Option<&'a query::AccountBalance> {
     balances.iter().find(|b| b.path == path && b.currency == currency)
-}
-
-/// Seeds a two-currency ledger (TWD savings + USD brokerage cash, a credit
-/// card, income, expenses) plus an `Equity:Conversions` FX plug booked at a
-/// rate (90) different from the reporting rate (30), and a `TWD=X` = 30 FX
-/// quote. Base currency is TWD throughout.
-async fn seed_multicurrency(pool: &SqlitePool) {
-    let savings = add_account(pool, "Assets:Cathay:Savings", "Savings", "asset").await;
-    let ib_cash = add_account(pool, "Assets:IB:Cash", "IB Cash", "asset").await;
-    let card = add_account(pool, "Liabilities:CreditCard", "Credit Card", "liability").await;
-    let salary = add_account(pool, "Income:Salary", "Salary", "income").await;
-    let food = add_account(pool, "Expenses:Food", "Food", "expense").await;
-    let conv = add_account(pool, "Equity:Conversions", "Conversions", "equity").await;
-    let opening_eq =
-        add_account(pool, "Equity:Opening-Balances", "Opening Balances", "equity").await;
-
-    // Openings are transactions against Equity:Opening-Balances (T2c model).
-    add_txn(pool, "2026-01-01", "opening", &[
-        (savings, "100000", "TWD"),
-        (opening_eq, "-100000", "TWD"),
-    ])
-    .await;
-    add_txn(pool, "2026-01-01", "opening", &[
-        (ib_cash, "1000", "USD"),
-        (opening_eq, "-1000", "USD"),
-    ])
-    .await;
-
-    // 1 USD = 30 TWD, quoted USD->TWD as the ticker `TWD=X`.
-    add_price(pool, "TWD=X", "2026-01-01", 30.0).await;
-
-    // Salary 50000 TWD into savings.
-    add_txn(pool, "2026-01-05", "salary", &[(savings, "50000", "TWD"), (salary, "-50000", "TWD")])
-        .await;
-    // Food 300 TWD from savings.
-    add_txn(pool, "2026-01-10", "lunch", &[(food, "300", "TWD"), (savings, "-300", "TWD")]).await;
-    // Food 20 USD from the USD brokerage cash (multi-currency expense).
-    add_txn(pool, "2026-02-15", "coffee abroad", &[(food, "20", "USD"), (ib_cash, "-20", "USD")])
-        .await;
-    // Credit-card spend 1000 TWD.
-    add_txn(pool, "2026-02-20", "groceries", &[(food, "1000", "TWD"), (card, "-1000", "TWD")])
-        .await;
-    // Cross-currency move: 3000 TWD out of savings becomes 90 USD in IB cash.
-    // The Equity:Conversions plug absorbs both nominal legs; booked at 33.3
-    // TWD/USD it does NOT net to zero at the reporting rate of 30, so a report
-    // that wrongly folded equity into net worth would visibly differ.
-    add_txn(pool, "2026-02-25", "fx to usd", &[
-        (savings, "-3000", "TWD"),
-        (ib_cash, "90", "USD"),
-        (conv, "3000", "TWD"),
-        (conv, "-90", "USD"),
-    ])
-    .await;
 }
 
 #[tokio::test]
@@ -750,86 +641,4 @@ async fn net_worth_leaves_out_holdings_carried_at_cost() {
     };
     assert_eq!(net(AtCost::default()).await, dec!(1000));
     assert_eq!(net(at_cost).await, dec!(600));
-}
-
-#[tokio::test]
-async fn worth_points_agree_with_net_worth_and_keep_unpriced_amounts_apart() {
-    let (_dir, pool) = fresh_db().await;
-    seed_multicurrency(&pool).await;
-    let cash = add_account(&pool, "Assets:Cash:Yen", "Yen", "asset").await;
-    let opening: i64 =
-        sqlx::query_scalar("SELECT id FROM accounts WHERE path = 'Equity:Opening-Balances'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    // No JPY rate is recorded: February is incomplete, January is not.
-    add_txn(&pool, "2026-02-01", "yen", &[(cash, "5000", "JPY"), (opening, "-5000", "JPY")]).await;
-
-    let data = query::LedgerData::load(&pool).await.unwrap();
-    let prices = query::load_fx_prices(&pool, &data.currencies(), Currency::TWD, d(2026, 2, 28))
-        .await
-        .unwrap();
-    let points = data.worth_points(
-        Currency::TWD,
-        &AtCost::default(),
-        d(2026, 1, 1),
-        d(2026, 2, 20),
-        Grain::Month,
-        &prices,
-    );
-    assert_eq!(points.len(), 2);
-    let jan = &points[0];
-    assert_eq!(jan.date, d(2026, 1, 31));
-    assert_eq!(jan.assets.value, dec!(179700));
-    assert!(jan.net().is_complete());
-    // The last point is on the range's end: the 20th's card spend counts, the
-    // 25th's conversion does not. 149700 - 0 + 980 USD * 30 = 179100.
-    let feb = &points[1];
-    assert_eq!(feb.date, d(2026, 2, 20));
-    assert_eq!(feb.assets.value, dec!(179100));
-    assert_eq!(feb.liabilities.value, dec!(-1000));
-    assert_eq!(feb.net().value, dec!(178100));
-    assert_eq!(feb.net().unpriced, BTreeMap::from([(Currency::JPY, dec!(5000))]));
-}
-
-#[tokio::test]
-async fn flows_are_per_account_and_converted_at_each_postings_date() {
-    let (_dir, pool) = fresh_db().await;
-    seed_multicurrency(&pool).await;
-    let data = query::LedgerData::load(&pool).await.unwrap();
-    let prices = query::load_fx_prices(&pool, &data.currencies(), Currency::TWD, d(2026, 3, 31))
-        .await
-        .unwrap();
-    let flows = data.flows(Currency::TWD, d(2026, 1, 6), d(2026, 3, 31), Grain::Month, &prices);
-    let accounts = |i: usize| -> Vec<(&str, Decimal)> {
-        flows[i].accounts.iter().map(|(path, v)| (path.as_str(), v.value)).collect()
-    };
-    assert_eq!(flows.len(), 3);
-    // The range clamps the first period; the salary on the 5th is outside it.
-    assert_eq!((flows[0].start, flows[0].end), (d(2026, 1, 6), d(2026, 1, 31)));
-    assert_eq!(accounts(0), [("Expenses:Food", dec!(300))]);
-    // 20 USD at 30 and 1000 TWD; the conversion has no flow leg.
-    assert_eq!(accounts(1), [("Expenses:Food", dec!(1600))]);
-    // A quiet month is listed, empty.
-    assert!(flows[2].accounts.is_empty());
-
-    let income = data.flows(Currency::TWD, d(2026, 1, 1), d(2026, 1, 31), Grain::Month, &prices);
-    assert_eq!(income[0].accounts["Income:Salary"].value, dec!(-50000));
-}
-
-#[tokio::test]
-async fn a_subtree_keeps_each_currency_of_its_own() {
-    let (_dir, pool) = fresh_db().await;
-    seed_multicurrency(&pool).await;
-    let data = query::LedgerData::load(&pool).await.unwrap();
-    let points = data.subtree_over_time("Assets:IB", d(2026, 1, 1), d(2026, 2, 28), Grain::Month);
-    assert_eq!(points, [
-        (d(2026, 1, 31), BTreeMap::from([(Currency::USD, dec!(1000))])),
-        (d(2026, 2, 28), BTreeMap::from([(Currency::USD, dec!(1070))])),
-    ]);
-    // A sibling whose path only starts the same is not under it.
-    assert!(data.subtree_over_time("Assets:I", d(2026, 1, 1), d(2026, 1, 31), Grain::Month)[0]
-        .1
-        .is_empty());
-    assert_eq!(data.first_date(), Some(d(2026, 1, 1)));
 }

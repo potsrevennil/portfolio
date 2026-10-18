@@ -3,8 +3,8 @@
 //! subtree's own balance. Each walks the postings once in date order, so a
 //! long history costs one pass, not one per point.
 //!
-//! Unlike [`net_worth_over_time`](super::net_worth_over_time), a currency
-//! with no rate does not fail the report: its amount is kept apart in
+//! Unlike [`net_worth_over_time`](crate::query::net_worth_over_time), a
+//! currency with no rate does not fail the report: its amount is kept apart in
 //! [`Valued::unpriced`], so a page can say the figure is incomplete.
 
 use std::{
@@ -18,7 +18,7 @@ use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-use super::{
+use crate::query::{
     counts, generate_periods, in_subtree, period_start_of, rate, AccountType, Grain, LedgerData,
     PostingEntry, PriceTable,
 };
@@ -116,7 +116,7 @@ impl LedgerData {
 
     /// Assets and liabilities at the end of each period over `[start, end]`
     /// (the last point on `end` itself), leaving out what
-    /// [`in_net_worth`](super::in_net_worth) leaves out.
+    /// [`in_net_worth`](crate::query::in_net_worth) leaves out.
     pub fn worth_points(
         &self,
         base: Currency,

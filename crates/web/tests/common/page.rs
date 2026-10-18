@@ -1,11 +1,22 @@
-//! Reading rendered pages: the text a reader sees, and the router serving them.
+//! Reading rendered pages: the text a reader sees, the router serving them,
+//! and server functions called as the router calls them. Not every test
+//! binary uses every item.
+#![allow(dead_code)]
 
 use std::future::Future;
 
 use axum::{body::Body, http::Request};
+use db::review::StatementAccounts;
 use http_body_util::BodyExt;
+use ledger::valuation::AtCost;
+use leptos::{
+    prelude::{provide_context, LeptosOptions, Owner},
+    reactive::computed::ScopedFuture,
+};
+use sqlx::SqlitePool;
 use tempfile::TempDir;
 use tower::ServiceExt;
+use web::server;
 
 /// The text a reader sees: markup and scripts removed.
 pub fn visible(html: &str) -> String {
@@ -23,6 +34,34 @@ pub fn visible(html: &str) -> String {
     }
     out.push_str(rest);
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The `nth` table body's rows, each as a reader sees it.
+pub fn table(html: &str, nth: usize) -> Vec<String> {
+    let body = html.split("<tbody>").nth(nth + 1).expect("the table");
+    let body = &body[..body.find("</tbody>").unwrap()];
+    body.split("<tr").skip(1).map(|row| visible(&format!("<tr{row}"))).collect()
+}
+
+/// Calls a server function as the router would, with the ledger in context.
+pub async fn call<F: Future>(pool: &SqlitePool, function: impl FnOnce() -> F) -> F::Output {
+    call_with(pool, StatementAccounts::default(), function).await
+}
+
+/// [`call`], naming the accounts that have statements.
+pub async fn call_with<F: Future>(
+    pool: &SqlitePool,
+    statements: StatementAccounts,
+    function: impl FnOnce() -> F,
+) -> F::Output {
+    let owner = Owner::new();
+    let call = owner.with(|| {
+        provide_context(pool.clone());
+        provide_context(AtCost::default());
+        provide_context(statements);
+        ScopedFuture::new(function())
+    });
+    call.await
 }
 
 pub fn position(text: &str, needle: &str) -> usize {
@@ -53,6 +92,27 @@ impl Site {
         let serving = SERVING.lock().await;
         let (router, dir) = build().await;
         Site { router, _serving: serving, _dir: dir }
+    }
+
+    /// The app's router over the ledger `ledger` builds.
+    pub async fn serving<F>(ledger: impl FnOnce() -> F) -> Self
+    where
+        F: Future<Output = (TempDir, SqlitePool)>,
+    {
+        Site::serving_with(ledger, StatementAccounts::default()).await
+    }
+
+    /// [`Site::serving`], naming the accounts that have statements.
+    pub async fn serving_with<F>(ledger: impl FnOnce() -> F, statements: StatementAccounts) -> Self
+    where
+        F: Future<Output = (TempDir, SqlitePool)>,
+    {
+        Site::new(|| async {
+            let (dir, pool) = ledger().await;
+            let options = LeptosOptions::builder().output_name("web").build();
+            (server::router(options, pool, AtCost::default(), statements), dir)
+        })
+        .await
     }
 
     pub async fn page(&self, path: &str) -> String {

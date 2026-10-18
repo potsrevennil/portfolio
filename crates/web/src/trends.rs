@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Context, Result};
 use chrono::{Datelike, NaiveDate};
 use db::{
-    query::{self, Flows, Grain, LedgerData, Valued},
+    query::{self, Grain, LedgerData},
+    series::{Flows, Valued, WorthPoint},
     SqlitePool,
 };
 use ledger::valuation::AtCost;
@@ -52,12 +53,15 @@ impl Range {
             false => bail!("「從」{from} 在「到」{to} 之後"),
         }
     }
+}
 
-    pub fn query(&self) -> ChartQuery {
+/// The range as the form shows it back.
+impl From<&Range> for ChartQuery {
+    fn from(range: &Range) -> Self {
         ChartQuery {
-            from: Some(self.from.to_string()),
-            to: Some(self.to.to_string()),
-            step: Some(self.step.to_string()),
+            from: Some(range.from.to_string()),
+            to: Some(range.to.to_string()),
+            step: Some(range.step.to_string()),
         }
     }
 }
@@ -83,7 +87,7 @@ pub async fn load(
 
     let points = data.worth_points(base, at_cost, range.from, range.to, grain, &prices);
     let periods = points.iter().map(|p| period_name(p.date, range.step)).collect();
-    let series = |name: &str, figure: &dyn Fn(&query::WorthPoint) -> Valued| Series {
+    let series = |name: &str, figure: &dyn Fn(&WorthPoint) -> Valued| Series {
         name: name.to_string(),
         figures: points.iter().map(|p| converted(&figure(p), base)).collect(),
     };
@@ -131,7 +135,7 @@ pub async fn load(
     let income = share(INCOME.0, income_name, &totals, true, &label, base);
     let expense = share(EXPENSE.0, expense_name, &totals, false, &label, base);
 
-    Ok(Charts { query: range.query(), worth, flows: flow_trend, income, expense })
+    Ok(Charts { query: ChartQuery::from(&range), worth, flows: flow_trend, income, expense })
 }
 
 /// A root's own label, or its Taiwanese name where the chart gives none.

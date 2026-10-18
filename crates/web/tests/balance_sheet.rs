@@ -7,19 +7,14 @@ mod common;
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
-use common::page::{position, visible, Site};
-use db::{
-    assertions::{AssertionSource, BalanceAssertion},
-    load,
+use common::{
+    build::{self, Legs},
+    page::{position, visible, Site},
 };
-use ledger::{
-    journal::{self, Journal, Posting},
-    model::Source,
-    valuation::AtCost,
-};
+use db::assertions::{AssertionSource, BalanceAssertion};
+use ledger::{journal::Journal, valuation::AtCost};
 use ledger_types::currency::Currency;
 use leptos::prelude::*;
-use prices::YFinanceSource;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
@@ -51,9 +46,6 @@ const MAPPING: &str = r#"
 "#;
 
 const AS_OF: &str = "2024-12-31";
-
-/// Legs of one transaction: (account, amount, currency).
-type Legs<'a> = &'a [(&'a str, &'a str, Currency)];
 
 fn journal() -> Journal {
     use Currency::*;
@@ -95,25 +87,7 @@ fn journal() -> Journal {
         // After the as-of date: must not count.
         ("2025-01-05", &[("Assets:Cash", "999", TWD), ("Equity:Opening-Balances", "-999", TWD)]),
     ];
-    let postings = txns
-        .iter()
-        .enumerate()
-        .flat_map(|(group, (date, legs))| {
-            legs.iter().map(move |(account, amount, currency)| Posting {
-                group: group as u64,
-                source: Source::Manual,
-                date: date.parse().unwrap(),
-                payee: None,
-                narration: "test".into(),
-                external_ref: None,
-                account: account.to_string(),
-                amount: amount.parse::<Decimal>().unwrap(),
-                currency: *currency,
-                tags: None,
-            })
-        })
-        .collect();
-    Journal { postings }
+    build::journal(txns)
 }
 
 /// What the loader's gate checks this fixture against.
@@ -133,29 +107,8 @@ fn assertions() -> Vec<BalanceAssertion> {
 }
 
 async fn ledger() -> (TempDir, SqlitePool) {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    std::fs::write(root.join("mapping.toml"), MAPPING).unwrap();
-    let journal_path = root.join("journal.csv");
-    journal::write(&journal_path, &journal()).unwrap();
-    journal::write_assertions(&journal::assertions_path(&journal_path), &assertions()).unwrap();
-    let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    load::run(&load::Args {
-        journal: root.join("journal.csv"),
-        database_url: url.clone(),
-        mapping: root.join("mapping.toml"),
-    })
-    .await
-    .unwrap();
-    let pool = db::init_db(&url).await.unwrap();
-    let ticker = YFinanceSource::get_exchange_rate_ticker(Currency::USD, Currency::TWD).unwrap();
-    sqlx::query(
-        "INSERT INTO stock_prices (symbol, date, close_price) VALUES (?, '2024-06-01', 30)",
-    )
-    .bind(ticker)
-    .execute(&pool)
-    .await
-    .unwrap();
+    let (dir, pool) = build::load(MAPPING, &journal(), &assertions()).await;
+    build::usd_rate(&pool, "2024-06-01", 30.0).await;
     (dir, pool)
 }
 
@@ -260,14 +213,7 @@ async fn every_row_is_one_figure_in_twd() {
     assert_eq!(cost.trim(), "以成本衡量之投資 40,000 TWD 丙公司股 40,000 TWD");
 }
 
-async fn site() -> Site {
-    Site::new(|| async {
-        let (dir, pool) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default(), Default::default()), dir)
-    })
-    .await
-}
+async fn site() -> Site { Site::serving(ledger).await }
 
 #[tokio::test]
 async fn the_server_renders_the_balance_sheet_route() {

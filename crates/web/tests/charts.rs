@@ -4,142 +4,19 @@
 
 mod common;
 
-use chrono::NaiveDate;
-use common::page::{position, visible, Site};
-use db::{
-    assertions::{AssertionSource, BalanceAssertion},
-    load,
+use common::{
+    page::{call, position, table, visible, Site},
+    sample::{ledger, today},
 };
-use ledger::{
-    journal::{self, Journal, Posting},
-    model::Source,
-    valuation::AtCost,
-};
+use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
-use leptos::{prelude::*, reactive::computed::ScopedFuture};
-use prices::YFinanceSource;
+use leptos::prelude::*;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
-use tempfile::TempDir;
 use web::{
     charts::{load_charts, ChartsView},
     model::{ChartQuery, Charts},
-    plot::{compact, Scale},
-    server,
 };
-
-const MAPPING: &str = r#"
-[accounts]
-"起鼓" = "Equity:Opening-Balances"
-
-[display]
-"Assets"              = "資產"
-"Assets:Bank"         = "銀行"
-"Assets:Bank:Savings" = "活存"
-"Assets:Bank:FX"      = "外幣"
-"Liabilities"         = "負債"
-"Liabilities:Card"    = "信用卡"
-"Income"              = "收入"
-"Income:Salary"       = "薪水"
-"Expenses"            = "支出"
-"Expenses:Food"       = "食食"
-"Expenses:Food:Lunch" = "中晝"
-"Expenses:Rent"       = "厝稅"
-"Equity"              = "權益"
-"#;
-
-const TODAY: &str = "2024-03-31";
-
-type Legs<'a> = &'a [(&'a str, &'a str, Currency)];
-
-fn journal() -> Journal {
-    use Currency::*;
-    let txns: &[(&str, Legs)] = &[
-        ("2024-01-01", &[
-            ("Assets:Bank:Savings", "10000", TWD),
-            ("Equity:Opening-Balances", "-10000", TWD),
-        ]),
-        ("2024-01-05", &[("Assets:Bank:Savings", "30000", TWD), ("Income:Salary", "-30000", TWD)]),
-        ("2024-01-10", &[("Expenses:Food:Lunch", "500", TWD), ("Liabilities:Card", "-500", TWD)]),
-        ("2024-02-01", &[("Expenses:Rent", "12000", TWD), ("Assets:Bank:Savings", "-12000", TWD)]),
-        ("2024-02-03", &[
-            ("Assets:Bank:FX", "100", USD),
-            ("Equity:Conversions", "-100", USD),
-            ("Assets:Bank:Savings", "-3000", TWD),
-            ("Equity:Conversions", "3000", TWD),
-        ]),
-        // No JPY rate: from March on, net worth cannot be summed.
-        ("2024-03-02", &[
-            ("Assets:Bank:FX", "5000", JPY),
-            ("Equity:Opening-Balances", "-5000", JPY),
-        ]),
-        // A foreign expense, converted at its own date.
-        ("2024-03-05", &[("Expenses:Food", "10", USD), ("Assets:Bank:FX", "-10", USD)]),
-    ];
-    let postings = txns
-        .iter()
-        .enumerate()
-        .flat_map(|(group, (date, legs))| {
-            legs.iter().map(move |(account, amount, currency)| Posting {
-                group: group as u64,
-                source: Source::Manual,
-                date: date.parse().unwrap(),
-                payee: None,
-                narration: "test".into(),
-                external_ref: None,
-                account: account.to_string(),
-                amount: amount.parse::<Decimal>().unwrap(),
-                currency: *currency,
-                tags: None,
-            })
-        })
-        .collect();
-    Journal { postings }
-}
-
-fn assertions() -> Vec<BalanceAssertion> {
-    [("Assets:Bank:Savings", "25000"), ("Liabilities:Card", "-500")]
-        .into_iter()
-        .map(|(account, closing)| BalanceAssertion {
-            source: AssertionSource::Counted,
-            account: account.into(),
-            currency: Currency::TWD,
-            period_start: None,
-            opening: None,
-            period_end: TODAY.parse().unwrap(),
-            closing: closing.parse().unwrap(),
-        })
-        .collect()
-}
-
-async fn ledger() -> (TempDir, SqlitePool) {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    std::fs::write(root.join("mapping.toml"), MAPPING).unwrap();
-    let journal_path = root.join("journal.csv");
-    journal::write(&journal_path, &journal()).unwrap();
-    journal::write_assertions(&journal::assertions_path(&journal_path), &assertions()).unwrap();
-    let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    load::run(&load::Args {
-        journal: journal_path,
-        database_url: url.clone(),
-        mapping: root.join("mapping.toml"),
-    })
-    .await
-    .unwrap();
-    let pool = db::init_db(&url).await.unwrap();
-    let ticker = YFinanceSource::get_exchange_rate_ticker(Currency::USD, Currency::TWD).unwrap();
-    sqlx::query(
-        "INSERT INTO stock_prices (symbol, date, close_price) VALUES (?, '2024-01-01', 30)",
-    )
-    .bind(ticker)
-    .execute(&pool)
-    .await
-    .unwrap();
-    (dir, pool)
-}
-
-fn today() -> NaiveDate { TODAY.parse().unwrap() }
 
 async fn charts(pool: &SqlitePool, query: ChartQuery) -> Charts {
     web::trends::load(pool, &query, today(), Currency::TWD, &AtCost::default()).await.unwrap()
@@ -147,13 +24,6 @@ async fn charts(pool: &SqlitePool, query: ChartQuery) -> Charts {
 
 fn render(charts: Charts) -> String {
     Owner::new().with(|| view! { <ChartsView charts /> }.to_html())
-}
-
-/// The `nth` table's rows as a reader sees them, one string per period.
-fn table(html: &str, nth: usize) -> Vec<String> {
-    let body = html.split("<tbody>").nth(nth + 1).expect("the table");
-    let body = &body[..body.find("</tbody>").unwrap()];
-    body.split("<tr>").skip(1).map(visible).collect()
 }
 
 #[tokio::test]
@@ -239,15 +109,8 @@ async fn a_quarter_at_a_time_over_a_range() {
     assert_eq!(charts.query.step.as_deref(), Some("quarter"));
 }
 
-/// Calls the server function as the server would, with the context in place.
 async fn load(pool: &SqlitePool, query: ChartQuery) -> Result<Charts, ServerFnError> {
-    let owner = Owner::new();
-    let call = owner.with(|| {
-        provide_context(pool.clone());
-        provide_context(AtCost::default());
-        ScopedFuture::new(load_charts(query))
-    });
-    call.await
+    call(pool, || load_charts(query)).await
 }
 
 #[tokio::test]
@@ -269,18 +132,9 @@ async fn the_server_function_refuses_a_bad_range_by_name() {
     assert_eq!(whole.worth.periods.first().map(String::as_str), Some("2024-01"));
 }
 
-async fn site() -> Site {
-    Site::new(|| async {
-        let (dir, pool) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default(), Default::default()), dir)
-    })
-    .await
-}
-
 #[tokio::test]
 async fn the_server_renders_the_charts_route() {
-    let site = site().await;
+    let site = Site::serving(ledger).await;
     let html = site.page("/charts?from=2024-01-01&to=2024-03-31&step=month").await;
     assert!(html.contains("圖表 · 帳簿"), "{html}");
     assert!(html.contains(r#"href="/charts""#), "{html}");
@@ -289,35 +143,4 @@ async fn the_server_renders_the_charts_route() {
     position(&text, "2024-02 27,500 TWD");
     let refused = visible(&site.page("/charts?step=week").await);
     position(&refused, "讀取失敗：不明的間隔：week");
-}
-
-#[test]
-fn axis_figures_are_compact_in_wan_and_yi() {
-    let cases = [
-        (0.0, "0"),
-        (-0.0, "0"),
-        (2500.0, "2,500"),
-        (-500.0, "-500"),
-        (0.5, "0.5"),
-        (10000.0, "1萬"),
-        (12000.0, "1.2萬"),
-        (-25000.0, "-2.5萬"),
-        (1234500.0, "123.5萬"),
-        (150000000.0, "1.5億"),
-    ];
-    for (v, text) in cases {
-        assert_eq!(compact(v), text, "{v}");
-    }
-}
-
-#[test]
-fn the_axis_takes_in_zero_on_round_steps() {
-    let scale = Scale::over([39500.0, -500.0]);
-    assert_eq!(scale.ticks, [-10000.0, 0.0, 10000.0, 20000.0, 30000.0, 40000.0]);
-    assert_eq!(scale.top(40000.0), 0.0);
-    assert_eq!(scale.top(-10000.0), 100.0);
-    // Nothing to draw still makes an axis.
-    assert_eq!(Scale::over([]).ticks, [0.0, 1.0]);
-    let small = Scale::over([3.0, 7.5]);
-    assert_eq!((small.lo, small.hi), (0.0, 8.0));
 }

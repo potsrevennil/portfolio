@@ -1,5 +1,5 @@
 //! The landing page: the few figures worth seeing first, each linking to the
-//! page that explains it. Charts join it with the next page.
+//! page that explains it.
 
 use leptos::prelude::*;
 use leptos_meta::Title;
