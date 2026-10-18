@@ -114,3 +114,27 @@ async fn a_new_account_and_its_ancestors_get_the_mapping_labels() {
         ("Expenses:Food", "Food")
     ]);
 }
+
+#[tokio::test]
+async fn an_import_into_a_closed_account_reopens_it() {
+    let (_dir, pool) = fixture().await;
+    let store = ImportStore::new(pool.clone(), Labels::default());
+    store.insert_deduped(&txn(Source::Import, Some("L1"), balanced(dec!(10)))).await.unwrap();
+    store.insert_deduped(&txn(Source::Import, Some("L2"), balanced(dec!(-10)))).await.unwrap();
+    db::account_status::close(&pool, "Expenses:Food", None).await.unwrap();
+    assert!(db::account_status::closed_holding(&mut *pool.acquire().await.unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+
+    store.insert_deduped(&txn(Source::Import, Some("L3"), balanced(dec!(5)))).await.unwrap();
+    let (closed, event, note): (bool, String, Option<String>) = sqlx::query_as(
+        "SELECT a.closed != 0, e.event, e.note FROM accounts a JOIN account_events e ON \
+         e.account_id = a.id WHERE a.path = 'Expenses:Food' ORDER BY e.id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((closed, event.as_str()), (false, "reopened"));
+    assert_eq!(note.as_deref(), Some(db::import::REOPENED_BY_IMPORT));
+}

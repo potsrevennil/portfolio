@@ -54,6 +54,7 @@ pub struct Account {
     pub path: String,
     pub label: String,
     pub account_type: AccountType,
+    pub closed: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -82,6 +83,7 @@ struct AccountRow {
     path: String,
     label: String,
     acct_type: String,
+    closed: bool,
 }
 
 impl TryFrom<EntryRow> for Entry {
@@ -127,6 +129,7 @@ impl TryFrom<AccountRow> for Account {
                 .with_context(|| format!("account type {:?}", r.acct_type))?,
             path: r.path,
             label: r.label,
+            closed: r.closed,
         })
     }
 }
@@ -276,12 +279,13 @@ async fn with_legs(pool: &SqlitePool, mut page: QueryBuilder<'_, Sqlite>) -> Res
     Ok(entries)
 }
 
-/// Every account in chart order, group levels included.
+/// Every account in chart order, group levels and closed ones included.
 pub async fn accounts(pool: &SqlitePool) -> Result<Vec<Account>> {
-    let rows: Vec<AccountRow> =
-        sqlx::query_as("SELECT path, label, type AS acct_type FROM accounts ORDER BY path")
-            .fetch_all(pool)
-            .await
-            .context("loading accounts")?;
+    let rows: Vec<AccountRow> = sqlx::query_as(
+        "SELECT path, label, type AS acct_type, closed != 0 AS closed FROM accounts ORDER BY path",
+    )
+    .fetch_all(pool)
+    .await
+    .context("loading accounts")?;
     rows.into_iter().map(Account::try_from).collect()
 }

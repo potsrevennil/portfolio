@@ -5,8 +5,6 @@
 //! For Cathay lines, build it with `BankStatement::dedup_refs` — the same
 //! helper the freeze bake uses — or frozen and re-imported lines won't collide.
 
-use std::collections::BTreeMap;
-
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use ledger::{labels::Labels, model::Source};
@@ -16,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 use strum_macros::{Display, EnumString};
 
-use crate::load::schema_type;
+use crate::{account_status, load::schema_type, sums::Sums};
+
+/// The note on an `account_events` row an import's reopening leaves.
+pub const REOPENED_BY_IMPORT: &str = "匯入時又有記錄記到這個帳戶";
 
 /// A transaction not yet stored, with its legs.
 #[derive(Clone, Debug)]
@@ -182,17 +183,23 @@ pub async fn insert_deduped(
 }
 
 /// The account's id, creating it and any missing ancestor with the label
-/// load-journal would give it, so the tree never shows an ASCII name.
+/// load-journal would give it, so the tree never shows an ASCII name. A
+/// closed account is reopened: the source says it is in use again.
 pub async fn ensure_account(db: &mut SqliteConnection, labels: &Labels, path: &str) -> Result<i64> {
     let mut id = None;
+    let mut closed = false;
     let ancestors = path.match_indices(':').map(|(i, _)| &path[..i]);
     for path in ancestors.chain([path]) {
-        let found: Option<i64> = sqlx::query_scalar("SELECT id FROM accounts WHERE path = ?")
-            .bind(path)
-            .fetch_optional(&mut *db)
-            .await?;
+        let found: Option<(i64, bool)> =
+            sqlx::query_as("SELECT id, closed != 0 FROM accounts WHERE path = ?")
+                .bind(path)
+                .fetch_optional(&mut *db)
+                .await?;
         id = match found {
-            Some(id) => Some(id),
+            Some((id, was_closed)) => {
+                closed |= was_closed;
+                Some(id)
+            }
             None => {
                 let created =
                     sqlx::query("INSERT INTO accounts (path, label, type) VALUES (?, ?, ?)")
@@ -211,27 +218,21 @@ pub async fn ensure_account(db: &mut SqliteConnection, labels: &Labels, path: &s
             }
         };
     }
-    id.context("empty account path")
+    let id = id.context("empty account path")?;
+    if closed {
+        account_status::reopen_in(db, path, Some(REOPENED_BY_IMPORT)).await?;
+    }
+    Ok(id)
 }
 
-/// Summed with `rust_decimal`, not SQL `SUM`, which would CAST to REAL.
 pub(crate) fn validate_balanced(postings: &[Posting]) -> Result<()> {
     if postings.is_empty() {
         bail!("transaction has no postings");
     }
-    let mut per_currency: BTreeMap<Currency, Decimal> = BTreeMap::new();
-    for p in postings {
-        *per_currency.entry(p.currency).or_default() += p.amount;
-    }
-    let unbalanced: Vec<String> = per_currency
-        .iter()
-        .filter(|(_, sum)| !sum.is_zero())
-        .map(|(ccy, sum)| format!("{ccy}={sum}"))
-        .collect();
-    if unbalanced.is_empty() {
-        Ok(())
-    } else {
-        bail!("postings do not sum to zero per currency: {}", unbalanced.join(", "))
+    let unbalanced: Sums = postings.iter().map(|p| (p.currency, p.amount)).collect();
+    match unbalanced.is_empty() {
+        true => Ok(()),
+        false => bail!("postings do not sum to zero per currency: {unbalanced}"),
     }
 }
 
