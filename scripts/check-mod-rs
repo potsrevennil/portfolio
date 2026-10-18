@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+
+set -o errexit
+set -o errtrace
+set -o nounset
+set -o pipefail
+
+# Fails if a tracked mod.rs holds anything but `mod x;` and `use` declarations
+# (any visibility), attributes and comments. Logic belongs in a leaf file that
+# mod.rs declares and re-exports. A line-based check, not a parser: it is
+# enough for rustfmt-formatted code.
+
+ROOT="$(realpath "$(dirname "$0")"/../)"
+cd "$ROOT"
+
+mapfile -d '' files < <(git ls-files -z -- ':(glob)**/mod.rs')
+[ "${#files[@]}" -eq 0 ] && exit 0
+
+awk '
+  FNR == 1 { block = 0; attr = 0; use = 0; reported = 0 }
+  function count(s, c) { return gsub(c, "", s) }
+  {
+    line = $0
+    sub(/^[ \t]+/, "", line)
+  }
+  block { if (line ~ /\*\//) block = 0; next }
+  use { if (line ~ /;/) use = 0; next }
+  attr { attr += count(line, "\\[") - count(line, "\\]"); next }
+  line == "" || line ~ /^\/\// { next }
+  line ~ /^\/\*/ { if (line !~ /\*\//) block = 1; next }
+  {
+    # Strip same-line attributes, e.g. `#[cfg(test)] mod tests;`.
+    while (line ~ /^#!?\[[^]]*\][ \t]*/) sub(/^#!?\[[^]]*\][ \t]*/, "", line)
+    if (line == "") next
+  }
+  line ~ /^#!?\[/ { attr = count(line, "\\[") - count(line, "\\]"); next }
+  {
+    sub(/^pub(\([^)]*\))?[ \t]+/, "", line)
+  }
+  line ~ /^mod[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*;/ { next }
+  line ~ /^use[ \t]/ { if (line !~ /;/) use = 1; next }
+  !reported {
+    printf "%s:%d: mod.rs holds declarations only; move this into a leaf file\n", FILENAME, FNR
+    reported = 1
+    bad = 1
+  }
+  END { exit bad }
+' "${files[@]}"

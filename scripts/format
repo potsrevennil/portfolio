@@ -7,8 +7,9 @@ set -o nounset
 set -o pipefail
 
 # Formats the tree. With --check nothing is written: the formatters report drift
-# instead, and the lint-only tools (deadnix, shellcheck, codespell) run too, so
-# `format --check` is exactly the CI lint gate — the workflow just calls this.
+# instead, and the lint-only checks run too (mod.rs, deadnix, shell lint,
+# codespell), so `format --check` is exactly the CI lint gate — the workflow
+# just calls this.
 # A plain `format` only formats; it does not run the linters. Run inside
 # `nix develop`, which puts every tool on PATH.
 
@@ -64,6 +65,9 @@ if [ "$check" -eq 1 ]; then
 
   # Lint-only tools: they never format, so they run only in --check, not on a
   # plain `format`.
+  info "Checking mod.rs holds declarations only"
+  scripts/check-mod-rs
+
   info "Scanning nix for dead code"
   deadnix --fail --hidden .
 
