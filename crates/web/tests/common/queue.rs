@@ -6,6 +6,7 @@
 use db::{
     assertions::{AssertionSource, BalanceAssertion},
     load,
+    stops::Record,
 };
 use ledger::{
     journal::{self, Journal, Posting, UNVERIFIED_TAG},
@@ -13,6 +14,8 @@ use ledger::{
 };
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
+use serde_json::Value;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
@@ -169,4 +172,38 @@ pub async fn ledger() -> (TempDir, SqlitePool) {
     .await
     .unwrap();
     (dir, pool)
+}
+
+pub async fn id_of(pool: &SqlitePool, narration: &str) -> i64 {
+    sqlx::query_scalar("SELECT id FROM transactions WHERE narration = ?")
+        .bind(narration)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// `(kind, payload)` of every event on a transaction, oldest first.
+pub async fn events(pool: &SqlitePool, id: i64) -> Vec<(String, Value)> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT kind, payload FROM transaction_events WHERE transaction_id = ? ORDER BY id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    rows.into_iter().map(|(k, p)| (k, serde_json::from_str(&p).unwrap())).collect()
+}
+
+/// A 天天記帳 lunch paid from 活存, as an import that could not place it
+/// keeps it: not in the ledger.
+pub fn unplaced_lunch(id: &str) -> Record {
+    Record {
+        external_ref: format!("tiantian:{id}"),
+        date: "2024-02-01".parse().unwrap(),
+        account: "Assets:Bank:Savings".into(),
+        amount: dec!(-500),
+        currency: Currency::TWD,
+        counter: vec!["Expenses:Food".into()],
+        narration: LUNCH.into(),
+    }
 }

@@ -1,9 +1,12 @@
 //! Cathay bank import into SQLite, on invented statements: the synthetic
 //! versions of T4a's two acceptance checks, plus the dedup-key fragility.
 
+mod common;
+
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
+use common::cathay::{period, twd, Line};
 use db::load;
 use import::{
     bank::{import, Report},
@@ -45,33 +48,6 @@ expense = "Expenses:Uncategorized"
 "券商"     = "Assets:Broker"
 "起鼓"     = "Equity:Opening-Balances"
 "#;
-
-/// A line as (date, 說明, 提出, 存入, 餘額, 交易資訊, 備註), oldest first.
-type Line<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
-
-/// A TWD export as the bank writes it: BOM, CRLF, the lone-quote spacer
-/// record, newest line first.
-fn twd(account: &str, lines: &[Line]) -> String { period(account, None, lines) }
-
-/// The same, with the `(自 … 至 …)` header the bank puts on a dated download.
-fn period(account: &str, period_end: Option<&str>, lines: &[Line]) -> String {
-    let header = period_end
-        .map(|end| format!("\"筆數\",\"(自 2020/01/01 至 {end})\"\r\n"))
-        .unwrap_or_default();
-    // The lone-quote spacer record, then the column header.
-    let columns = ["交易日期", "帳務日期", "說明", "提出", "存入", "餘額", "交易資訊", "備註"]
-        .map(|c| format!("\"{c}\""))
-        .join(",");
-    let mut out =
-        format!("\u{feff}\"{account} 活存\"\r\n{header}\"幣別：TWD\"\r\n\"\r\n\"\r\n{columns}\r\n");
-    for (date, desc, out_, in_, bal, info, memo) in lines.iter().rev() {
-        out.push_str(&format!(
-            "\"{date}\",\"{date}\",\"{desc}\",\"{out_}\",\"{in_}\",\"{bal}\",\"{info}\",\"{memo}\"\
-             \r\n"
-        ));
-    }
-    out
-}
 
 const SAVINGS_2022: &[Line] = &[("2022/12/01", "存入", "", "1000", "1000", "", "")];
 const SAVINGS_2023: &[Line] = &[

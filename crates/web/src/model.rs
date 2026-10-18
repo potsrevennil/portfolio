@@ -429,12 +429,122 @@ pub struct Choice {
     pub chosen: Option<i64>,
 }
 
-/// 待確認: the journal held to unreviewed records, and the lines waiting to
-/// be paired.
+/// An account a stop can be settled onto.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    pub path: String,
+    pub label: String,
+}
+
+/// A 天天記帳 record an import could not place: not in the ledger yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Unplaced {
+    pub date: String,
+    pub account: String,
+    pub money: Money,
+    /// Its category, or where it moves money to.
+    pub counter: Vec<String>,
+    pub narration: String,
+}
+
+/// Why an import stopped, with what the queue offers to settle it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum StopKind {
+    /// Several lines fit the record: which is it.
+    RecordAmbiguous {
+        record: Unplaced,
+        lines: Vec<Entry>,
+    },
+    /// The statements reach its day and no uncategorised line is it: a line
+    /// of its amount after all, or a sibling account still to be checked.
+    RecordUnexplained {
+        record: Unplaced,
+        through: String,
+        lines: Vec<Entry>,
+        accounts: Vec<Place>,
+    },
+    /// A record waiting to be verified that its statement passes by: the
+    /// siblings whose statement shows it, or an edit.
+    NotOnStatement {
+        entry: Entry,
+        account: String,
+        through: String,
+        siblings: Vec<Place>,
+    },
+    /// A transfer the statement leaves for the next one, whose other leg is
+    /// another statement's: split, so each half waits on its own.
+    SharedDeferral {
+        entry: Entry,
+        account: String,
+        other: String,
+    },
+    /// A transfer two banks booked on different days: split, one per bank.
+    TwoDates {
+        entry: Entry,
+        dates: Vec<(String, String)>,
+    },
+    /// Settled in the downloads, not here.
+    SeveralOpenings {
+        account: String,
+    },
+    Unchained {
+        account: String,
+        day: String,
+        ledger: Money,
+        statement: Money,
+    },
+}
+
+/// Where a record the import could not place belongs; its text is the
+/// radio button's value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Pick {
+    /// The statement line it is.
+    Line(i64),
+    /// The account it books on, by path.
+    Account(String),
+}
+
+impl fmt::Display for Pick {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Pick::Line(id) => write!(f, "line:{id}"),
+            Pick::Account(path) => write!(f, "account:{path}"),
+        }
+    }
+}
+
+impl FromStr for Pick {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.split_once(':') {
+            Some(("line", id)) => {
+                id.parse().map(Pick::Line).map_err(|_| format!("毋知是佗一筆明細：{id}"))
+            }
+            Some(("account", path)) => Ok(Pick::Account(path.to_string())),
+            _ => Err("請揀一个".to_string()),
+        }
+    }
+}
+
+/// A stop the last run of an import left.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportStop {
+    pub id: i64,
+    pub kind: StopKind,
+    pub picked: Option<Pick>,
+    /// Settled by a write: the next import is all that is left.
+    pub resolved: bool,
+}
+
+/// 待確認: the journal held to unreviewed records, the lines waiting to be
+/// paired, and what stopped the last imports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Queue {
     pub journal: Journal,
     pub choices: Vec<Choice>,
+    pub stops: Vec<ImportStop>,
 }
 
 /// One change the app recorded on a transaction.

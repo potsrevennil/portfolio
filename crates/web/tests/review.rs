@@ -6,8 +6,9 @@ mod common;
 
 use chrono::NaiveDate;
 use common::{
+    call::{call, queue, statement_accounts},
     page::{position, visible, Site},
-    queue::{ledger, COFFEE, FEE, LUNCH, TAXI},
+    queue::{events, id_of, ledger, COFFEE, FEE, LUNCH, TAXI},
 };
 use db::{
     pairing::{self, Ambiguity},
@@ -15,7 +16,7 @@ use db::{
 };
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
-use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use leptos::prelude::*;
 use rust_decimal_macros::dec;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -30,52 +31,8 @@ use web::{
     server,
 };
 
-/// Runs a server function as the server would, with the pool in context.
-async fn call<T, F>(pool: &SqlitePool, f: impl FnOnce() -> F) -> Result<T, ServerFnError>
-where
-    F: std::future::Future<Output = Result<T, ServerFnError>>,
-{
-    let owner = Owner::new();
-    let call = owner.with(|| {
-        provide_context(pool.clone());
-        provide_context(statement_accounts());
-        ScopedFuture::new(f())
-    });
-    call.await
-}
-
-/// What the chart would name: the savings account, and a card whose first
-/// statement is still to come. Cash is neither.
-fn statement_accounts() -> StatementAccounts {
-    ["Assets:Bank:Savings", "Liabilities:Card"].into_iter().collect()
-}
-
-async fn queue(pool: &SqlitePool, query: JournalQuery) -> Queue {
-    call(pool, || load_queue(query)).await.unwrap()
-}
-
 fn narrations(q: &Queue) -> Vec<String> {
     q.journal.entries.iter().map(|e| e.narration.clone().unwrap_or_default()).collect()
-}
-
-async fn id_of(pool: &SqlitePool, narration: &str) -> i64 {
-    sqlx::query_scalar("SELECT id FROM transactions WHERE narration = ?")
-        .bind(narration)
-        .fetch_one(pool)
-        .await
-        .unwrap()
-}
-
-/// `(kind, payload)` of every event on a transaction, oldest first.
-async fn events(pool: &SqlitePool, id: i64) -> Vec<(String, Value)> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT kind, payload FROM transaction_events WHERE transaction_id = ? ORDER BY id",
-    )
-    .bind(id)
-    .fetch_all(pool)
-    .await
-    .unwrap();
-    rows.into_iter().map(|(k, p)| (k, serde_json::from_str(&p).unwrap())).collect()
 }
 
 /// `(posting id, account, amount, origin)` in posting order.

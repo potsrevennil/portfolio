@@ -24,13 +24,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use db::pairing::{self, Ambiguity};
+use db::{
+    pairing::{self, Ambiguity},
+    stops::{self, Stop},
+};
 use fantoccini::{elements::Element, Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use leptos::prelude::LeptosOptions;
-use queue::{ledger, COFFEE, LUNCH, TAXI};
+use queue::{id_of, ledger, unplaced_lunch, COFFEE, FEE, LUNCH, TAXI};
 use rust_decimal_macros::dec;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -248,6 +251,7 @@ async fn journeys() {
     confirm_from_the_queue().await;
     split_in_the_editor().await;
     pick_a_pairing().await;
+    settle_import_stops().await;
     enter_cash_by_hand().await;
 }
 
@@ -351,6 +355,57 @@ async fn pick_a_pairing() {
         .await
         .unwrap();
     assert_eq!(chosen, Some(ids[1]));
+    j.close().await;
+}
+
+/// A record the import could not place is given its line, and a transfer two
+/// banks dated differently is split: each from the 匯入卡牢 section.
+async fn settle_import_stops() {
+    let j = Journey::start().await;
+    let (fee, transfer) = (id_of(&j.pool, FEE).await, id_of(&j.pool, "代墊").await);
+    let record = unplaced_lunch("U9");
+    let mut conn = j.pool.acquire().await.unwrap();
+    stops::record(&mut conn, "tiantian", &[Stop::RecordAmbiguous { record, lines: vec![fee] }])
+        .await
+        .unwrap();
+    stops::record(&mut conn, "cathay-bank", &[Stop::TwoDates {
+        transaction_id: transfer,
+        dates: vec![
+            ("Assets:Bank:Savings".into(), "2024-01-05".parse().unwrap()),
+            ("Assets:Split:Alpha:Tab".into(), "2024-01-06".parse().unwrap()),
+        ],
+        clearing: "Assets:Bank:Clearing".into(),
+    }])
+    .await
+    .unwrap();
+    drop(conn);
+
+    j.open("/review").await;
+    j.until_text("匯入卡牢").await;
+    j.find(&format!(r#"input[name="place"][value="line:{fee}"]"#)).await.click().await.unwrap();
+    j.find(".stops li.stop form button").await.click().await.unwrap();
+    j.until_text("已選，後一擺匯入就會對著").await;
+    let pick: Option<String> =
+        sqlx::query_scalar("SELECT pick FROM import_stop WHERE kind = 'record_ambiguous'")
+            .fetch_one(&j.pool)
+            .await
+            .unwrap();
+    assert_eq!(pick.as_deref(), Some(format!(r#"{{"line":{fee}}}"#).as_str()));
+
+    let mut split = None;
+    for button in j.all(".stops button").await {
+        if button.text().await.unwrap() == "拆做兩筆" {
+            split = Some(button);
+        }
+    }
+    split.expect("a split button").click().await.unwrap();
+    j.until_text("已處理，閣匯入一擺就好").await;
+    let detached: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM transaction_events WHERE kind = 'detached'")
+            .fetch_one(&j.pool)
+            .await
+            .unwrap();
+    assert_eq!(detached, 1);
     j.close().await;
 }
 

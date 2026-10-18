@@ -559,7 +559,7 @@ async fn an_ambiguous_statement_leaves_the_record_unverified() -> Result<()> {
         march(&f, "2026.03.04 消費 -$20 $235 範例店\n2026.03.06 消費 -$20 $215 範例店\n", "$215")
             .await?;
     let err = f.import(&pool, Bank::LineBank, &paths).await.expect_err("two lines of 20");
-    assert!(format!("{err:#}").contains("ambiguously"), "{err:#}");
+    assert!(format!("{err:#}").contains("pair ambiguously"), "{err:#}");
     assert_eq!(unverified_count(&pool).await?, 2);
     Ok(())
 }

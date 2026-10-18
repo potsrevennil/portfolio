@@ -2,17 +2,15 @@
 //! statement lines the ledger already holds, how the new ones pair up, and
 //! whether the result chains onto the ledger's balances day by day.
 
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    fmt,
-};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use chrono::NaiveDate;
 use db::{
     import::{Origin, Posting, Transaction},
     import_batch::{LedgerPosting, Verification},
     pairing::Ambiguity,
+    stops::{Refused, Stop},
 };
 use ledger::{
     accounts::Chart,
@@ -40,35 +38,6 @@ pub struct Statement<'a> {
     /// line alone fit more than one.
     pub chosen: HashMap<String, i64>,
 }
-
-/// Lines that pair with unverified records only by a choice nobody has made
-/// yet. Nothing is imported; the caller records them for a person to pick.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Ambiguous(pub Vec<Ambiguity>);
-
-impl fmt::Display for Ambiguous {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "lines and unverified records pair ambiguously; pick each line's record in the review \
-             queue, then import again. Nothing was imported."
-        )?;
-        for a in &self.0 {
-            write!(
-                f,
-                "\n  {} {}: {} {} matches {} unverified records within {WINDOW_DAYS} days",
-                a.account,
-                a.currency,
-                a.date,
-                a.amount,
-                a.candidates.len()
-            )?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for Ambiguous {}
 
 /// An unverified record from a statement's last days that none of its lines
 /// verifies: the bank books it after the statement, so it moves to the day
@@ -160,8 +129,11 @@ pub fn plan(
             true => Origin::Rule,
             false => Origin::Fallback,
         };
-    let mut ambiguous: Vec<Ambiguity> = Vec::new();
-    let mut shared: Option<String> = None;
+    // Everything that stops the import, found in one pass so the queue can
+    // show it all at once. Nothing is written while any is left.
+    let mut stops: Vec<Stop> = Vec::new();
+    // Unverified records no line of their own statement shows, by statement.
+    let mut missing: Vec<(usize, &LedgerPosting)> = Vec::new();
 
     // --- what the ledger already holds ---
     let mut openings: Vec<NaiveDate> = Vec::with_capacity(statements.len());
@@ -193,7 +165,11 @@ pub fn plan(
             // chain below proves they reach the statement's balances.
             ([], Some(earliest)) => earliest.date.pred_opt().expect("a day before a posting"),
             ([date], _) => *date,
-            _ => bail!("{} {} has more than one opening", s.account, st.currency),
+            _ => {
+                let stop =
+                    Stop::SeveralOpenings { account: s.account.clone(), currency: st.currency };
+                return Err(Refused(vec![stop]).into());
+            }
         };
         openings.push(opening);
 
@@ -274,10 +250,12 @@ pub fn plan(
         for &(l, r) in &pairing.pairs {
             line_status[new_lines[l]] = Status::Verifies(unverified[r].transaction_id);
         }
+        let mut contested: HashSet<i64> = HashSet::new();
         for (l, many) in &pairing.ambiguous {
             let li = new_lines[*l];
             let line = &st.lines[li];
-            ambiguous.push(Ambiguity {
+            contested.extend(many.iter().map(|&r| unverified[r].transaction_id));
+            stops.push(Stop::LineAmbiguous(Ambiguity {
                 account: s.account.clone(),
                 currency: st.currency,
                 statement_ref: refs[si][li].clone(),
@@ -285,10 +263,10 @@ pub fn plan(
                 amount: line.delta(),
                 description: line.description.clone(),
                 candidates: many.iter().map(|&r| unverified[r].transaction_id).collect(),
-            });
+            }));
         }
         // A record within the window of the end may be booked on the next
-        // statement; an earlier one still breaks the chain below.
+        // statement; an earlier one is not on it.
         let settled = st.settled_through();
         let after = settled.succ_opt().expect("a day after a statement");
         let verifying: HashSet<i64> = line_status
@@ -299,22 +277,29 @@ pub fn plan(
             })
             .collect();
         for p in &unverified {
-            let pending = p.date > opening
-                && p.date <= settled
-                && (settled - p.date).num_days() < WINDOW_DAYS;
-            if !pending || verifying.contains(&p.transaction_id) {
+            // One a line may still be, once a person picks, is not missing.
+            let shown = p.date <= opening
+                || p.date > settled
+                || verifying.contains(&p.transaction_id)
+                || contested.contains(&p.transaction_id);
+            if shown {
+                continue;
+            }
+            if (settled - p.date).num_days() >= WINDOW_DAYS {
+                missing.push((si, *p));
                 continue;
             }
             // Moving the record moves its every leg, so one reaching another
             // account that has its own statement is not ours to move.
             if let Some(other) = p.other_accounts.iter().find(|a| has_statements.contains(&***a)) {
-                shared.get_or_insert_with(|| {
-                    format!(
-                        "{} {}: the record of {} on {} is also {other}'s, and this statement does \
-                         not show it. Import it together with the next statement, which may, or \
-                         review the record. Nothing was imported",
-                        s.account, st.currency, p.amount, p.date
-                    )
+                stops.push(Stop::SharedDeferral {
+                    transaction_id: p.transaction_id,
+                    account: s.account.clone(),
+                    currency: st.currency,
+                    date: p.date,
+                    amount: p.amount,
+                    other: other.clone(),
+                    clearing: chart.institution.clearing.to_string(),
                 });
                 continue;
             }
@@ -333,13 +318,34 @@ pub fn plan(
         status.push(line_status);
     }
 
-    // Ambiguous lines first: they are what a person can settle in 待配對,
-    // and the record the other refusal names may be one of their candidates.
-    if !ambiguous.is_empty() {
-        return Err(Ambiguous(ambiguous).into());
-    }
-    if let Some(shared) = shared {
-        bail!(shared);
+    // A record its statement passes by may be a sibling's: the app knows the
+    // pooled accounts only together. Those whose new lines fit it are offered.
+    for (si, p) in missing {
+        let s = &statements[si];
+        let pool = chart.pool_siblings(&s.account);
+        let siblings = statements
+            .iter()
+            .enumerate()
+            .filter(|(o, other)| {
+                pool.contains(&other.account)
+                    && other.statement.currency == s.statement.currency
+                    && other.statement.lines.iter().enumerate().any(|(li, l)| {
+                        status[*o][li] == Status::New
+                            && l.delta() == p.amount
+                            && within_window(l.book_date, p.date)
+                    })
+            })
+            .map(|(_, other)| other.account.clone())
+            .collect();
+        stops.push(Stop::NotOnStatement {
+            transaction_id: p.transaction_id,
+            account: s.account.clone(),
+            currency: s.statement.currency,
+            date: p.date,
+            amount: p.amount,
+            through: s.statement.settled_through(),
+            siblings,
+        });
     }
 
     // --- how the new lines pair up, as the freeze pairs them ---
@@ -541,6 +547,7 @@ pub fn plan(
             checked
         },
     );
+    let mut dated: Vec<(i64, &str, NaiveDate)> = Vec::new();
     for (si, s) in statements.iter().enumerate() {
         for (li, l) in s.statement.lines.iter().enumerate() {
             if let Status::Verifies(transaction_id) = status[si][li] {
@@ -557,13 +564,17 @@ pub fn plan(
                     })
                     .cloned()
                     .collect();
+                // A record already standing for another bank's line is on
+                // that bank's date. Re-dating moves its every leg, and the two
+                // banks may have booked it on different days, so the date the
+                // other statement is checked against stands.
+                let date = (!from_a_statement(record)).then_some(l.book_date);
+                if let Some(date) = date {
+                    dated.push((transaction_id, &s.account, date));
+                }
                 plan.verified.push(Verification {
                     transaction_id,
-                    // A record already standing for another bank's line is on
-                    // that bank's date. Re-dating moves its every leg, and the
-                    // two banks may have booked it on different days, so the
-                    // date the other statement is checked against stands.
-                    date: (!from_a_statement(record)).then_some(l.book_date),
+                    date,
                     statement_ref: refs[si][li].clone(),
                     unchecked,
                 });
@@ -571,19 +582,19 @@ pub fn plan(
         }
     }
     // One record cannot sit on two days: two banks that booked it differently
-    // need it split, which only a re-freeze can do.
-    let mut dates: HashMap<i64, NaiveDate> = HashMap::new();
-    for v in plan.verified.iter().filter(|v| v.date.is_some()) {
-        let date = v.date.expect("filtered to the lines that re-date");
-        if let Some(&other) = dates.get(&v.transaction_id).filter(|&&d| d != date) {
-            bail!(
-                "the record {} verifies was booked {} by one bank and {other} by the other; \
-                 re-freeze so each side stands on its own. Nothing was imported",
-                v.statement_ref,
-                date
-            );
+    // need it split, one record per bank.
+    let mut dates: BTreeMap<i64, Vec<(String, NaiveDate)>> = BTreeMap::new();
+    for (transaction_id, account, date) in dated {
+        dates.entry(transaction_id).or_default().push((account.to_string(), date));
+    }
+    for (transaction_id, dates) in dates {
+        if dates.iter().any(|(_, d)| *d != dates[0].1) {
+            let clearing = chart.institution.clearing.to_string();
+            stops.push(Stop::TwoDates { transaction_id, dates, clearing });
         }
-        dates.insert(v.transaction_id, date);
+    }
+    if !stops.is_empty() {
+        return Err(Refused(stops).into());
     }
 
     let redated: HashMap<i64, NaiveDate> = plan
@@ -592,13 +603,15 @@ pub fn plan(
         .filter_map(|v| v.date.map(|date| (v.transaction_id, date)))
         .chain(plan.deferred.iter().map(|d| (d.transaction_id, d.date)))
         .collect();
-    chain(statements, &openings, &plan.transactions, &redated)?;
+    if let Some(stop) = chain(statements, &openings, &plan.transactions, &redated) {
+        return Err(Refused(vec![stop]).into());
+    }
     plan.openings = openings;
     Ok(plan)
 }
 
-/// Fails unless, on every statement day after the opening, the ledger plus
-/// this plan ends the day on the statement's own running balance.
+/// The first statement day after the opening that the ledger plus this plan
+/// does not end on the statement's own running balance.
 ///
 /// This is what makes the `:n` repeat suffix safe: a download that starts
 /// mid-day numbers its repeats from the wrong line, so a line is taken for one
@@ -609,7 +622,7 @@ fn chain(
     openings: &[NaiveDate],
     planned: &[(usize, Transaction)],
     redated: &HashMap<i64, NaiveDate>,
-) -> Result<()> {
+) -> Option<Stop> {
     for (s, &opening) in statements.iter().zip(openings) {
         let currency = s.statement.currency;
         let mut expected: BTreeMap<NaiveDate, Decimal> = BTreeMap::new();
@@ -644,16 +657,17 @@ fn chain(
                 balance += amount;
             }
             if Some(day) != skip && balance != want {
-                bail!(
-                    "{} {currency}: the ledger would end {day} at {balance} but the statement \
-                     says {want}. A download starts mid-day, overlaps one already imported \
-                     unevenly, or one is missing; nothing was imported",
-                    s.account
-                );
+                return Some(Stop::Unchained {
+                    account: s.account.clone(),
+                    currency,
+                    day,
+                    ledger: balance,
+                    statement: want,
+                });
             }
         }
     }
-    Ok(())
+    None
 }
 
 #[cfg(test)]

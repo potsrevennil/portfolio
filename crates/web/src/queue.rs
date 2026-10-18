@@ -1,6 +1,6 @@
 //! Builds the review pages from `db`: the queue with the lines waiting to be
-//! paired, a transaction opened for editing, and the forms' text parsed into
-//! what `db::review` writes.
+//! paired and what stopped the last imports, a transaction opened for
+//! editing, and the forms' text parsed into what `db::review` writes.
 
 use anyhow::{bail, Context, Result};
 use db::{
@@ -8,6 +8,7 @@ use db::{
     journal::{self, Filter},
     pairing,
     review::{Edit, LegEdit, Manual},
+    stops::{self, Record, Stop},
     SqlitePool,
 };
 use ledger_types::currency::Currency;
@@ -16,8 +17,8 @@ use rust_decimal::Decimal;
 use crate::{
     entries::{self, Chart},
     model::{
-        Change, ChartAccount, Choice, Editing, JournalQuery, LegInput, ManualInput, Money, Queue,
-        Review,
+        Change, ChartAccount, Choice, Editing, Entry, ImportStop, JournalQuery, LegInput,
+        ManualInput, Money, Pick, Place, Queue, Review, StopKind, Unplaced,
     },
 };
 
@@ -44,7 +45,107 @@ pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Re
             chosen: c.chosen,
         });
     }
-    Ok(Queue { journal, choices })
+    let stops = import_stops(pool, &chart, base).await?;
+    Ok(Queue { journal, choices, stops })
+}
+
+async fn entries(
+    pool: &SqlitePool,
+    chart: &Chart,
+    ids: &[i64],
+    base: Currency,
+) -> Result<Vec<Entry>> {
+    Ok(journal::by_ids(pool, ids).await?.into_iter().map(|e| chart.entry(e, base, &[])).collect())
+}
+
+/// The transaction `id`, unless it is gone.
+async fn entry(pool: &SqlitePool, chart: &Chart, id: i64, base: Currency) -> Result<Option<Entry>> {
+    Ok(entries(pool, chart, &[id], base).await?.pop())
+}
+
+/// What stopped the last imports, each as the queue shows it. One about a
+/// record deleted since is moot, and left out.
+async fn import_stops(pool: &SqlitePool, chart: &Chart, base: Currency) -> Result<Vec<ImportStop>> {
+    let place = |path: String| Place { label: chart.label(&path), path };
+    let unplaced = |r: Record| Unplaced {
+        date: r.date.to_string(),
+        account: chart.label(&r.account),
+        money: Money::new(r.amount, r.currency, base),
+        counter: r.counter.iter().map(|a| chart.label(a)).collect(),
+        narration: r.narration,
+    };
+    let mut out = Vec::new();
+    for open in stops::open(pool).await? {
+        let kind = match open.stop {
+            // Listed by `pairing::open`, as 待配對.
+            Stop::LineAmbiguous(_) => continue,
+            Stop::RecordAmbiguous { record, lines } => StopKind::RecordAmbiguous {
+                record: unplaced(record),
+                lines: entries(pool, chart, &lines, base).await?,
+            },
+            Stop::RecordUnexplained { record, through, lines, accounts } => {
+                StopKind::RecordUnexplained {
+                    record: unplaced(record),
+                    through: through.to_string(),
+                    lines: entries(pool, chart, &lines, base).await?,
+                    accounts: accounts.into_iter().map(place).collect(),
+                }
+            }
+            Stop::NotOnStatement { transaction_id, account, through, siblings, .. } => {
+                let Some(entry) = entry(pool, chart, transaction_id, base).await? else { continue };
+                StopKind::NotOnStatement {
+                    entry,
+                    account: chart.label(&account),
+                    through: through.to_string(),
+                    siblings: siblings.into_iter().map(place).collect(),
+                }
+            }
+            Stop::SharedDeferral { transaction_id, account, other, .. } => {
+                let Some(entry) = entry(pool, chart, transaction_id, base).await? else { continue };
+                StopKind::SharedDeferral {
+                    entry,
+                    account: chart.label(&account),
+                    other: chart.label(&other),
+                }
+            }
+            Stop::TwoDates { transaction_id, dates, .. } => {
+                let Some(entry) = entry(pool, chart, transaction_id, base).await? else { continue };
+                let dates =
+                    dates.into_iter().map(|(a, d)| (chart.label(&a), d.to_string())).collect();
+                StopKind::TwoDates { entry, dates }
+            }
+            Stop::SeveralOpenings { account, .. } => {
+                StopKind::SeveralOpenings { account: chart.label(&account) }
+            }
+            Stop::Unchained { account, currency, day, ledger, statement } => StopKind::Unchained {
+                account: chart.label(&account),
+                day: day.to_string(),
+                ledger: Money::new(ledger, currency, base),
+                statement: Money::new(statement, currency, base),
+            },
+        };
+        let picked = open.pick.map(Pick::from);
+        out.push(ImportStop { id: open.id, kind, picked, resolved: open.resolved });
+    }
+    Ok(out)
+}
+
+impl From<stops::Pick> for Pick {
+    fn from(p: stops::Pick) -> Self {
+        match p {
+            stops::Pick::Line(id) => Pick::Line(id),
+            stops::Pick::Account(path) => Pick::Account(path),
+        }
+    }
+}
+
+impl From<Pick> for stops::Pick {
+    fn from(p: Pick) -> Self {
+        match p {
+            Pick::Line(id) => stops::Pick::Line(id),
+            Pick::Account(path) => stops::Pick::Account(path),
+        }
+    }
 }
 
 /// Where a leg may post: accounts below a root.

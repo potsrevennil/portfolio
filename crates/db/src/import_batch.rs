@@ -198,6 +198,8 @@ pub struct HeldTransaction {
     pub id: i64,
     pub date: NaiveDate,
     pub external_ref: Option<String>,
+    /// The further source records it stands for.
+    pub aliases: Vec<String>,
     pub postings: Vec<HeldPosting>,
 }
 
@@ -214,6 +216,7 @@ struct HeldRow {
     transaction_id: i64,
     date: String,
     external_ref: Option<String>,
+    aliases: Option<String>,
     posting_id: i64,
     account: String,
     amount: String,
@@ -228,6 +231,8 @@ pub async fn transactions_on(
 ) -> Result<Vec<HeldTransaction>> {
     let rows: Vec<HeldRow> = sqlx::query_as(
         "SELECT t.id AS transaction_id, t.date, t.external_ref, p.id AS posting_id,
+                (SELECT group_concat(r.external_ref, char(31)) FROM transaction_refs r
+                 WHERE r.transaction_id = t.id) AS aliases,
                 a.path AS account, p.amount, p.currency
          FROM transactions t
          JOIN postings p ON p.transaction_id = t.id
@@ -254,6 +259,7 @@ pub async fn transactions_on(
                 id: r.transaction_id,
                 date: r.date.parse().with_context(|| format!("transaction date {:?}", r.date))?,
                 external_ref: r.external_ref,
+                aliases: split(r.aliases.as_deref()),
                 postings: vec![posting],
             }),
         }
