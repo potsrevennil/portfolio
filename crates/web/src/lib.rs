@@ -7,6 +7,7 @@ pub mod balance_sheet;
 #[cfg(feature = "ssr")]
 pub mod entries;
 pub mod error;
+pub mod fold;
 pub mod journal;
 pub mod manual;
 pub mod model;
