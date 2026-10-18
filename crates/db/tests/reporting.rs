@@ -102,7 +102,7 @@ fn balance_of<'a>(
 
 /// Seeds a two-currency ledger (TWD savings + USD brokerage cash, a credit
 /// card, income, expenses) plus an `Equity:Conversions` FX plug booked at a
-/// rate (90) different from the reporting rate (30), and a `TWD=X` = 30 FX
+/// rate (90) different from the reporting rate (30), and a `USDTWD=X` = 30 FX
 /// quote. Base currency is TWD throughout.
 async fn seed_multicurrency(pool: &SqlitePool) {
     let savings = add_account(pool, "Assets:Cathay:Savings", "Savings", "asset").await;
@@ -126,8 +126,8 @@ async fn seed_multicurrency(pool: &SqlitePool) {
     ])
     .await;
 
-    // 1 USD = 30 TWD, quoted USD->TWD as the ticker `TWD=X`.
-    add_price(pool, "TWD=X", "2026-01-01", 30.0).await;
+    // 1 USD = 30 TWD, quoted USD->TWD as the ticker `USDTWD=X`.
+    add_price(pool, "USDTWD=X", "2026-01-01", 30.0).await;
 
     // Salary 50000 TWD into savings.
     add_txn(pool, "2026-01-05", "salary", &[(savings, "50000", "TWD"), (salary, "-50000", "TWD")])
@@ -343,8 +343,8 @@ async fn a_date_before_every_quote_converts_at_the_earliest() {
     let food = add_account(&pool, "Expenses:Food", "Food", "expense").await;
     add_txn(&pool, "2026-01-10", "lunch abroad", &[(food, "10", "USD"), (wallet, "-10", "USD")])
         .await;
-    add_price(&pool, "TWD=X", "2026-03-01", 30.0).await;
-    add_price(&pool, "TWD=X", "2026-03-15", 40.0).await;
+    add_price(&pool, "USDTWD=X", "2026-03-01", 30.0).await;
+    add_price(&pool, "USDTWD=X", "2026-03-15", 40.0).await;
 
     let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 3, 31), Grain::Month)
         .await
@@ -472,7 +472,7 @@ fn holdings_totals_convert_at_the_as_of_rate_not_the_newest() {
     let mut portfolio = aapl_portfolio(Broker::Cathay); // reports in TWD
     let mut prices: HashMap<String, Vec<StockPrice>> = HashMap::new();
     prices.insert("AAPL".to_string(), vec![StockPrice { date: d(2026, 1, 6), close_price: 120.0 }]);
-    prices.insert("TWD=X".to_string(), vec![
+    prices.insert("USDTWD=X".to_string(), vec![
         StockPrice { date: d(2026, 1, 1), close_price: 30.0 }, // in effect on as_of
         StockPrice { date: d(2026, 6, 1), close_price: 35.0 }, // newer — must NOT be used
     ]);
@@ -628,7 +628,7 @@ async fn reports_over_frozen_history_exclude_the_conversions_plug() {
     // ...and excluded from net worth. Recompute it from the asset and liability
     // rows (USD at 30) and require the report to match, which it only can if
     // equity/income/expense were all left out.
-    add_price(&pool, "TWD=X", "2020-01-01", 30.0).await;
+    add_price(&pool, "USDTWD=X", "2020-01-01", 30.0).await;
     let rate = |b: &query::AccountBalance| match b.currency {
         Currency::USD => dec!(30),
         _ => Decimal::ONE,

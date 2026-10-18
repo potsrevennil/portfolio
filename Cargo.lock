@@ -2691,6 +2691,7 @@ dependencies = [
  "log",
  "rust_decimal",
  "thiserror 1.0.69",
+ "tokio",
  "yfinance-rs",
 ]
 

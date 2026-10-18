@@ -5,6 +5,8 @@ use rust_decimal::prelude::FromPrimitive;
 use thiserror::Error;
 use yfinance_rs::{core::conversions, Ticker, YfClient, YfError};
 
+use crate::{rates::QuoteSource, span::Span};
+
 // --- Custom Error Type ---
 #[derive(Error, Debug)]
 pub enum PriceError {
@@ -60,13 +62,13 @@ impl YFinanceSource {
         from_currency: Currency,
         to_currency: Currency,
     ) -> Option<String> {
-        match (from_currency, to_currency) {
-            (a, b) if a == b => None,
-            (Currency::USD, to) => Some(format!("{to}=X")),
-            (from, Currency::USD) => Some(format!("{from}USD=X")),
-            (from, to) => Some(format!("{from}{to}=X")),
-        }
+        (from_currency != to_currency).then(|| Self::ticker(from_currency, to_currency))
     }
+
+    /// The Yahoo pair quoting `to` per unit of `from`. Always spelled in full:
+    /// Yahoo also answers `TWD=X` for `USDTWD=X`, but one name per series
+    /// keeps the cache from holding the same quotes twice.
+    pub fn ticker(from: Currency, to: Currency) -> String { format!("{from}{to}=X") }
 
     pub async fn fetch_stock_prices(
         &self,
@@ -74,17 +76,24 @@ impl YFinanceSource {
         start_date: NaiveDate,
         end_date: NaiveDate,
     ) -> Result<Vec<StockPrice>, PriceError> {
+        Ok(self.history(symbol, start_date, end_date).await.context(format!(
+            "Failed to fetch prices for {} from {} to {}",
+            symbol, start_date, end_date
+        ))?)
+    }
+
+    async fn history(
+        &self,
+        symbol: &str,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+    ) -> Result<Vec<StockPrice>, YfError> {
         let ticker = Ticker::new(&self.client, symbol.to_string());
 
         let start_datetime = start_date.and_hms_opt(0, 0, 0).unwrap().and_utc();
         let end_datetime = end_date.and_hms_opt(23, 59, 59).unwrap().and_utc();
         let history =
-            ticker.history_builder().between(start_datetime, end_datetime).fetch().await.context(
-                format!(
-                    "Failed to fetch prices for {} from {} to {}",
-                    symbol, start_date, end_date
-                ),
-            )?;
+            ticker.history_builder().between(start_datetime, end_datetime).fetch().await?;
 
         let stock_prices: Vec<StockPrice> = history
             .into_iter()
@@ -100,5 +109,18 @@ impl YFinanceSource {
             })
             .collect();
         Ok(stock_prices)
+    }
+}
+
+impl QuoteSource for YFinanceSource {
+    async fn quotes(&self, ticker: &str, span: Span) -> Result<Vec<StockPrice>> {
+        match self.history(ticker, span.from, span.through).await {
+            Ok(quotes) => Ok(quotes),
+            // Yahoo's ways of saying it has nothing for the symbol or range.
+            Err(YfError::NotFound { .. } | YfError::Api(_) | YfError::MissingData(_)) => {
+                Ok(Vec::new())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 }
