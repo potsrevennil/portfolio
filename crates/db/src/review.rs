@@ -121,7 +121,7 @@ fn balanced(legs: impl IntoIterator<Item = (Decimal, Currency)>) -> Result<()> {
 
 /// The figures the ledger disagrees with before a write: a write is held
 /// only to the ones it breaks, not to one already broken elsewhere.
-async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
+pub(crate) async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
     Ok(check::check(db).await?.mismatches)
 }
 
@@ -129,7 +129,10 @@ async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
 /// vouches for; then it says which one, and what to do, in the reader's
 /// words. A 天天記帳 closing it contradicts is only that app's sum of what
 /// was logged there, so a record added later supersedes it instead.
-async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>, before: Vec<Mismatch>) -> Result<()> {
+pub(crate) async fn gated(
+    mut db: sqlx::Transaction<'_, sqlx::Sqlite>,
+    before: Vec<Mismatch>,
+) -> Result<()> {
     let after = check::check(&mut db).await?;
     let (tiantian, broken): (Vec<&Mismatch>, Vec<&Mismatch>) =
         after.mismatches.iter().filter(|m| !before.contains(m)).partition(
@@ -187,8 +190,19 @@ pub async fn edit(
 ) -> Result<()> {
     let mut db = pool.begin().await?;
     let before_check = baseline(&mut db).await?;
-    live(&mut db, id).await?;
-    let before = events::snapshot(&mut db, id).await?;
+    edit_in(&mut db, statements, id, edit).await?;
+    gated(db, before_check).await
+}
+
+/// [`edit`] inside the caller's transaction, ungated.
+pub(crate) async fn edit_in(
+    db: &mut SqliteConnection,
+    statements: &StatementAccounts,
+    id: i64,
+    edit: &Edit,
+) -> Result<()> {
+    live(&mut *db, id).await?;
+    let before = events::snapshot(&mut *db, id).await?;
     let rows: Vec<PostingRow> = sqlx::query_as(
         "SELECT p.id, a.path, p.amount, p.currency FROM postings p
          JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
@@ -222,7 +236,7 @@ pub async fn edit(
         }
         let same_account =
             leg.posting_id.and_then(|pid| held.get(&pid)).is_some_and(|r| r.path == leg.account);
-        let target = account(&mut db, &leg.account).await?;
+        let target = account(&mut *db, &leg.account).await?;
         match leg.posting_id {
             Some(pid) => {
                 sqlx::query(
@@ -262,7 +276,7 @@ pub async fn edit(
         sqlx::query("DELETE FROM postings WHERE id = ?").bind(r.id).execute(&mut *db).await?;
         removed.push(r.path.as_str());
     }
-    remark_unverified(&mut db, statements, id, &moved, &removed).await?;
+    remark_unverified(&mut *db, statements, id, &moved, &removed).await?;
     sqlx::query(
         "UPDATE transactions SET narration = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', \
          'now') WHERE id = ?",
@@ -272,22 +286,22 @@ pub async fn edit(
     .execute(&mut *db)
     .await?;
 
-    let after = events::snapshot(&mut db, id).await?;
+    let after = events::snapshot(&mut *db, id).await?;
     if after != before {
         let kind = match after.legs.len() > before.legs.len() {
             true => EventKind::Split,
             false => EventKind::Edited,
         };
-        events::record(&mut db, id, kind, &Change { before: Some(before), after }).await?;
+        events::record(&mut *db, id, kind, &Change { before: Some(before), after }).await?;
     }
     if edit.confirm {
-        confirm_in(&mut db, id).await?;
+        confirm_in(&mut *db, id).await?;
     }
-    gated(db, before_check).await
+    Ok(())
 }
 
 /// Refuses a transaction that is not there to change.
-async fn live(db: &mut SqliteConnection, id: i64) -> Result<()> {
+pub(crate) async fn live(db: &mut SqliteConnection, id: i64) -> Result<()> {
     let deleted: Option<Option<String>> =
         sqlx::query_scalar("SELECT deleted_at FROM transactions WHERE id = ?")
             .bind(id)

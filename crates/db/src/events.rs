@@ -29,6 +29,8 @@ pub enum EventKind {
     Deleted,
     /// A 確認 taken back: it waits for review again.
     Unconfirmed,
+    /// Split off from another record, so each bank's leg keeps its own date.
+    Detached,
 }
 
 /// A whole transaction as it stood: what `before` and `after` hold.
@@ -63,6 +65,24 @@ pub struct Pairing {
     pub statement_ref: String,
     pub date: NaiveDate,
     pub amount: Decimal,
+}
+
+/// The payload of [`EventKind::Paired`] on a statement line chosen for a
+/// 天天記帳 record the import could not place.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RecordPairing {
+    pub record_ref: String,
+    pub date: NaiveDate,
+    pub amount: Decimal,
+}
+
+/// The payload of [`EventKind::Detached`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Detachment {
+    /// The transaction it was split from.
+    pub from: i64,
+    pub before: Option<Snapshot>,
+    pub after: Snapshot,
 }
 
 #[derive(Clone, Debug, PartialEq)]

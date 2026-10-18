@@ -20,6 +20,7 @@ pub mod query;
 pub mod quotes;
 pub mod review;
 pub mod splits;
+pub mod stops;
 
 pub use connect::{connect, init_db, open_db};
 // The handles callers pass around, so only this crate depends on sqlx.
