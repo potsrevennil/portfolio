@@ -180,6 +180,7 @@ impl Fixture {
         load::run(&load::Args {
             journal: args.journal,
             database_url: url.clone(),
+            market_url: format!("{url}.market"),
             mapping: dir.path().join("mapping.toml"),
         })
         .await?;

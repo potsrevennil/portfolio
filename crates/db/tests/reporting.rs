@@ -5,7 +5,7 @@
 //!  * **Hand-seeded** rows give a small multi-currency ledger whose every
 //!    report number is worked out by hand in the comments — including a
 //!    mismatched-rate `Equity:Conversions` plug that must stay out of net
-//!    worth, and a seeded `stock_prices` FX quote so conversion is actually
+//!    worth, and a seeded market-cache FX quote so conversion is actually
 //!    exercised.
 //!  * **freeze → load** drives the real bake over a synthetic ledger and loads
 //!    the journal into SQLite, so the reports are also checked against
@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::NaiveDate;
 use db::{
     load,
+    market::Market,
     query::{
         self, account_balances, holdings_report, net_worth_over_time, periodic_report, AccountType,
         Grain,
@@ -32,16 +33,22 @@ use rust_decimal_macros::dec;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
+#[path = "common/market.rs"]
+mod market;
+use market::{beside, quote};
+
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, day).expect("valid date")
 }
 
-/// A fresh, migrated, empty database in a temp dir (absolute path in the URL).
-async fn fresh_db() -> (TempDir, SqlitePool) {
+/// A fresh, migrated, empty database in a temp dir (absolute path in the URL),
+/// with an empty market cache beside it.
+async fn fresh_db() -> (TempDir, SqlitePool, Market) {
     let dir = TempDir::new().expect("temp dir");
     let url = format!("sqlite:{}", dir.path().join("reporting.db").display());
     let pool = db::init_db(&url).await.expect("init db");
-    (dir, pool)
+    let market = beside(dir.path()).await;
+    (dir, pool, market)
 }
 
 async fn add_account(pool: &SqlitePool, path: &str, label: &str, ty: &str) -> i64 {
@@ -82,16 +89,6 @@ async fn add_txn(pool: &SqlitePool, date: &str, narration: &str, legs: &[(i64, &
     }
 }
 
-async fn add_price(pool: &SqlitePool, symbol: &str, date: &str, close: f64) {
-    sqlx::query("INSERT INTO stock_prices (symbol, date, close_price) VALUES (?, ?, ?)")
-        .bind(symbol)
-        .bind(date)
-        .bind(close)
-        .execute(pool)
-        .await
-        .expect("insert price");
-}
-
 fn balance_of<'a>(
     balances: &'a [query::AccountBalance],
     path: &str,
@@ -102,9 +99,9 @@ fn balance_of<'a>(
 
 /// Seeds a two-currency ledger (TWD savings + USD brokerage cash, a credit
 /// card, income, expenses) plus an `Equity:Conversions` FX plug booked at a
-/// rate (90) different from the reporting rate (30), and a `TWD=X` = 30 FX
+/// rate (90) different from the reporting rate (30), and a `USDTWD=X` = 30 FX
 /// quote. Base currency is TWD throughout.
-async fn seed_multicurrency(pool: &SqlitePool) {
+async fn seed_multicurrency(pool: &SqlitePool, market: &Market) {
     let savings = add_account(pool, "Assets:Cathay:Savings", "Savings", "asset").await;
     let ib_cash = add_account(pool, "Assets:IB:Cash", "IB Cash", "asset").await;
     let card = add_account(pool, "Liabilities:CreditCard", "Credit Card", "liability").await;
@@ -126,8 +123,8 @@ async fn seed_multicurrency(pool: &SqlitePool) {
     ])
     .await;
 
-    // 1 USD = 30 TWD, quoted USD->TWD as the ticker `TWD=X`.
-    add_price(pool, "TWD=X", "2026-01-01", 30.0).await;
+    // 1 USD = 30 TWD, quoted USD->TWD as the ticker `USDTWD=X`.
+    quote(market, "USDTWD=X", "2026-01-01", 30.0).await;
 
     // Salary 50000 TWD into savings.
     add_txn(pool, "2026-01-05", "salary", &[(savings, "50000", "TWD"), (salary, "-50000", "TWD")])
@@ -155,8 +152,8 @@ async fn seed_multicurrency(pool: &SqlitePool) {
 
 #[tokio::test]
 async fn balances_are_per_account_per_currency_and_date_filtered() {
-    let (_dir, pool) = fresh_db().await;
-    seed_multicurrency(&pool).await;
+    let (_dir, pool, market) = fresh_db().await;
+    seed_multicurrency(&pool, &market).await;
 
     // As of the opening date, only opening balances exist.
     let opening = account_balances(&pool, d(2026, 1, 1)).await.unwrap();
@@ -204,12 +201,13 @@ async fn balances_are_per_account_per_currency_and_date_filtered() {
 
 #[tokio::test]
 async fn net_worth_converts_currencies_and_excludes_equity() {
-    let (_dir, pool) = fresh_db().await;
-    seed_multicurrency(&pool).await;
+    let (_dir, pool, market) = fresh_db().await;
+    seed_multicurrency(&pool, &market).await;
 
     // Monthly over Jan–Feb: a point at each month end, in TWD.
     let series = net_worth_over_time(
         &pool,
+        &market,
         Currency::TWD,
         &AtCost::default(),
         d(2026, 1, 1),
@@ -244,12 +242,13 @@ async fn net_worth_converts_currencies_and_excludes_equity() {
 
 #[tokio::test]
 async fn periodic_report_groups_income_and_expense_across_currencies() {
-    let (_dir, pool) = fresh_db().await;
-    seed_multicurrency(&pool).await;
+    let (_dir, pool, market) = fresh_db().await;
+    seed_multicurrency(&pool, &market).await;
 
-    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 2, 28), Grain::Month)
-        .await
-        .unwrap();
+    let report =
+        periodic_report(&pool, &market, Currency::TWD, d(2026, 1, 1), d(2026, 2, 28), Grain::Month)
+            .await
+            .unwrap();
     assert_eq!(report.periods.len(), 2);
 
     // January: salary 50000 income (negated from its credit-normal -50000);
@@ -271,15 +270,16 @@ async fn periodic_report_groups_income_and_expense_across_currencies() {
 
 #[tokio::test]
 async fn periodic_report_clamps_partial_period_bounds_to_the_range() {
-    let (_dir, pool) = fresh_db().await;
-    seed_multicurrency(&pool).await;
+    let (_dir, pool, market) = fresh_db().await;
+    seed_multicurrency(&pool, &market).await;
 
     // Jan 6 – Feb 18: the first and last months are partial. Each period's
     // reported bounds must clamp to the range, and postings outside it (salary
     // Jan 5, groceries Feb 20) must not count.
-    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 6), d(2026, 2, 18), Grain::Month)
-        .await
-        .unwrap();
+    let report =
+        periodic_report(&pool, &market, Currency::TWD, d(2026, 1, 6), d(2026, 2, 18), Grain::Month)
+            .await
+            .unwrap();
     assert_eq!(report.periods.len(), 2);
 
     let jan = &report.periods[0];
@@ -295,14 +295,20 @@ async fn periodic_report_clamps_partial_period_bounds_to_the_range() {
 
 #[tokio::test]
 async fn quarter_week_and_day_grains_bucket_by_their_own_bounds() {
-    let (_dir, pool) = fresh_db().await;
-    seed_multicurrency(&pool).await;
+    let (_dir, pool, market) = fresh_db().await;
+    seed_multicurrency(&pool, &market).await;
 
     // Q1 holds all of January and February; Q2 is empty but still reported.
-    let report =
-        periodic_report(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 6, 30), Grain::Quarter)
-            .await
-            .unwrap();
+    let report = periodic_report(
+        &pool,
+        &market,
+        Currency::TWD,
+        d(2026, 1, 1),
+        d(2026, 6, 30),
+        Grain::Quarter,
+    )
+    .await
+    .unwrap();
     let bounds: Vec<(NaiveDate, NaiveDate)> =
         report.periods.iter().map(|p| (p.start, p.end)).collect();
     assert_eq!(bounds, [(d(2026, 1, 1), d(2026, 3, 31)), (d(2026, 4, 1), d(2026, 6, 30))]);
@@ -311,9 +317,10 @@ async fn quarter_week_and_day_grains_bucket_by_their_own_bounds() {
 
     // Weeks start on Monday: 2026-01-10 is a Saturday, in the week of the 5th,
     // which also holds the salary.
-    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 5), d(2026, 1, 18), Grain::Week)
-        .await
-        .unwrap();
+    let report =
+        periodic_report(&pool, &market, Currency::TWD, d(2026, 1, 5), d(2026, 1, 18), Grain::Week)
+            .await
+            .unwrap();
     let weeks: Vec<(NaiveDate, NaiveDate, Decimal, Decimal)> =
         report.periods.iter().map(|p| (p.start, p.end, p.income, p.expense)).collect();
     assert_eq!(weeks, [
@@ -322,9 +329,10 @@ async fn quarter_week_and_day_grains_bucket_by_their_own_bounds() {
     ]);
 
     // One period per day; only the 10th has the lunch.
-    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 9), d(2026, 1, 11), Grain::Day)
-        .await
-        .unwrap();
+    let report =
+        periodic_report(&pool, &market, Currency::TWD, d(2026, 1, 9), d(2026, 1, 11), Grain::Day)
+            .await
+            .unwrap();
     let expenses: Vec<(NaiveDate, Decimal)> =
         report.periods.iter().map(|p| (p.start, p.expense)).collect();
     assert_eq!(expenses, [
@@ -338,31 +346,68 @@ async fn quarter_week_and_day_grains_bucket_by_their_own_bounds() {
 /// the report can see, rather than dropping out.
 #[tokio::test]
 async fn a_date_before_every_quote_converts_at_the_earliest() {
-    let (_dir, pool) = fresh_db().await;
+    let (_dir, pool, market) = fresh_db().await;
     let wallet = add_account(&pool, "Assets:USD-Wallet", "Wallet", "asset").await;
     let food = add_account(&pool, "Expenses:Food", "Food", "expense").await;
     add_txn(&pool, "2026-01-10", "lunch abroad", &[(food, "10", "USD"), (wallet, "-10", "USD")])
         .await;
-    add_price(&pool, "TWD=X", "2026-03-01", 30.0).await;
-    add_price(&pool, "TWD=X", "2026-03-15", 40.0).await;
+    quote(&market, "USDTWD=X", "2026-03-01", 30.0).await;
+    quote(&market, "USDTWD=X", "2026-03-15", 40.0).await;
 
-    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 3, 31), Grain::Month)
-        .await
-        .unwrap();
+    let report =
+        periodic_report(&pool, &market, Currency::TWD, d(2026, 1, 1), d(2026, 3, 31), Grain::Month)
+            .await
+            .unwrap();
     assert_eq!(report.periods[0].expense, dec!(300));
+}
+
+/// A currency Yahoo quotes only against USD converts through it, and a route
+/// quoted nearer the date wins over a stale direct pair.
+#[tokio::test]
+async fn a_rate_through_usd_stands_in_for_a_missing_or_stale_pair() {
+    let (_dir, pool, market) = fresh_db().await;
+    let wallet = add_account(&pool, "Assets:VND-Wallet", "Wallet", "asset").await;
+    let opening = add_account(&pool, "Equity:Opening-Balances", "Opening", "equity").await;
+    add_txn(&pool, "2026-01-05", "open", &[(wallet, "100000", "VND"), (opening, "-100000", "VND")])
+        .await;
+    // 25,000 VND and 30 TWD to the dollar: 100,000 VND is 120 TWD.
+    quote(&market, "USDVND=X", "2026-01-02", 25000.0).await;
+    quote(&market, "USDTWD=X", "2026-01-02", 30.0).await;
+    let as_of = d(2026, 1, 31);
+    let net = || async {
+        net_worth_over_time(
+            &pool,
+            &market,
+            Currency::TWD,
+            &AtCost::default(),
+            as_of,
+            as_of,
+            Grain::Day,
+        )
+        .await
+        .unwrap()
+        .points[0]
+            .net
+    };
+    assert_eq!(net().await, dec!(120));
+
+    // A direct quote from months later is staler than the cross.
+    quote(&market, "VNDTWD=X", "2026-09-01", 0.002).await;
+    assert_eq!(net().await, dec!(120));
 }
 
 /// A ledger held only in the base currency needs no rates at all.
 #[tokio::test]
 async fn a_base_currency_ledger_reports_without_rates() {
-    let (_dir, pool) = fresh_db().await;
+    let (_dir, pool, market) = fresh_db().await;
     let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
     let food = add_account(&pool, "Expenses:Food", "Food", "expense").await;
     add_txn(&pool, "2026-01-10", "lunch", &[(food, "120", "TWD"), (cash, "-120", "TWD")]).await;
 
-    let report = periodic_report(&pool, Currency::TWD, d(2026, 1, 1), d(2026, 1, 31), Grain::Month)
-        .await
-        .unwrap();
+    let report =
+        periodic_report(&pool, &market, Currency::TWD, d(2026, 1, 1), d(2026, 1, 31), Grain::Month)
+            .await
+            .unwrap();
     assert_eq!(report.periods[0].expense, dec!(120));
 }
 
@@ -370,7 +415,7 @@ async fn a_base_currency_ledger_reports_without_rates() {
 /// trace, so loading refuses it.
 #[tokio::test]
 async fn a_posting_naming_a_missing_account_fails_the_load() {
-    let (_dir, pool) = fresh_db().await;
+    let (_dir, pool, _market) = fresh_db().await;
     let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
     let food = add_account(&pool, "Expenses:Food", "Food", "expense").await;
     add_txn(&pool, "2026-01-10", "lunch", &[(food, "120", "TWD"), (cash, "-120", "TWD")]).await;
@@ -472,7 +517,7 @@ fn holdings_totals_convert_at_the_as_of_rate_not_the_newest() {
     let mut portfolio = aapl_portfolio(Broker::Cathay); // reports in TWD
     let mut prices: HashMap<String, Vec<StockPrice>> = HashMap::new();
     prices.insert("AAPL".to_string(), vec![StockPrice { date: d(2026, 1, 6), close_price: 120.0 }]);
-    prices.insert("TWD=X".to_string(), vec![
+    prices.insert("USDTWD=X".to_string(), vec![
         StockPrice { date: d(2026, 1, 1), close_price: 30.0 }, // in effect on as_of
         StockPrice { date: d(2026, 6, 1), close_price: 35.0 }, // newer — must NOT be used
     ]);
@@ -570,8 +615,9 @@ date,account,contra,amount,currency,payee,narration,tags
 ";
 
 /// Freezes the synthetic ledger and loads the journal into a fresh SQLite,
-/// returning the temp dir (kept alive) and a pool over the loaded database.
-async fn freeze_and_load() -> (TempDir, SqlitePool) {
+/// returning the temp dir (kept alive), a pool over the loaded database and
+/// the market cache the load checked.
+async fn freeze_and_load() -> (TempDir, SqlitePool, Market) {
     let dir = TempDir::new().expect("temp dir");
     let root = dir.path();
     let write = |name: &str, contents: &str| {
@@ -600,16 +646,18 @@ async fn freeze_and_load() -> (TempDir, SqlitePool) {
     let load_args = load::Args {
         journal: root.join("journal.csv"),
         database_url: url.clone(),
+        market_url: format!("sqlite:{}", root.join("market.db").display()),
         mapping: root.join("mapping.toml"),
     };
     load::run(&load_args).await.expect("load");
     let pool = db::init_db(&url).await.expect("open loaded db");
-    (dir, pool)
+    let market = beside(root).await;
+    (dir, pool, market)
 }
 
 #[tokio::test]
 async fn reports_over_frozen_history_exclude_the_conversions_plug() {
-    let (_dir, pool) = freeze_and_load().await;
+    let (_dir, pool, market) = freeze_and_load().await;
     let as_of = d(2024, 12, 31);
     let balances = account_balances(&pool, as_of).await.unwrap();
 
@@ -628,7 +676,7 @@ async fn reports_over_frozen_history_exclude_the_conversions_plug() {
     // ...and excluded from net worth. Recompute it from the asset and liability
     // rows (USD at 30) and require the report to match, which it only can if
     // equity/income/expense were all left out.
-    add_price(&pool, "TWD=X", "2020-01-01", 30.0).await;
+    quote(&market, "USDTWD=X", "2020-01-01", 30.0).await;
     let rate = |b: &query::AccountBalance| match b.currency {
         Currency::USD => dec!(30),
         _ => Decimal::ONE,
@@ -644,10 +692,17 @@ async fn reports_over_frozen_history_exclude_the_conversions_plug() {
         .map(|b| b.amount * rate(b))
         .sum();
 
-    let series =
-        net_worth_over_time(&pool, Currency::TWD, &AtCost::default(), as_of, as_of, Grain::Day)
-            .await
-            .unwrap();
+    let series = net_worth_over_time(
+        &pool,
+        &market,
+        Currency::TWD,
+        &AtCost::default(),
+        as_of,
+        as_of,
+        Grain::Day,
+    )
+    .await
+    .unwrap();
     let point = &series.points[0];
     assert_eq!(point.assets, expected_assets);
     assert_eq!(point.liabilities, expected_liabilities);
@@ -656,7 +711,7 @@ async fn reports_over_frozen_history_exclude_the_conversions_plug() {
 
 #[tokio::test]
 async fn periodic_totals_over_frozen_history_reconcile_with_balances() {
-    let (_dir, pool) = freeze_and_load().await;
+    let (_dir, pool, market) = freeze_and_load().await;
     // Wide bounds so every income/expense posting is inside the period, whatever
     // exact dates the bake assigned.
     let (start, end) = (d(2020, 1, 1), d(2025, 12, 31));
@@ -674,7 +729,8 @@ async fn periodic_totals_over_frozen_history_reconcile_with_balances() {
     let expected_expense: Decimal =
         balances.iter().filter(|b| b.account_type == AccountType::Expense).map(|b| b.amount).sum();
 
-    let report = periodic_report(&pool, Currency::TWD, start, end, Grain::Year).await.unwrap();
+    let report =
+        periodic_report(&pool, &market, Currency::TWD, start, end, Grain::Year).await.unwrap();
     let total_income: Decimal = report.periods.iter().map(|b| b.income).sum();
     let total_expense: Decimal = report.periods.iter().map(|b| b.expense).sum();
 
@@ -687,12 +743,19 @@ async fn periodic_totals_over_frozen_history_reconcile_with_balances() {
 /// A foreign balance with no FX quote must fail the report, never count 1:1.
 #[tokio::test]
 async fn net_worth_without_an_fx_rate_is_an_error_not_one_to_one() {
-    let (_dir, pool) = freeze_and_load().await;
+    let (_dir, pool, market) = freeze_and_load().await;
     let as_of = d(2024, 12, 31);
-    let err =
-        net_worth_over_time(&pool, Currency::TWD, &AtCost::default(), as_of, as_of, Grain::Day)
-            .await
-            .expect_err("a USD balance with no USD→TWD quote must not convert at 1");
+    let err = net_worth_over_time(
+        &pool,
+        &market,
+        Currency::TWD,
+        &AtCost::default(),
+        as_of,
+        as_of,
+        Grain::Day,
+    )
+    .await
+    .expect_err("a USD balance with no USD→TWD quote must not convert at 1");
     assert!(format!("{err:#}").contains("USD"), "error should name the currency: {err:#}");
 }
 
@@ -700,7 +763,7 @@ async fn net_worth_without_an_fx_rate_is_an_error_not_one_to_one() {
 /// no quote — it must not abort the report.
 #[tokio::test]
 async fn net_worth_ignores_a_currency_that_only_touches_flow_accounts() {
-    let (_dir, pool) = fresh_db().await;
+    let (_dir, pool, market) = fresh_db().await;
     let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
     let salary = add_account(&pool, "Income:Salary", "Salary", "income").await;
     let travel = add_account(&pool, "Expenses:Travel", "Travel", "expense").await;
@@ -709,17 +772,21 @@ async fn net_worth_ignores_a_currency_that_only_touches_flow_accounts() {
     add_txn(&pool, "2026-01-06", "trip", &[(travel, "500", "JPY"), (salary, "-500", "JPY")]).await;
 
     let as_of = d(2026, 1, 31);
-    let series =
-        net_worth_over_time(&pool, Currency::TWD, &AtCost::default(), as_of, as_of, Grain::Day)
-            .await
-            .expect(
-                "a JPY flow leg with no quote must not fail a report that excludes income and \
-                 expense",
-            );
+    let series = net_worth_over_time(
+        &pool,
+        &market,
+        Currency::TWD,
+        &AtCost::default(),
+        as_of,
+        as_of,
+        Grain::Day,
+    )
+    .await
+    .expect("a JPY flow leg with no quote must not fail a report that excludes income and expense");
     assert_eq!(series.points[0].net, dec!(1000));
 
     // The same JPY leg does need a rate once it is inside the reported figure.
-    let err = periodic_report(&pool, Currency::TWD, d(2026, 1, 1), as_of, Grain::Month)
+    let err = periodic_report(&pool, &market, Currency::TWD, d(2026, 1, 1), as_of, Grain::Month)
         .await
         .expect_err("an expense report must not count 500 JPY as 500 TWD");
     assert!(format!("{err:#}").contains("JPY"), "{err:#}");
@@ -729,7 +796,7 @@ async fn net_worth_ignores_a_currency_that_only_touches_flow_accounts() {
 /// it: the balance sheet uses the same rule.
 #[tokio::test]
 async fn net_worth_leaves_out_holdings_carried_at_cost() {
-    let (_dir, pool) = fresh_db().await;
+    let (_dir, pool, market) = fresh_db().await;
     let cash = add_account(&pool, "Assets:Cash", "Cash", "asset").await;
     let unlisted = add_account(&pool, "Assets:Unlisted:Alpha", "Alpha", "asset").await;
     let opening = add_account(&pool, "Equity:Opening-Balances", "Opening", "equity").await;
@@ -739,9 +806,9 @@ async fn net_worth_leaves_out_holdings_carried_at_cost() {
     let as_of = d(2026, 1, 31);
     let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\"]\n").unwrap();
     let net = |at_cost: AtCost| {
-        let pool = pool.clone();
+        let (pool, market) = (pool.clone(), market.clone());
         async move {
-            net_worth_over_time(&pool, Currency::TWD, &at_cost, as_of, as_of, Grain::Day)
+            net_worth_over_time(&pool, &market, Currency::TWD, &at_cost, as_of, as_of, Grain::Day)
                 .await
                 .unwrap()
                 .points[0]

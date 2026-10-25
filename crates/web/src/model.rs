@@ -86,6 +86,11 @@ pub struct Converted {
     pub unpriced: Unpriced,
 }
 
+impl Converted {
+    /// Every amount in it had a rate, so `money` is the whole sum.
+    pub fn is_complete(&self) -> bool { self.unpriced.0.is_empty() }
+}
+
 /// One account in the tree, summing its own postings and its descendants'.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {

@@ -247,6 +247,7 @@ async fn a_frozen_ledger_holds_every_line() -> Result<()> {
     load::run(&load::Args {
         journal: f.dir.path().join("journal.csv"),
         database_url: url.clone(),
+        market_url: format!("{url}.market"),
         mapping: f.dir.path().join("mapping.toml"),
     })
     .await?;

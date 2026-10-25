@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use leptos_meta::Title;
 
 use crate::{
-    balance_sheet::{load_balance_sheet, MoneyText, UnpricedNote},
+    balance_sheet::{load_balance_sheet, TotalText},
     error::LoadFailed,
     model::{BalanceSheet, Converted},
 };
@@ -35,8 +35,7 @@ pub fn SummaryView(sheet: BalanceSheet) -> impl IntoView {
             <p class="as-of">{sheet.as_of}</p>
             <div class="headline">
                 <span class="name">"淨資產"</span>
-                <MoneyText money=sheet.net_worth.money.clone() />
-                <UnpricedNote unpriced=sheet.net_worth.unpriced />
+                <TotalText total=sheet.net_worth />
             </div>
             <div class="tiles">
                 {sections.into_iter().map(|(label, total)| view! { <Tile label total /> }).collect_view()}
@@ -61,8 +60,7 @@ fn Tile(label: String, total: Converted) -> impl IntoView {
     view! {
         <div class="tile">
             <span class="name">{label}</span>
-            <MoneyText money=total.money />
-            <UnpricedNote unpriced=total.unpriced />
+            <TotalText total />
         </div>
     }
 }

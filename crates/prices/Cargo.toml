@@ -8,10 +8,20 @@ workspace = true
 
 [dependencies]
 anyhow       = { workspace = true }
-chrono       = { workspace = true }
+chrono       = { workspace = true, features = ["clock"] }
 futures      = { workspace = true }
 ledger-types = { workspace = true }
 log          = { workspace = true }
+# The features yfinance-rs already builds, so calling Yahoo directly adds no
+# second TLS stack.
+reqwest      = { workspace = true }
 rust_decimal = { workspace = true }
+serde        = { workspace = true }
 thiserror    = { workspace = true }
+tokio        = { workspace = true }
 yfinance-rs  = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# Paused time, so the schedule tests wait an hour in no time.
+tokio = { workspace = true, features = ["test-util"] }

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use chrono::NaiveDate;
 use db::{
+    market::Market,
     query::{self, AccountBalance, AccountType, LedgerData},
     SqlitePool,
 };
@@ -25,12 +26,13 @@ const AT_COST: (&str, &str) = ("at-cost", "以成本衡量之投資");
 
 pub async fn load(
     pool: &SqlitePool,
+    market: &Market,
     as_of: NaiveDate,
     base: Currency,
     at_cost: &AtCost,
 ) -> Result<BalanceSheet> {
     let data = LedgerData::load(pool).await?;
-    let prices = query::load_fx_prices(pool, &data.currencies(), base, as_of).await?;
+    let prices = query::load_fx_prices(market, &data.currencies(), base, as_of).await?;
     let balances = data.balances_as_of(as_of);
     Ok(build(&data.labels(), &balances, as_of, base, at_cost, |c| {
         query::rate(c, base, as_of, &prices)

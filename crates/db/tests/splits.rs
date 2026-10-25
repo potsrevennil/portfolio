@@ -3,9 +3,8 @@ use db::splits::StockSplitStore;
 use portfolio::{SplitStore, StockSplits};
 use rust_decimal_macros::dec;
 
-#[path = "common/mod.rs"]
-mod common;
-use common::create_temp_db;
+#[path = "common/market.rs"]
+mod market;
 
 fn day(y: i32, m: u32, d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, d).unwrap() }
 
@@ -13,8 +12,8 @@ fn day(y: i32, m: u32, d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, d).u
 /// only the splits inside the range.
 #[tokio::test]
 async fn splits_round_trip_and_upsert() -> anyhow::Result<()> {
-    let (pool, _db_file) = create_temp_db().await?;
-    let store = StockSplitStore::new(pool);
+    let (market, _dir) = market::temp().await;
+    let store = StockSplitStore::new(market.pool().clone());
 
     store
         .save_splits(&StockSplits::from([(day(2020, 8, 31), vec![("AAPL".into(), dec!(3))])]))

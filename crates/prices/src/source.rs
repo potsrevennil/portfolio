@@ -60,13 +60,13 @@ impl YFinanceSource {
         from_currency: Currency,
         to_currency: Currency,
     ) -> Option<String> {
-        match (from_currency, to_currency) {
-            (a, b) if a == b => None,
-            (Currency::USD, to) => Some(format!("{to}=X")),
-            (from, Currency::USD) => Some(format!("{from}USD=X")),
-            (from, to) => Some(format!("{from}{to}=X")),
-        }
+        (from_currency != to_currency).then(|| Self::ticker(from_currency, to_currency))
     }
+
+    /// The Yahoo pair quoting `to` per unit of `from`. Always spelled in full:
+    /// Yahoo also answers `TWD=X` for `USDTWD=X`, but one name per series
+    /// keeps the cache from holding the same quotes twice.
+    pub fn ticker(from: Currency, to: Currency) -> String { format!("{from}{to}=X") }
 
     pub async fn fetch_stock_prices(
         &self,

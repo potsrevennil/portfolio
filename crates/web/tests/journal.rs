@@ -191,6 +191,7 @@ async fn ledger() -> (TempDir, SqlitePool) {
     load::run(&load::Args {
         journal: journal_path,
         database_url: url.clone(),
+        market_url: format!("{url}.market"),
         mapping: root.join("mapping.toml"),
     })
     .await
@@ -279,7 +280,8 @@ async fn site() -> Site {
     Site::new(|| async {
         let (dir, pool) = ledger().await;
         let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, AtCost::default(), Default::default()), dir)
+        let market = common::market::beside(dir.path()).await;
+        (server::router(options, pool, market, AtCost::default(), Default::default()), dir)
     })
     .await
 }
