@@ -210,6 +210,10 @@ details.group > summary.row.section {
   color: var(--negative);
 }
 
+.incomplete {
+  color: var(--muted);
+}
+
 .native,
 .unpriced {
   color: var(--muted);

@@ -108,7 +108,19 @@ Then open <http://127.0.0.1:3000>. `LEDGER_DATABASE_URL` points it at another
 database (default `sqlite:ledger-app.db`), and `LEDGER_MAPPING` at another chart
 config (default `ledger/mapping.toml`).
 
+Amounts are converted to TWD with the rates in `market.db` (`LEDGER_MARKET_URL`
+overrides it): quotes, FX and splits, a cache kept apart from the ledger because
+it can always be fetched again. The server fills it itself, in the background:
+at start, daily at `LEDGER_RATES_AT` (UTC, default `22:00`, after the US close),
+and within a minute of the ledger holding a new currency. `LEDGER_RATES=off`
+turns that off. A total holding an amount with no rate shows 未完整, never the
+sum of the rest. An empty or deleted `market.db` fills itself again. The same
+fetch runs from the command line, for a first deploy or a backfill:
+
+```sh
+cargo run -- rates --database-url sqlite:ledger-app.db
+```
+
 A release build names its files after their content, so run the binary with
 `LEPTOS_HASH_FILES=true`; it reads `hash.txt` from its own directory, where
-`cargo leptos build --release` leaves it. Amounts are converted to TWD with the
-rates in the database's `stock_prices` table (`cargo run -- rates`).
+`cargo leptos build --release` leaves it.

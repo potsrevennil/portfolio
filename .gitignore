@@ -16,7 +16,9 @@ sensitive-patterns
 *.xls
 # PDF e-statements (credit cards, banks) are financial data too.
 *.pdf
-# The build's database and its -wal/-shm side files.
+# The database the sqlx macros check against (crates/db/build.rs), and the old
+# stock tracker's cache, which nothing reads any more.
+sqlx-check.db*
 sqlite.db*
 
 # The baked SQLite ledger — the app's source of truth, so real financial data.

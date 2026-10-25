@@ -54,8 +54,12 @@ enum Command {
     /// Record a balance you counted (cash) as an assertion the check holds the
     /// ledger to
     Count(import::counted::Args),
-    /// Fetch daily exchange rates so the ledger's currencies can be compared
-    Rates(ledger::rates::Args),
+    /// Fetch the exchange rates the ledger database is missing into the
+    /// market cache (the web server does this itself; for a first deploy,
+    /// backfill or recovery)
+    Rates(db::market::Args),
+    /// Write Fava's rates.beancount from the Beancount ledger's currencies
+    FavaRates(ledger::rates::Args),
 }
 
 #[derive(Parser, Debug)]
@@ -164,6 +168,10 @@ impl Cli {
                 Ok(())
             }
             Some(Command::Rates(args)) => {
+                print!("{}", db::market::run(args).await?);
+                Ok(())
+            }
+            Some(Command::FavaRates(args)) => {
                 let (prices, _) = tracker_stores().await?;
                 let written = ledger::rates::fetch(args, &prices).await?;
                 println!("wrote {written} price directives");
@@ -175,8 +183,8 @@ impl Cli {
     }
 }
 
-/// The stock tracker's database, which caches quotes and splits.
+/// The quotes and splits the stock tracker caches, in the market cache.
 async fn tracker_stores() -> Result<(PriceService<StockPriceStore>, StockSplitStore)> {
-    let pool = db::init_db("sqlite:sqlite.db").await?;
-    Ok((PriceService::new(StockPriceStore::new(pool.clone())), StockSplitStore::new(pool)))
+    let market = db::market::Market::open(db::market::DEFAULT_URL).await?;
+    Ok((PriceService::new(market.prices()), StockSplitStore::new(market.pool().clone())))
 }

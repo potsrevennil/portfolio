@@ -14,6 +14,8 @@ pub mod manual;
 pub mod model;
 #[cfg(feature = "ssr")]
 pub mod queue;
+#[cfg(feature = "ssr")]
+pub mod rates;
 pub mod review;
 #[cfg(feature = "ssr")]
 pub mod server;
