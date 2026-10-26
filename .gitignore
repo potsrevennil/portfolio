@@ -25,6 +25,9 @@ sqlite.db*
 # The bake writes it here by default; keep it out of git like every other input.
 ledger-app.db*
 
+# The market cache (quotes, FX, splits): refetchable, and it reveals what is held.
+market.db*
+
 # Imported transaction history — same financial data the *.csv rule keeps out.
 ledger/generated/
 
