@@ -7,13 +7,14 @@ use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::events::{self, EventKind, Pairing};
 
 /// A line that fits more than one unverified record, or whose one record
 /// fits another line too.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ambiguity {
     pub account: String,
     pub currency: Currency,
