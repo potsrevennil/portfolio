@@ -22,9 +22,13 @@ fn chart() -> Chart {
 fn day(d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(2026, 6, d).expect("date") }
 
 fn statement(lines: &[(u32, Decimal, Decimal)]) -> BankStatement {
+    statement_of("111111111111", lines)
+}
+
+fn statement_of(account_no: &str, lines: &[(u32, Decimal, Decimal)]) -> BankStatement {
     BankStatement {
         bank: Bank::Cathay,
-        account_no: "111111111111".into(),
+        account_no: account_no.into(),
         account_kind: "活存".into(),
         currency: Currency::TWD,
         period_end: None,
@@ -56,15 +60,19 @@ fn held(d: u32, amount: Decimal, opening: bool) -> LedgerPosting {
     }
 }
 
-fn run(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
-    let s = Statement {
-        account: "Assets:Bank:Savings".into(),
+/// `st` landing on `account`, which holds `existing`, all lines from one file.
+fn on<'a>(account: &str, st: &'a BankStatement, existing: Vec<LedgerPosting>) -> Statement<'a> {
+    Statement {
+        account: account.into(),
         statement: st,
         files: vec![0; st.lines.len()],
         existing,
         chosen: HashMap::new(),
-    };
-    plan(&chart(), &[s], &HashSet::new(), &[])
+    }
+}
+
+fn run(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
+    plan(&chart(), &[on("Assets:Bank:Savings", st, existing)], &HashSet::new(), &[])
 }
 
 #[test]
@@ -129,6 +137,14 @@ fn unverified(d: u32, amount: Decimal, id: i64) -> LedgerPosting {
     LedgerPosting { unverified: true, transaction_id: id, ..held(d, amount, false) }
 }
 
+/// What a refused plan stopped on.
+fn stops(err: anyhow::Error) -> Vec<Stop> {
+    match err.downcast::<Refused>() {
+        Ok(Refused(stops)) => stops,
+        Err(err) => panic!("not a typed refusal: {err}"),
+    }
+}
+
 fn with(st: &BankStatement, existing: Vec<LedgerPosting>) -> Result<Plan> {
     picked(st, existing, HashMap::new())
 }
@@ -138,13 +154,7 @@ fn picked(
     existing: Vec<LedgerPosting>,
     chosen: HashMap<String, i64>,
 ) -> Result<Plan> {
-    let s = Statement {
-        account: "Assets:Bank:Savings".into(),
-        statement: st,
-        files: vec![0; st.lines.len()],
-        existing,
-        chosen,
-    };
+    let s = Statement { chosen, ..on("Assets:Bank:Savings", st, existing) };
     plan(&chart(), &[s], &HashSet::new(), &[])
 }
 
@@ -173,13 +183,7 @@ fn an_ambiguous_pairing_verifies_nothing() {
     let existing =
         vec![held(1, dec!(100), true), unverified(9, dec!(-150), 1), unverified(10, dec!(-150), 2)];
     let err = with(&st, existing).expect_err("two records, two lines");
-    assert!(err.to_string().contains("ambiguously"), "{err}");
-
-    // One line, two records: still no choice.
-    let st = statement(&[(10, dec!(-150), dec!(-50))]);
-    let existing =
-        vec![held(1, dec!(100), true), unverified(9, dec!(-150), 1), unverified(11, dec!(-150), 2)];
-    assert!(with(&st, existing).is_err());
+    assert!(stops(err).iter().all(|s| matches!(s, Stop::LineAmbiguous(_))));
 }
 
 /// The refusal names each line and the records it fits, for the queue.
@@ -189,8 +193,7 @@ fn an_ambiguity_names_its_lines_and_records() {
     let existing =
         vec![held(1, dec!(100), true), unverified(9, dec!(-150), 1), unverified(11, dec!(-150), 2)];
     let err = with(&st, existing).expect_err("one line, two records");
-    let Ambiguous(lines) = err.downcast_ref::<Ambiguous>().expect("typed");
-    assert_eq!(lines, &[Ambiguity {
+    assert_eq!(stops(err), [Stop::LineAmbiguous(Ambiguity {
         account: "Assets:Bank:Savings".into(),
         currency: Currency::TWD,
         statement_ref: st.dedup_refs()[0].clone(),
@@ -198,7 +201,7 @@ fn an_ambiguity_names_its_lines_and_records() {
         amount: dec!(-150),
         description: String::new(),
         candidates: vec![1, 2],
-    }]);
+    })]);
 }
 
 /// A person's pick settles it: the picked record is verified, the other
@@ -225,7 +228,8 @@ fn a_pick_pairs_what_the_amounts_could_not() -> Result<()> {
         unverified(10, dec!(-150), 42),
     ];
     let stale = picked(&st, existing, HashMap::from([(refs[0].clone(), 99)]));
-    assert!(stale.expect_err("still ambiguous").downcast_ref::<Ambiguous>().is_some());
+    let stale = stops(stale.expect_err("still ambiguous"));
+    assert!(matches!(stale.as_slice(), [Stop::LineAmbiguous(_), ..]), "{stale:?}");
     Ok(())
 }
 
@@ -246,11 +250,11 @@ fn a_pick_whose_record_no_longer_fits_is_ignored() -> Result<()> {
     Ok(())
 }
 
-/// An ambiguous line is reported for a person to pick even when the same
-/// statement leaves another bank's record unshown: that refusal would hide
-/// the choice behind a message no pick can settle.
+/// Every stop is reported at once, so the queue shows them together: an
+/// ambiguous line beside another bank's record the statement leaves unshown.
+/// The records the line may be are not reported missing.
 #[test]
-fn an_ambiguity_is_reported_before_a_record_left_to_the_next_statement() {
+fn an_ambiguity_is_reported_beside_a_record_left_to_the_next_statement() {
     let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-150), dec!(-45))]);
     let shared =
         LedgerPosting { other_accounts: vec![OTHER.to_string()], ..unverified(9, dec!(-30), 40) };
@@ -260,9 +264,13 @@ fn an_ambiguity_is_reported_before_a_record_left_to_the_next_statement() {
         unverified(9, dec!(-150), 42),
         shared,
     ];
-    let err = with(&st, existing).expect_err("ambiguous");
-    let Ambiguous(lines) = err.downcast_ref::<Ambiguous>().expect("the ambiguity, not {err}");
-    assert_eq!(lines[0].candidates, [41, 42]);
+    let found = stops(with(&st, existing).expect_err("ambiguous"));
+    let [Stop::LineAmbiguous(line), Stop::SharedDeferral { transaction_id: 40, .. }] =
+        found.as_slice()
+    else {
+        panic!("{found:?}")
+    };
+    assert_eq!(line.candidates, [41, 42]);
 }
 
 /// Uncategorised lines say how their other leg was chosen.
@@ -276,13 +284,17 @@ fn a_fallback_leg_carries_its_origin() -> Result<()> {
     Ok(())
 }
 
-/// A record whose amount disagrees verifies nothing and breaks the chain.
+/// A record whose amount disagrees verifies nothing: the statement passes
+/// it by, and the import says which record, not just where the chain broke.
 #[test]
-fn an_unverified_record_of_another_amount_breaks_the_chain() {
+fn an_unverified_record_of_another_amount_is_not_on_the_statement() {
     let st = statement(&[(10, dec!(-20), dec!(80)), (20, dec!(5), dec!(85))]);
     let err = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-19), 42)])
         .expect_err("19 is not 20");
-    assert!(err.to_string().contains("nothing was imported"), "{err}");
+    assert!(
+        matches!(stops(err).as_slice(), [Stop::NotOnStatement { transaction_id: 42, siblings, .. }]
+            if siblings.is_empty())
+    );
 }
 
 /// A spend recorded in the statement's last days that the bank books after
@@ -296,13 +308,71 @@ fn a_record_from_the_last_days_waits_for_the_next_statement() -> Result<()> {
     Ok(())
 }
 
-/// One from earlier in the statement had its chance: the chain breaks.
+/// The app records the pooled accounts only together, so a record may be on
+/// the wrong one: the sibling whose new line fits it is named for the queue.
 #[test]
-fn an_earlier_record_no_line_verifies_breaks_the_chain() {
-    let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
-    let err = with(&st, vec![held(1, dec!(100), true), unverified(2, dec!(-30), 42)])
-        .expect_err("the statement never shows 30");
-    assert!(err.to_string().contains("nothing was imported"), "{err}");
+fn a_record_its_statement_passes_by_names_the_sibling_that_shows_it() {
+    let savings = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
+    let other = statement_of("222222222222", &[(3, dec!(-30), dec!(70))]);
+    let statements = [
+        on("Assets:Bank:Savings", &savings, vec![
+            held(1, dec!(100), true),
+            unverified(2, dec!(-30), 42),
+        ]),
+        on(OTHER, &other, vec![held(1, dec!(100), true)]),
+    ];
+    let err = plan(&chart(), &statements, &HashSet::new(), &[]).expect_err("on the sibling");
+    assert_eq!(stops(err), [Stop::NotOnStatement {
+        transaction_id: 42,
+        account: "Assets:Bank:Savings".into(),
+        currency: Currency::TWD,
+        date: day(2),
+        amount: dec!(-30),
+        through: savings.settled_through(),
+        siblings: vec![OTHER.into()],
+    }]);
+}
+
+/// Two statements' lines verifying one transfer on different days.
+fn two_dated(other: &[(u32, Decimal, Decimal)]) -> Result<Plan> {
+    let savings = statement(&[(10, dec!(-20), dec!(80))]);
+    let other = statement_of("222222222222", other);
+    let transfer = |amount, other_account: &str| LedgerPosting {
+        other_accounts: vec![other_account.to_string()],
+        ..unverified(9, amount, 42)
+    };
+    let statements = [
+        on("Assets:Bank:Savings", &savings, vec![
+            held(1, dec!(100), true),
+            transfer(dec!(-20), OTHER),
+        ]),
+        on(OTHER, &other, vec![
+            held(1, dec!(100), true),
+            transfer(dec!(20), "Assets:Bank:Savings"),
+        ]),
+    ];
+    plan(&chart(), &statements, &HashSet::new(), &[])
+}
+
+/// A transfer the banks booked a day apart (near midnight) stays one record,
+/// on the day both statements' balances agree with.
+#[test]
+fn a_transfer_two_banks_date_apart_keeps_one_date() -> Result<()> {
+    let p = two_dated(&[(11, dec!(20), dec!(120))])?;
+    let dates: Vec<_> = p.verified.iter().map(|v| (v.transaction_id, v.date)).collect();
+    assert_eq!(dates, [(42, Some(day(10))), (42, Some(day(10)))]);
+    Ok(())
+}
+
+/// When neither day keeps both statements' balances, the import stops.
+#[test]
+fn a_transfer_no_one_date_balances_stops_the_import() {
+    let err = two_dated(&[(10, dec!(5), dec!(105)), (11, dec!(20), dec!(125))])
+        .expect_err("neither day balances");
+    assert_eq!(stops(err), [Stop::TwoDates {
+        transaction_id: 42,
+        dates: vec![("Assets:Bank:Savings".into(), day(10)), (OTHER.into(), day(11))],
+    }]);
 }
 
 /// A transfer is one record with a leg on each account, and a line vouches
@@ -329,8 +399,12 @@ fn a_transfer_the_statement_does_not_show_is_refused_rather_than_moved() {
         LedgerPosting { other_accounts: vec![OTHER.to_string()], ..unverified(9, dec!(-30), 42) };
     let err = with(&st, vec![held(1, dec!(100), true), record])
         .expect_err("the far leg is not ours to move");
-    assert!(err.to_string().contains(OTHER), "{err}");
-    assert!(err.to_string().contains("Nothing was imported"), "{err}");
+    let found = stops(err);
+    assert!(
+        matches!(found.as_slice(), [Stop::SharedDeferral { transaction_id: 42, other, .. }]
+            if other == OTHER),
+        "{found:?}"
+    );
 }
 
 /// A record another bank's line already verified keeps that bank's date: the

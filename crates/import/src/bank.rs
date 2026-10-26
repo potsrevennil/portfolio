@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use db::{
     assertions, check,
     import::{ensure_account, insert_deduped, InsertOutcome, Transaction},
-    import_batch, pairing, SqliteConnection, SqlitePool,
+    import_batch, pairing, stops, SqliteConnection, SqlitePool,
 };
 use ledger::{
     accounts::Chart,
@@ -77,9 +77,9 @@ pub async fn run(bank: Bank, args: &Args) -> Result<Report> {
     import_all(&pool, &chart, bank, &merged, &[]).await
 }
 
-/// [`import`] as one database transaction, committed if it succeeds. Lines
-/// it could not pair on its own are kept for a person to pair in the review
-/// queue, though nothing else is written; the next import uses the picks.
+/// [`import`] as one database transaction, committed if it succeeds. What
+/// stopped it is kept for the review queue, though nothing else is written;
+/// the next import uses what a person settled there.
 pub async fn import_all(
     pool: &SqlitePool,
     chart: &Chart,
@@ -88,21 +88,8 @@ pub async fn import_all(
     candidates: &[Candidate],
 ) -> Result<Report> {
     let mut tx = pool.begin().await?;
-    match import(&mut tx, chart, bank, merged, candidates).await {
-        Ok(report) => {
-            tx.commit().await?;
-            Ok(report)
-        }
-        Err(e) => {
-            tx.rollback().await?;
-            if let Some(plan::Ambiguous(lines)) = e.downcast_ref() {
-                let mut choices = pool.begin().await?;
-                pairing::record(&mut choices, lines).await?;
-                choices.commit().await?;
-            }
-            Err(e)
-        }
-    }
+    let outcome = import(&mut tx, chart, bank, merged, candidates).await;
+    stops::finish(pool, bank.source(), tx, outcome).await
 }
 
 /// Imports `bank`'s statements into the caller's transaction and gates it;
