@@ -19,4 +19,5 @@ pub mod review;
 pub mod server;
 #[cfg(feature = "ssr")]
 pub mod sheet;
+pub mod stops;
 pub mod summary;

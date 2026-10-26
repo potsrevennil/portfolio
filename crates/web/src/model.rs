@@ -434,12 +434,70 @@ pub struct Choice {
     pub chosen: Option<i64>,
 }
 
-/// 待確認: the journal held to unreviewed records, and the lines waiting to
-/// be paired.
+/// A 天天記帳 record an import could not place: not in the ledger yet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Unplaced {
+    pub date: String,
+    pub account: String,
+    pub money: Money,
+    /// Its category, or where it moves money to.
+    pub counter: Vec<String>,
+    pub narration: String,
+}
+
+/// Why the last run of an import stopped, with what it names, by label.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ImportStop {
+    /// Several lines fit the record.
+    RecordAmbiguous {
+        record: Unplaced,
+        lines: Vec<Entry>,
+    },
+    /// The statements reach its day and no uncategorised line is it; `lines`
+    /// are those of its amount it may be all the same.
+    RecordUnexplained {
+        record: Unplaced,
+        through: String,
+        lines: Vec<Entry>,
+    },
+    /// A record waiting to be verified that its statement passes by;
+    /// `siblings` show a line of its amount.
+    NotOnStatement {
+        entry: Entry,
+        account: String,
+        through: String,
+        siblings: Vec<String>,
+    },
+    /// A transfer the statement leaves for the next one, whose other leg is
+    /// another statement's.
+    SharedDeferral {
+        entry: Entry,
+        account: String,
+        other: String,
+    },
+    /// A transfer two banks booked on different days.
+    TwoDates {
+        entry: Entry,
+        dates: Vec<(String, String)>,
+    },
+    SeveralOpenings {
+        account: String,
+    },
+    Unchained {
+        account: String,
+        day: String,
+        ledger: Money,
+        statement: Money,
+    },
+}
+
+/// 待確認: the journal held to unreviewed records, the lines waiting to be
+/// paired, and what stopped the last imports.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Queue {
     pub journal: Journal,
     pub choices: Vec<Choice>,
+    pub stops: Vec<ImportStop>,
 }
 
 /// One change the app recorded on a transaction.

@@ -10,6 +10,7 @@ use crate::{
     balance_sheet::MoneyText,
     journal::{EntryHead, EntryLegs, JournalFilter, JournalList, OriginNote},
     model::{ChartAccount, Choice, Editing, JournalQuery, LegInput, Queue},
+    stops::Stops,
 };
 
 /// Blank rows the editor offers for splitting a leg.
@@ -158,10 +159,11 @@ pub fn ReviewPage() -> impl IntoView {
         <Transition fallback=|| view! { <p class="note">"載入中…"</p> }>
             {move || Suspend::new(async move {
                 match queue.await {
-                    Ok(Queue { journal, choices }) => {
+                    Ok(Queue { journal, choices, stops }) => {
                         view! {
                             <div class="journal review">
                                 <ActionError result=actions.confirm.value() />
+                                <Stops stops />
                                 <Pairings choices />
                                 <JournalFilter
                                     action="/review"
