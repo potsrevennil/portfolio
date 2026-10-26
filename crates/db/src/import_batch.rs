@@ -182,6 +182,31 @@ pub async fn verify(db: &mut SqliteConnection, v: &Verification) -> Result<()> {
     Ok(())
 }
 
+/// Moves transaction `transaction_id`'s leg of `amount` from the account at
+/// `from` to the one at `to`: the bank showed it on a sibling account.
+pub async fn move_leg(
+    db: &mut SqliteConnection,
+    labels: &Labels,
+    transaction_id: i64,
+    from: &str,
+    to: &str,
+    amount: Decimal,
+) -> Result<()> {
+    let to_id = ensure_account(db, labels, to).await?;
+    sqlx::query(
+        "UPDATE postings SET account_id = ? WHERE transaction_id = ? AND amount = ?
+         AND account_id = (SELECT id FROM accounts WHERE path = ?)",
+    )
+    .bind(to_id)
+    .bind(transaction_id)
+    .bind(amount.to_string())
+    .bind(from)
+    .execute(db)
+    .await
+    .with_context(|| format!("moving transaction {transaction_id} from {from} to {to}"))?;
+    Ok(())
+}
+
 pub async fn redate(db: &mut SqliteConnection, transaction_id: i64, date: NaiveDate) -> Result<()> {
     sqlx::query("UPDATE transactions SET date = ? WHERE id = ?")
         .bind(date.to_string())
@@ -198,6 +223,8 @@ pub struct HeldTransaction {
     pub id: i64,
     pub date: NaiveDate,
     pub external_ref: Option<String>,
+    /// The further source records it stands for.
+    pub aliases: Vec<String>,
     pub postings: Vec<HeldPosting>,
 }
 
@@ -214,6 +241,7 @@ struct HeldRow {
     transaction_id: i64,
     date: String,
     external_ref: Option<String>,
+    aliases: Option<String>,
     posting_id: i64,
     account: String,
     amount: String,
@@ -228,6 +256,8 @@ pub async fn transactions_on(
 ) -> Result<Vec<HeldTransaction>> {
     let rows: Vec<HeldRow> = sqlx::query_as(
         "SELECT t.id AS transaction_id, t.date, t.external_ref, p.id AS posting_id,
+                (SELECT group_concat(r.external_ref, char(31)) FROM transaction_refs r
+                 WHERE r.transaction_id = t.id) AS aliases,
                 a.path AS account, p.amount, p.currency
          FROM transactions t
          JOIN postings p ON p.transaction_id = t.id
@@ -254,6 +284,7 @@ pub async fn transactions_on(
                 id: r.transaction_id,
                 date: r.date.parse().with_context(|| format!("transaction date {:?}", r.date))?,
                 external_ref: r.external_ref,
+                aliases: split(r.aliases.as_deref()),
                 postings: vec![posting],
             }),
         }

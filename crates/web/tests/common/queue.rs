@@ -171,3 +171,11 @@ pub async fn ledger() -> (TempDir, SqlitePool) {
     .unwrap();
     (dir, pool)
 }
+
+pub async fn id_of(pool: &SqlitePool, narration: &str) -> i64 {
+    sqlx::query_scalar("SELECT id FROM transactions WHERE narration = ?")
+        .bind(narration)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
