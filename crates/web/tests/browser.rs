@@ -253,6 +253,7 @@ async fn journeys() {
     split_in_the_editor().await;
     pick_a_pairing().await;
     enter_cash_by_hand().await;
+    show_the_accounts_at_zero().await;
 }
 
 async fn confirm_from_the_queue() {
@@ -386,7 +387,7 @@ async fn enter_cash_by_hand() {
     j.hydrated().await;
     j.find(r#"form.delete input[name="sure"]"#).await.click().await.unwrap();
     j.find("form.delete button").await.click().await.unwrap();
-    j.until_count("li.entry", 8).await;
+    j.until_count("li.entry", 10).await;
     assert!(j.browser.current_url().await.unwrap().path().ends_with("/journal"));
     assert!(!j.text().await.contains("豆漿"));
     let deleted: Option<String> =
@@ -395,5 +396,17 @@ async fn enter_cash_by_hand() {
             .await
             .unwrap();
     assert!(deleted.is_some());
+    j.close().await;
+}
+
+async fn show_the_accounts_at_zero() {
+    let j = Journey::start().await;
+    j.open("/balance-sheet").await;
+    j.find(".tools button").await.click().await.unwrap();
+    // The emptied wallet is left out until it is asked for.
+    let wallet = r#".row:has(a[href="/journal?account=Assets%3AOld-Wallet"])"#;
+    assert!(!j.find(wallet).await.is_displayed().await.unwrap());
+    j.find(".tools input[type=checkbox]").await.click().await.unwrap();
+    assert!(j.find(wallet).await.is_displayed().await.unwrap());
     j.close().await;
 }

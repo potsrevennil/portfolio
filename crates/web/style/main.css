@@ -605,6 +605,17 @@ input.currency {
   color: var(--fg);
 }
 
+/* An account at zero, and all under it, while 不顯示餘額 0 的帳戶 is on. */
+.hide-zero .zero {
+  display: none;
+}
+
+.tools label {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
 /* 支出 / 收入 / 轉帳: which accounts the entry asks for. */
 .manual .kinds {
   display: flex;

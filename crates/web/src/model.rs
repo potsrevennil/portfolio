@@ -102,6 +102,9 @@ pub struct Node {
     /// when it holds any currency other than the base: the figure its
     /// statement shows.
     pub native: Vec<Money>,
+    /// Neither it nor any account under it holds anything: shown only when
+    /// asked for.
+    pub zero: bool,
     pub children: Vec<Node>,
 }
 

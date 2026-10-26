@@ -69,11 +69,20 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
         collect_groups(&s.nodes, &mut groups);
     }
     let has_groups = groups.len() > sections.len();
+    let hide_zero = RwSignal::new(true);
 
     view! {
-        <div class="sheet">
+        <div class="sheet" class:hide-zero=hide_zero>
             <div class="tools">
                 <span class="as-of">{sheet.as_of}</span>
+                <label>
+                    <input
+                        type="checkbox"
+                        checked=hide_zero
+                        on:change=move |ev| hide_zero.set(event_target_checked(&ev))
+                    />
+                    "不顯示餘額 0 的帳戶"
+                </label>
                 <Show when=move || has_groups>
                     <button type="button" on:click={
                         let groups = groups.clone();
@@ -136,14 +145,14 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
         }
     };
     if n.children.is_empty() {
-        return view! { <div class=level style=indent>{row()}</div> }.into_any();
+        return view! { <div class=level class:zero=n.zero style=indent>{row()}</div> }.into_any();
     }
     let path = n.path.clone();
     let is_open = is_open(path.clone(), open);
     let head = row();
     let children = n.children.into_iter().map(|c| node(c, depth + 1, open)).collect_view();
     view! {
-        <details class="group" open=is_open on:toggle=on_toggle(path, open)>
+        <details class="group" class:zero=n.zero open=is_open on:toggle=on_toggle(path, open)>
             <summary class=level style=indent>{head}</summary>
             {children}
         </details>

@@ -94,6 +94,15 @@ const TXNS: &[Txn] = &[
         ("Assets:Split:Alpha:Tab", "200"),
         ("Assets:Bank:Savings", "-200"),
     ]),
+    // Emptied, so the balance sheet shows it only on request.
+    txn("2024-01-03", "存入舊錢包", Source::Tiantian, &[
+        ("Assets:Old-Wallet", "70"),
+        ("Assets:Cash", "-70"),
+    ]),
+    txn("2024-01-04", "領出舊錢包", Source::Tiantian, &[
+        ("Assets:Old-Wallet", "-70"),
+        ("Assets:Cash", "70"),
+    ]),
 ];
 
 pub const UNREVIEWED: &[&str] = &[FEE, LUNCH, TAXI, COFFEE];

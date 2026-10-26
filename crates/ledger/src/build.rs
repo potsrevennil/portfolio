@@ -21,6 +21,7 @@ use super::{
     statements::{
         self,
         bank::{BankStatement, StatementLine},
+        transfer::Half,
     },
     summary::Summary,
     writer,
@@ -223,13 +224,14 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
 
     // Both statements record the same internal movement, so pair the halves and
     // emit one transaction from the sending side. Nothing has to be recorded by
-    // hand, and no clearing balance is left behind.
-    //
-    // Same-day only: if the two halves land on different days the money was
-    // genuinely in transit, and routing that through the clearing account is the
-    // honest description rather than back-dating one side to match the other.
+    // hand, and no clearing balance is left behind; only halves
+    // `transfer::Half::pairs_with` keeps apart go through the clearing account.
     let internal: Vec<(usize, usize)> =
         flat.iter().copied().filter(|(si, li)| is_internal(*si, *li)).collect();
+    let half = |(si, li): (usize, usize)| Half {
+        statement: &statements[si],
+        line: &statements[si].lines[li],
+    };
     let mut partner: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
     let mut paired: HashSet<(usize, usize)> = HashSet::new();
     for &(si, li) in &internal {
@@ -237,14 +239,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         if !line.delta().is_sign_negative() || paired.contains(&(si, li)) {
             continue;
         }
-        let counterpart = internal.iter().copied().find(|&(sj, lj)| {
-            let other = &statements[sj].lines[lj];
-            sj != si
-                && statements[sj].currency == statements[si].currency
-                && !paired.contains(&(sj, lj))
-                && other.book_date == line.book_date
-                && other.delta() == -line.delta()
-        });
+        let unpaired = internal.iter().copied().filter(|other| !paired.contains(other));
+        let counterpart = half((si, li)).partner(unpaired.map(|other| (other, half(other))));
         if let Some(p) = counterpart {
             paired.insert((si, li));
             paired.insert(p);
@@ -723,8 +719,12 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 .join(" · ");
             tags.sort();
             tags.dedup();
+            let date = match partner.get(&(si, li)) {
+                Some(&p) => half((si, li)).booked_with(&half(p)),
+                None => line.book_date,
+            };
             cathay.push(Directive::Transaction(model::Transaction {
-                date: line.book_date,
+                date,
                 // A reversed debit is labelled by its reversal (see `description`
                 // above), so the journal says why the pair nets to nothing.
                 payee: description.to_string(),

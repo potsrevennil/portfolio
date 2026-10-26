@@ -164,10 +164,24 @@ async fn render(pool: &SqlitePool, market: &Market) -> String {
     Owner::new().with(|| view! { <SheetView sheet /> }.to_html())
 }
 
+/// The markup as the page first shows it: a row at zero stays hidden until
+/// 不顯示餘額 0 的帳戶 is unticked.
+fn shown(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(i) = rest.find(r#" zero""#) {
+        let start = rest[..i].rfind("<div").expect("a row at zero is a div");
+        let end = i + rest[i..].find("</div>").expect("closed") + "</div>".len();
+        out.push_str(&rest[..start]);
+        rest = &rest[end..];
+    }
+    out + rest
+}
+
 #[tokio::test]
 async fn labels_come_from_the_mapping_and_no_path_shows() {
     let (_dir, pool, market) = ledger().await;
-    let text = visible(&render(&pool, &market).await);
+    let text = visible(&shown(&render(&pool, &market).await));
     for label in [
         "資產",
         "負債",
@@ -187,6 +201,18 @@ async fn labels_come_from_the_mapping_and_no_path_shows() {
     {
         assert!(!text.contains(hidden), "{hidden:?} shown:\n{text}");
     }
+}
+
+#[tokio::test]
+async fn an_emptied_account_waits_for_the_toggle() {
+    let (_dir, pool, market) = ledger().await;
+    let html = render(&pool, &market).await;
+    assert!(html.contains(r#"<div class="sheet hide-zero">"#), "{html}");
+    position(&visible(&html), "不顯示餘額 0 的帳戶");
+    assert!(html.contains(r#"<input type="checkbox" checked"#), "{html}");
+    let row = &html[..position(&html, "Old-Wallet")];
+    assert!(row[row.rfind("<div").unwrap()..].contains(r#" zero""#), "{html}");
+    assert!(!visible(&shown(&html)).contains("Old-Wallet"));
 }
 
 #[tokio::test]
@@ -223,7 +249,7 @@ async fn groups_fold_in_chart_order() {
 #[tokio::test]
 async fn every_row_is_one_figure_in_twd() {
     let (_dir, pool, market) = ledger().await;
-    let page = visible(&render(&pool, &market).await);
+    let page = visible(&shown(&render(&pool, &market).await));
     // Net worth heads the page, above the sections it sums; the tree follows.
     let (net, text) = net_worth_and_tree(&page);
     assert_eq!(net, "淨資產 未完整 （未換算：5,000.00 JPY）");
@@ -349,10 +375,9 @@ fn a_missing_mapping_lists_no_at_cost_holdings_but_a_broken_one_stops_the_server
     assert!(server::at_cost(&broken).is_err());
 }
 
-#[test]
-fn at_cost_holdings_are_listed_apart_from_every_total() {
-    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
-    let balance = |path: &str, amount: &str| db::query::AccountBalance {
+/// A TWD asset balance as of [`AS_OF`].
+fn balance(path: &str, amount: &str) -> db::query::AccountBalance {
+    db::query::AccountBalance {
         account_id: 0,
         path: path.into(),
         label: String::new(),
@@ -360,8 +385,13 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
         closed: false,
         currency: Currency::TWD,
         amount: amount.parse().unwrap(),
-        as_of,
-    };
+        as_of: NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap(),
+    }
+}
+
+#[test]
+fn at_cost_holdings_are_listed_apart_from_every_total() {
+    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let balances = [
         balance("Assets:Cash", "100"),
         balance("Assets:Unlisted:Gamma", "400"),
@@ -406,6 +436,29 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
         ("Assets:Unlisted:Zeta", "未上市持股Zeta", Decimal::from(7)),
     ]);
     assert_eq!(cost.total.money.amount, Decimal::from(62));
+}
+
+/// An account at zero stays in the tree, marked, for the page to show on
+/// request; a holding at cost at zero does not.
+#[test]
+fn an_account_at_zero_is_kept_and_marked() {
+    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
+    let balances = [
+        balance("Assets:Bank:Old", "0"),
+        balance("Assets:Bank:Savings", "100"),
+        balance("Assets:Unlisted:Gamma", "0"),
+    ];
+    let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\"]\n").unwrap();
+    let sheet =
+        web::sheet::build(&BTreeMap::new(), &balances, as_of, Currency::TWD, &at_cost, |_| {
+            Some(Decimal::ONE)
+        });
+    let bank = &sheet.sections[0].nodes[0];
+    let rows: Vec<(&str, bool)> = bank.children.iter().map(|n| (n.path.as_str(), n.zero)).collect();
+    assert_eq!(rows, [("Assets:Bank:Old", true), ("Assets:Bank:Savings", false)]);
+    assert!(!bank.zero);
+    assert!(sheet.at_cost.is_none());
+    assert_eq!(sheet.net_worth.money.amount, Decimal::from(100));
 }
 
 #[tokio::test]
