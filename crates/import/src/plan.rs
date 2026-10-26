@@ -18,7 +18,10 @@ use ledger::{
     accounts::Chart,
     model::{Source, CONVERSIONS, OPENING_EQUITY},
     names::fallback_account,
-    statements::bank::{Bank, BankStatement, StatementLine},
+    statements::{
+        bank::{Bank, BankStatement, StatementLine},
+        transfer::Half,
+    },
 };
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
@@ -351,6 +354,7 @@ pub fn plan(
         })
         .collect();
     let line = |(si, li): (usize, usize)| &statements[si].statement.lines[li];
+    let half = |at: (usize, usize)| Half { statement: statements[at.0].statement, line: line(at) };
     let own_no = |si: usize| statements[si].statement.account_no.as_str();
     let is_internal = |at: (usize, usize)| {
         let st = statements[at.0].statement;
@@ -378,14 +382,14 @@ pub fn plan(
         if shape.contains_key(&at) || !line(at).delta().is_sign_negative() || !is_internal(at) {
             continue;
         }
-        let partner = new.iter().copied().find(|&other| {
-            other.0 != at.0
-                && statements[other.0].statement.currency == statements[at.0].statement.currency
-                && !shape.contains_key(&other)
-                && is_internal(other)
-                && line(other).book_date == line(at).book_date
-                && line(other).delta() == -line(at).delta()
-        });
+        let send = half(at);
+        let partner = new
+            .iter()
+            .copied()
+            .filter(|&other| {
+                !shape.contains_key(&other) && is_internal(other) && send.pairs_with(&half(other))
+            })
+            .min_by_key(|&other| (send.days_from(&half(other)), other));
         if let Some(other) = partner {
             shape.insert(at, Shape::Transfer(other));
             shape.insert(other, Shape::Absorbed);
@@ -513,8 +517,13 @@ pub fn plan(
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
+        // A pair is booked on its earlier half's day.
+        let date = match &shape[&at] {
+            Shape::Transfer(other) => half(at).booked_with(&half(*other)),
+            _ => l.book_date,
+        };
         plan.transactions.push((s.files[li], Transaction {
-            date: l.book_date,
+            date,
             payee: Some(payee),
             narration: (!narration.is_empty()).then_some(narration),
             source: Source::Import,
