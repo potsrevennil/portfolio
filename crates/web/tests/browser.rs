@@ -407,15 +407,10 @@ async fn enter_cash_by_hand() {
 
 async fn show_the_accounts_at_zero() {
     let j = Journey::start().await;
-    j.open("/accounts").await;
-    // Groups start folded; 全部展開 opens every one.
-    let tab = r#".account-row:has(a[href="/journal?account=Assets%3ASplit%3AAlpha%3ATab"])"#;
-    assert!(!j.find(tab).await.is_displayed().await.unwrap());
+    j.open("/balance-sheet").await;
     j.find(".tools button").await.click().await.unwrap();
-    assert!(j.find(tab).await.is_displayed().await.unwrap());
-
-    // The emptied wallet is left out until the filter is off.
-    let wallet = r#".account-row:has(a[href="/journal?account=Assets%3AOld-Wallet"])"#;
+    // The emptied wallet is left out until it is asked for.
+    let wallet = r#".row:has(a[href="/journal?account=Assets%3AOld-Wallet"])"#;
     assert!(!j.find(wallet).await.is_displayed().await.unwrap());
     j.find(".tools input[type=checkbox]").await.click().await.unwrap();
     assert!(j.find(wallet).await.is_displayed().await.unwrap());

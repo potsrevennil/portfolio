@@ -102,6 +102,9 @@ pub struct Node {
     /// when it holds any currency other than the base: the figure its
     /// statement shows.
     pub native: Vec<Money>,
+    /// Neither it nor any account under it holds anything: shown only when
+    /// asked for.
+    pub zero: bool,
     pub children: Vec<Node>,
 }
 
@@ -374,45 +377,6 @@ pub struct ChartAccount {
     pub kind: Option<AccountKind>,
 }
 
-/// An account with the accounts under it, as the 帳戶 page folds them.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AccountBranch {
-    pub path: String,
-    /// As a tree shows it, under the row above.
-    pub label: String,
-    pub depth: usize,
-    /// What it and the accounts under it hold, per currency; empty at zero.
-    pub balance: Vec<Money>,
-    /// Neither it nor any account under it holds anything, so the zero
-    /// filter hides it.
-    pub zero: bool,
-    pub children: Vec<AccountBranch>,
-}
-
-/// The chart as a forest of roots.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AccountTree(pub Vec<AccountBranch>);
-
-/// From childless branches listed parents first, as the chart sorts them.
-impl FromIterator<AccountBranch> for AccountTree {
-    fn from_iter<I: IntoIterator<Item = AccountBranch>>(branches: I) -> Self {
-        fn place(nodes: &mut Vec<AccountBranch>, branch: AccountBranch) {
-            let parent = nodes.last_mut().filter(|last| {
-                branch.path.strip_prefix(last.path.as_str()).is_some_and(|r| r.starts_with(':'))
-            });
-            match parent {
-                Some(parent) => place(&mut parent.children, branch),
-                None => nodes.push(branch),
-            }
-        }
-        let mut roots = Vec::new();
-        for branch in branches {
-            place(&mut roots, branch);
-        }
-        AccountTree(roots)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Leg {
     /// The posting's id: what an edit names it by.
@@ -551,35 +515,6 @@ mod tests {
         let dust = money(dec!(-0.001), Currency::TWD);
         assert_eq!(dust.to_string(), "0 TWD");
         assert!(!dust.is_negative());
-    }
-
-    #[test]
-    fn accounts_nest_under_their_parents_only() {
-        let choice = |path: &str| AccountBranch {
-            path: path.into(),
-            label: path.into(),
-            depth: path.matches(':').count(),
-            balance: Vec::new(),
-            zero: true,
-            children: Vec::new(),
-        };
-        let tree: AccountTree =
-            ["Assets", "Assets:Bank", "Assets:Bank:FX", "Assets:Banker", "Liabilities"]
-                .into_iter()
-                .map(choice)
-                .collect();
-        let shape: Vec<(String, Vec<String>)> = tree
-            .0
-            .iter()
-            .flat_map(|root| &root.children)
-            .map(|n| (n.path.clone(), n.children.iter().map(|c| c.path.clone()).collect()))
-            .collect();
-        // A shared prefix is not a parent.
-        assert_eq!(shape, [
-            ("Assets:Bank".to_string(), vec!["Assets:Bank:FX".to_string()]),
-            ("Assets:Banker".to_string(), vec![]),
-        ]);
-        assert_eq!(tree.0.len(), 2);
     }
 
     #[test]

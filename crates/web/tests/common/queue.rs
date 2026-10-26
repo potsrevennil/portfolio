@@ -40,7 +40,7 @@ pub const FEE: &str = "手續費";
 pub const LUNCH: &str = "午餐";
 pub const TAXI: &str = "計程車";
 pub const COFFEE: &str = "咖啡";
-/// Emptied by its two entries, so the 帳戶 page's zero filter hides it.
+/// Emptied by its two entries: the balance sheet shows it only on request.
 pub const OLD_WALLET: &str = "Assets:Old-Wallet";
 
 type Legs = &'static [(&'static str, &'static str)];

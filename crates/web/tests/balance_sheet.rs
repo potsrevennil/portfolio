@@ -24,7 +24,7 @@ use prices::YFinanceSource;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
-use web::{balance_sheet::SheetView, server};
+use web::{balance_sheet::SheetView, entries::Plumbing, server};
 
 const MAPPING: &str = r#"
 [accounts]
@@ -160,14 +160,30 @@ async fn ledger() -> (TempDir, SqlitePool, Market) {
 async fn render(pool: &SqlitePool, market: &Market) -> String {
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
-    let sheet = web::sheet::load(pool, market, as_of, Currency::TWD, &at_cost).await.unwrap();
+    let plumbing = Plumbing::default();
+    let sheet =
+        web::sheet::load(pool, market, as_of, Currency::TWD, &at_cost, &plumbing).await.unwrap();
     Owner::new().with(|| view! { <SheetView sheet /> }.to_html())
+}
+
+/// The markup as the page first shows it: a row at zero waits for
+/// 顯示餘額 0 的帳戶.
+fn shown(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(i) = rest.find(r#" zero""#) {
+        let start = rest[..i].rfind("<div").expect("a row at zero is a div");
+        let end = i + rest[i..].find("</div>").expect("closed") + "</div>".len();
+        out.push_str(&rest[..start]);
+        rest = &rest[end..];
+    }
+    out + rest
 }
 
 #[tokio::test]
 async fn labels_come_from_the_mapping_and_no_path_shows() {
     let (_dir, pool, market) = ledger().await;
-    let text = visible(&render(&pool, &market).await);
+    let text = visible(&shown(&render(&pool, &market).await));
     for label in [
         "資產",
         "負債",
@@ -187,6 +203,17 @@ async fn labels_come_from_the_mapping_and_no_path_shows() {
     {
         assert!(!text.contains(hidden), "{hidden:?} shown:\n{text}");
     }
+}
+
+#[tokio::test]
+async fn an_emptied_account_waits_for_the_toggle() {
+    let (_dir, pool, market) = ledger().await;
+    let html = render(&pool, &market).await;
+    assert!(html.contains(r#"<div class="sheet hide-zero">"#), "{html}");
+    position(&visible(&html), "顯示餘額 0 的帳戶");
+    let row = &html[..position(&html, "Old-Wallet")];
+    assert!(row[row.rfind("<div").unwrap()..].contains(r#" zero""#), "{html}");
+    assert!(!visible(&shown(&html)).contains("Old-Wallet"));
 }
 
 #[tokio::test]
@@ -223,7 +250,7 @@ async fn groups_fold_in_chart_order() {
 #[tokio::test]
 async fn every_row_is_one_figure_in_twd() {
     let (_dir, pool, market) = ledger().await;
-    let page = visible(&render(&pool, &market).await);
+    let page = visible(&shown(&render(&pool, &market).await));
     // Net worth heads the page, above the sections it sums; the tree follows.
     let (net, text) = net_worth_and_tree(&page);
     assert_eq!(net, "淨資產 未完整 （未換算：5,000.00 JPY）");
@@ -357,10 +384,9 @@ fn a_missing_mapping_lists_no_at_cost_holdings_but_a_broken_one_stops_the_server
     assert!(server::at_cost(&broken).is_err());
 }
 
-#[test]
-fn at_cost_holdings_are_listed_apart_from_every_total() {
-    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
-    let balance = |path: &str, amount: &str| db::query::AccountBalance {
+/// A TWD asset balance as of [`AS_OF`].
+fn balance(path: &str, amount: &str) -> db::query::AccountBalance {
+    db::query::AccountBalance {
         account_id: 0,
         path: path.into(),
         label: String::new(),
@@ -368,8 +394,13 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
         closed: false,
         currency: Currency::TWD,
         amount: amount.parse().unwrap(),
-        as_of,
-    };
+        as_of: NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap(),
+    }
+}
+
+#[test]
+fn at_cost_holdings_are_listed_apart_from_every_total() {
+    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let balances = [
         balance("Assets:Cash", "100"),
         balance("Assets:Unlisted:Gamma", "400"),
@@ -392,9 +423,11 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
         ("Assets:Unlisted:Gamma", "丙"),
         ("Assets:Unlisted:Delta", "丁"),
     ]);
-    let sheet = web::sheet::build(&labels, &balances, as_of, Currency::TWD, &at_cost, |_| {
-        Some(Decimal::ONE)
-    });
+    let plumbing = Plumbing::default();
+    let sheet =
+        web::sheet::build(&labels, &balances, as_of, Currency::TWD, &at_cost, &plumbing, |_| {
+            Some(Decimal::ONE)
+        });
     let assets = &sheet.sections[0];
     assert_eq!(assets.total.money.amount, Decimal::from(100));
     assert!(assets.nodes.iter().all(|n| n.path == "Assets:Cash"), "{:?}", assets.nodes);
@@ -416,12 +449,44 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
     assert_eq!(cost.total.money.amount, Decimal::from(62));
 }
 
+/// An account at zero stays in the tree, marked, for the page to show on
+/// request; plumbing and holdings at cost at zero do not.
+#[test]
+fn an_account_at_zero_is_kept_and_marked() {
+    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
+    let balances = [
+        balance("Assets:Bank:Old", "0"),
+        balance("Assets:Bank:Clearing", "0"),
+        balance("Assets:Bank:Savings", "100"),
+        balance("Assets:Unlisted:Gamma", "0"),
+    ];
+    let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\"]\n").unwrap();
+    let plumbing = Plumbing::from_iter(["Assets:Bank:Clearing"]);
+    let sheet = web::sheet::build(
+        &BTreeMap::new(),
+        &balances,
+        as_of,
+        Currency::TWD,
+        &at_cost,
+        &plumbing,
+        |_| Some(Decimal::ONE),
+    );
+    let bank = &sheet.sections[0].nodes[0];
+    let rows: Vec<(&str, bool)> = bank.children.iter().map(|n| (n.path.as_str(), n.zero)).collect();
+    assert_eq!(rows, [("Assets:Bank:Old", true), ("Assets:Bank:Savings", false)]);
+    assert!(!bank.zero);
+    assert!(sheet.at_cost.is_none());
+    assert_eq!(sheet.net_worth.money.amount, Decimal::from(100));
+}
+
 #[tokio::test]
 async fn the_summary_shows_holdings_at_cost_apart_from_net_worth() {
     let (_dir, pool, market) = ledger().await;
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
-    let sheet = web::sheet::load(&pool, &market, as_of, Currency::TWD, &at_cost).await.unwrap();
+    let plumbing = Plumbing::default();
+    let sheet =
+        web::sheet::load(&pool, &market, as_of, Currency::TWD, &at_cost, &plumbing).await.unwrap();
     let html = Owner::new().with(|| view! { <web::summary::SummaryView sheet /> }.to_html());
     let text = visible(&html);
     // JPY has no rate, so no total that holds it shows a figure; the 資產

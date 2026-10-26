@@ -16,7 +16,10 @@ use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
-use crate::model::{BalanceSheet, Converted, Money, Node, Section, Unpriced};
+use crate::{
+    entries::Plumbing,
+    model::{BalanceSheet, Converted, Money, Node, Section, Unpriced},
+};
 
 /// Section headings when the chart has no label for the root.
 const SECTIONS: [(&str, &str); 2] = [("Assets", "資產"), ("Liabilities", "負債")];
@@ -30,11 +33,12 @@ pub async fn load(
     as_of: NaiveDate,
     base: Currency,
     at_cost: &AtCost,
+    plumbing: &Plumbing,
 ) -> Result<BalanceSheet> {
     let data = LedgerData::load(pool).await?;
     let prices = query::load_fx_prices(market, &data.currencies(), base, as_of).await?;
     let balances = data.balances_as_of(as_of);
-    Ok(build(&data.labels(), &balances, as_of, base, at_cost, |c| {
+    Ok(build(&data.labels(), &balances, as_of, base, at_cost, plumbing, |c| {
         query::rate(c, base, as_of, &prices)
     }))
 }
@@ -45,6 +49,8 @@ struct Tree {
     sums: BTreeMap<Currency, Decimal>,
     /// The account's own postings, without its descendants'.
     own: BTreeMap<Currency, Decimal>,
+    /// Something in it or under it holds money.
+    held: bool,
     children: BTreeMap<String, Tree>,
 }
 
@@ -54,6 +60,7 @@ pub fn build(
     as_of: NaiveDate,
     base: Currency,
     at_cost: &AtCost,
+    plumbing: &Plumbing,
     rate: impl Fn(Currency) -> Option<Decimal>,
 ) -> BalanceSheet {
     let label = |path: &str| -> String {
@@ -79,8 +86,12 @@ pub fn build(
     // Equity, income and expense never reach the tree.
     let mut roots: BTreeMap<&str, Tree> =
         SECTIONS.iter().map(|(p, _)| (*p, Tree::default())).collect();
+    // An account at zero is kept, for the page to show on request, but for
+    // plumbing and holdings carried at cost.
     let shown = balances.iter().filter(|b| {
-        matches!(b.account_type, AccountType::Asset | AccountType::Liability) && !b.amount.is_zero()
+        let kept_at_zero = !plumbing.contains(&b.path) && query::in_net_worth(b, at_cost);
+        matches!(b.account_type, AccountType::Asset | AccountType::Liability)
+            && (!b.amount.is_zero() || kept_at_zero)
     });
     // A holding carried at cost has no market value, so it stays out of the
     // tree and its totals, and is listed on its own, one row per holding.
@@ -94,12 +105,21 @@ pub fn build(
                 *cost.entry(holding).or_default().entry(b.currency).or_default() += b.amount;
             }
             true => {
-                *node.sums.entry(b.currency).or_default() += b.amount;
+                let held = !b.amount.is_zero();
+                let add = |node: &mut Tree| {
+                    if held {
+                        *node.sums.entry(b.currency).or_default() += b.amount;
+                        node.held = true;
+                    }
+                };
+                add(node);
                 for depth in 2..=b.path.split(':').count() {
                     node = node.children.entry(node_path(&b.path, depth).to_string()).or_default();
-                    *node.sums.entry(b.currency).or_default() += b.amount;
+                    add(node);
                 }
-                *node.own.entry(b.currency).or_default() += b.amount;
+                if held {
+                    *node.own.entry(b.currency).or_default() += b.amount;
+                }
             }
         }
     }
@@ -120,6 +140,7 @@ pub fn build(
                     true => amounts(&tree.own, base),
                     false => Vec::new(),
                 },
+                zero: !tree.held,
                 children: nodes(tree.children, label, convert, foreign, base),
                 path,
             })
@@ -187,6 +208,7 @@ fn at_cost_section(
                     true => amounts(sums, base),
                     false => Vec::new(),
                 },
+                zero: false,
                 children: Vec::new(),
             }
         })

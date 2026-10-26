@@ -7,8 +7,8 @@ mod common;
 use chrono::NaiveDate;
 use common::{
     page::{position, visible},
-    queue::{ledger, COFFEE, FEE, LUNCH, TAXI},
-    server::{call, id_of, leg, legs, save, site},
+    queue::{ledger, COFFEE, FEE, LUNCH, OLD_WALLET, TAXI},
+    server::{call, call_with, id_of, leg, legs, save, site},
 };
 use db::{
     pairing::{self, Ambiguity},
@@ -20,8 +20,9 @@ use rust_decimal_macros::dec;
 use serde_json::Value;
 use sqlx::SqlitePool;
 use web::{
+    entries::Plumbing,
     journal::{load_journal, JournalList},
-    manual::enter_manual,
+    manual::{enter_manual, load_manual},
     model::{Editing, JournalQuery, Origin, Queue, Source as TxnSource},
     review::{
         choose_pairing, confirm_entry, delete_entry, load_entry, load_queue, review_count,
@@ -909,6 +910,26 @@ async fn a_mismatch_elsewhere_does_not_block_a_write() {
     .await
     .unwrap();
     assert!(reviewed(&pool, fee).await);
+}
+
+// --- Plumbing -----------------------------------------------------------
+
+#[tokio::test]
+async fn plumbing_stays_out_of_the_pickers() {
+    let (_dir, pool) = ledger().await;
+    let plumbing = || Plumbing::from_iter([OLD_WALLET]);
+    let journal =
+        call_with(&pool, plumbing(), || load_journal(JournalQuery::default())).await.unwrap();
+    assert!(!journal.accounts.iter().any(|a| a.path == OLD_WALLET));
+    let manual = call_with(&pool, plumbing(), load_manual).await.unwrap();
+    assert!(!manual.accounts.iter().any(|a| a.path == OLD_WALLET));
+    let fee = id_of(&pool, FEE).await;
+    let editing = call_with(&pool, plumbing(), || load_entry(fee)).await.unwrap();
+    assert!(!editing.accounts.iter().any(|a| a.path == OLD_WALLET));
+    // Its history still filters by it.
+    let filtered =
+        call_with(&pool, plumbing(), || load_journal(JournalQuery::account(OLD_WALLET))).await;
+    assert_eq!(filtered.unwrap().total, 2);
 }
 
 // --- Through the router ---------------------------------------------------

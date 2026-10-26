@@ -22,8 +22,9 @@ use crate::model::{
 pub const PAGE_SIZE: u32 = 50;
 
 /// Accounts the app books to on its own, which nobody files under: they stay
-/// out of every picker and the 帳戶 page. Today, the clearing account an
-/// internal transfer passes through while its halves land on different days.
+/// out of every picker, and off the balance sheet while they hold nothing.
+/// Today, the clearing account an internal transfer passes through while its
+/// halves land on different days.
 #[derive(Clone, Debug, Default)]
 pub struct Plumbing(BTreeSet<String>);
 
@@ -169,11 +170,6 @@ impl Chart {
         self.labels.get(path).cloned().unwrap_or_else(|| path.to_string())
     }
 
-    /// The label a tree shows `path` by, under the row above it.
-    pub fn tree_label(&self, path: &str) -> String {
-        self.tree.get(path).cloned().unwrap_or_else(|| self.label(path))
-    }
-
     /// The name the account box holds for `path`: the trail the picker offers
     /// it under.
     pub fn offer(&self, path: &str) -> String {
@@ -192,7 +188,7 @@ impl Chart {
                 None => depth(path) == 1,
             })
             .map(|path| AccountNode {
-                label: self.tree_label(path),
+                label: self.tree.get(path).cloned().unwrap_or_else(|| self.label(path)),
                 open: filtered.is_some_and(|under| under != path && in_subtree(under, path)),
                 children: self.branch(Some(path), filtered),
                 path: path.clone(),
