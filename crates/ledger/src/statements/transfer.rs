@@ -18,8 +18,20 @@ pub struct Half<'a> {
 }
 
 impl Half<'_> {
-    /// Days between this half and `other`, for taking the nearest first.
-    pub fn days_from(&self, other: &Half) -> i64 {
+    /// The far half of this sending half among `candidates`, nearest day
+    /// first, then the lowest key.
+    pub fn partner<'b, K: Ord>(
+        &self,
+        candidates: impl IntoIterator<Item = (K, Half<'b>)>,
+    ) -> Option<K> {
+        candidates
+            .into_iter()
+            .filter(|(_, other)| self.pairs_with(other))
+            .min_by(|(ka, a), (kb, b)| (self.days_from(a), ka).cmp(&(self.days_from(b), kb)))
+            .map(|(key, _)| key)
+    }
+
+    fn days_from(&self, other: &Half) -> i64 {
         (self.line.book_date - other.line.book_date).num_days().abs()
     }
 

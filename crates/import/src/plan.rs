@@ -382,14 +382,9 @@ pub fn plan(
         if shape.contains_key(&at) || !line(at).delta().is_sign_negative() || !is_internal(at) {
             continue;
         }
-        let send = half(at);
-        let partner = new
-            .iter()
-            .copied()
-            .filter(|&other| {
-                !shape.contains_key(&other) && is_internal(other) && send.pairs_with(&half(other))
-            })
-            .min_by_key(|&other| (send.days_from(&half(other)), other));
+        let open =
+            new.iter().copied().filter(|&other| !shape.contains_key(&other) && is_internal(other));
+        let partner = half(at).partner(open.map(|other| (other, half(other))));
         if let Some(other) = partner {
             shape.insert(at, Shape::Transfer(other));
             shape.insert(other, Shape::Absorbed);

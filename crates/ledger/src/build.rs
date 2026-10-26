@@ -239,12 +239,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         if !line.delta().is_sign_negative() || paired.contains(&(si, li)) {
             continue;
         }
-        let send = half((si, li));
-        let counterpart = internal
-            .iter()
-            .copied()
-            .filter(|&other| !paired.contains(&other) && send.pairs_with(&half(other)))
-            .min_by_key(|&other| (send.days_from(&half(other)), other));
+        let unpaired = internal.iter().copied().filter(|other| !paired.contains(other));
+        let counterpart = half((si, li)).partner(unpaired.map(|other| (other, half(other))));
         if let Some(p) = counterpart {
             paired.insert((si, li));
             paired.insert(p);
