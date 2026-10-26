@@ -309,9 +309,10 @@ fn a_record_from_the_last_days_waits_for_the_next_statement() -> Result<()> {
 }
 
 /// The app records the pooled accounts only together, so a record may be on
-/// the wrong one: the sibling whose new line fits it is named for the queue.
+/// the wrong one: with one sibling line that fits it, the record moves there
+/// and that line verifies it.
 #[test]
-fn a_record_its_statement_passes_by_names_the_sibling_that_shows_it() {
+fn a_record_its_statement_passes_by_moves_to_the_sibling_that_shows_it() -> Result<()> {
     let savings = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
     let other = statement_of("222222222222", &[(3, dec!(-30), dec!(70))]);
     let statements = [
@@ -321,16 +322,35 @@ fn a_record_its_statement_passes_by_names_the_sibling_that_shows_it() {
         ]),
         on(OTHER, &other, vec![held(1, dec!(100), true)]),
     ];
-    let err = plan(&chart(), &statements, &HashSet::new(), &[]).expect_err("on the sibling");
-    assert_eq!(stops(err), [Stop::NotOnStatement {
+    let p = plan(&chart(), &statements, &HashSet::new(), &[])?;
+    assert_eq!(p.moved, [Moved {
         transaction_id: 42,
-        account: "Assets:Bank:Savings".into(),
-        currency: Currency::TWD,
-        date: day(2),
+        from: "Assets:Bank:Savings".into(),
+        to: OTHER.into(),
         amount: dec!(-30),
-        through: savings.settled_through(),
-        siblings: vec![OTHER.into()],
+        date: day(2),
     }]);
+    assert_eq!((p.verified[0].transaction_id, p.verified[0].date), (42, Some(day(3))));
+    assert_eq!((p.counts.moved, p.counts.new), (1, 2));
+    Ok(())
+}
+
+/// Two such lines, and nothing chooses: the import stops naming the sibling.
+#[test]
+fn a_record_two_sibling_lines_fit_stops_the_import() {
+    let savings = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
+    let other = statement_of("222222222222", &[(3, dec!(-30), dec!(70)), (4, dec!(-30), dec!(40))]);
+    let statements = [
+        on("Assets:Bank:Savings", &savings, vec![
+            held(1, dec!(100), true),
+            unverified(2, dec!(-30), 42),
+        ]),
+        on(OTHER, &other, vec![held(1, dec!(100), true)]),
+    ];
+    let err = plan(&chart(), &statements, &HashSet::new(), &[]).expect_err("two lines of 30");
+    assert!(
+        matches!(stops(err).as_slice(), [Stop::NotOnStatement { siblings, .. }] if siblings == &[OTHER])
+    );
 }
 
 /// Two statements' lines verifying one transfer on different days.

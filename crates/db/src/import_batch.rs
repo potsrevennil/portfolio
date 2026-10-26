@@ -182,6 +182,31 @@ pub async fn verify(db: &mut SqliteConnection, v: &Verification) -> Result<()> {
     Ok(())
 }
 
+/// Moves transaction `transaction_id`'s leg of `amount` from the account at
+/// `from` to the one at `to`: the bank showed it on a sibling account.
+pub async fn move_leg(
+    db: &mut SqliteConnection,
+    labels: &Labels,
+    transaction_id: i64,
+    from: &str,
+    to: &str,
+    amount: Decimal,
+) -> Result<()> {
+    let to_id = ensure_account(db, labels, to).await?;
+    sqlx::query(
+        "UPDATE postings SET account_id = ? WHERE transaction_id = ? AND amount = ?
+         AND account_id = (SELECT id FROM accounts WHERE path = ?)",
+    )
+    .bind(to_id)
+    .bind(transaction_id)
+    .bind(amount.to_string())
+    .bind(from)
+    .execute(db)
+    .await
+    .with_context(|| format!("moving transaction {transaction_id} from {from} to {to}"))?;
+    Ok(())
+}
+
 pub async fn redate(db: &mut SqliteConnection, transaction_id: i64, date: NaiveDate) -> Result<()> {
     sqlx::query("UPDATE transactions SET date = ? WHERE id = ?")
         .bind(date.to_string())

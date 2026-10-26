@@ -215,47 +215,77 @@ async fn an_ambiguous_record_names_its_lines() -> Result<()> {
 }
 
 /// Recorded before the statements reached it, the spend waits on 活存; the
-/// 活存 statement passes it by and names 投資, whose line fits. Moved there in
-/// 修改, the next import verifies it.
+/// 活存 statement passes it by and only 投資's line fits it. The import moves
+/// it to 投資, where that line verifies it.
 #[tokio::test]
-async fn an_unverified_record_on_the_wrong_sibling_is_fixed_by_an_edit() -> Result<()> {
+async fn an_unverified_record_on_the_wrong_sibling_moves_to_it() -> Result<()> {
     let f = Fixture::new().await?;
     f.import_tiantian(&[memoed("20260120", 200, "國泰", "U1", "午餐")]).await?;
-    let record: i64 =
-        sqlx::query_scalar("SELECT id FROM transactions WHERE external_ref = 'tiantian:U1'")
-            .fetch_one(&f.pool)
-            .await?;
+    let before = f.transactions().await?;
 
     let january =
         [(SAVINGS, "2026/02/01", SAVINGS_JANUARY), (INVESTMENT, "2026/02/01", INVESTMENT_JANUARY)];
-    f.import_bank(&january).await.expect_err("活存 never shows U1");
-    let Stop::NotOnStatement { transaction_id, siblings, .. } = f.the_stop().await? else {
-        panic!("not missing")
-    };
-    assert_eq!((transaction_id, siblings), (record, vec!["Assets:Cathay:Investment".to_string()]));
+    let report = f.import_bank(&january).await?;
+    assert_eq!((report.counts.moved, report.counts.verified), (1, 1), "{report}");
+    // The 活存 spend is the only line added: the 投資 one is U1.
+    assert_eq!(f.transactions().await?, before + 1);
+    let on: String = sqlx::query_scalar(
+        "SELECT a.path FROM postings p JOIN accounts a ON a.id = p.account_id
+         JOIN transactions t ON t.id = p.transaction_id
+         WHERE t.external_ref = 'tiantian:U1' AND a.path LIKE 'Assets:%'",
+    )
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(on, "Assets:Cathay:Investment");
+    Ok(())
+}
 
+/// A record whose one line of its amount a person already categorised: the
+/// import ties it to that line, which keeps their category.
+#[tokio::test]
+async fn a_record_pairs_with_the_one_line_already_categorised() -> Result<()> {
+    let f = Fixture::new().await?;
+    let savings: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700", "", "")];
+    f.import_bank(&[(SAVINGS, "2026/02/01", savings)]).await?;
+    let line = f.line("Assets:Cathay:Savings", "2026-01-20").await?;
+    // The category a person gives it is one the ledger already has.
+    let lunch = "20260105,飲食,食食,80,TWD,自己,現金,,,支,x,U0\n".to_string();
+    f.import_tiantian(std::slice::from_ref(&lunch)).await?;
     let legs: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT p.id, a.path, p.amount FROM postings p JOIN accounts a ON a.id = p.account_id
          WHERE p.transaction_id = ?",
     )
-    .bind(record)
+    .bind(line)
     .fetch_all(&f.pool)
     .await?;
     let legs = legs
         .into_iter()
         .map(|(id, path, amount)| LegEdit {
             posting_id: Some(id),
-            account: path.replace("Assets:Cathay:Savings", "Assets:Cathay:Investment"),
+            account: path.replace("Expenses:Uncategorized", "Expenses:Food"),
             amount: amount.parse().unwrap(),
             currency: "TWD".parse().unwrap(),
         })
         .collect();
-    let edit = Edit { narration: None, legs, confirm: false };
-    review::edit(&f.pool, &StatementAccounts::from(&f.chart), record, &edit).await?;
+    let edit = Edit { narration: None, legs, confirm: true };
+    review::edit(&f.pool, &StatementAccounts::from(&f.chart), line, &edit).await?;
 
-    let report = f.import_bank(&january).await?;
-    assert_eq!(report.counts.verified, 1, "{report}");
-    assert!(stops::open(&f.pool).await?.is_empty());
+    let report = f.import_tiantian(&[lunch, memoed("20260120", 200, "國泰", "U1", "午餐")]).await?;
+    assert_eq!(report.counts.paired, 1, "{report}");
+    let refs: Vec<String> =
+        sqlx::query_scalar("SELECT external_ref FROM transaction_refs WHERE transaction_id = ?")
+            .bind(line)
+            .fetch_all(&f.pool)
+            .await?;
+    assert_eq!(refs, ["tiantian:U1"]);
+    let category: (String, String) = sqlx::query_as(
+        "SELECT a.path, p.origin FROM postings p JOIN accounts a ON a.id = p.account_id
+         WHERE p.transaction_id = ? AND a.path LIKE 'Expenses:%'",
+    )
+    .bind(line)
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(category, ("Expenses:Food".to_string(), "manual".to_string()));
     Ok(())
 }
 

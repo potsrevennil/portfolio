@@ -71,6 +71,8 @@ pub struct Counts {
     pub verified: usize,
     /// Unverified records the statement ends before.
     pub deferred: usize,
+    /// Unverified records moved to the sibling account whose line is theirs.
+    pub moved: usize,
     pub openings: usize,
     pub matched: usize,
     pub uncategorised: usize,
@@ -86,6 +88,18 @@ pub struct Plan {
     pub openings: Vec<NaiveDate>,
     pub verified: Vec<Verification>,
     pub deferred: Vec<Deferred>,
+    pub moved: Vec<Moved>,
+}
+
+/// An unverified record booked on one pooled account that a sibling's line
+/// shows: its leg moves there, and that line verifies it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub transaction_id: i64,
+    pub from: String,
+    pub to: String,
+    pub amount: Decimal,
+    pub date: NaiveDate,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -317,34 +331,66 @@ pub fn plan(
         status.push(line_status);
     }
 
-    // A record its statement passes by may be a sibling's: the app knows the
-    // pooled accounts only together. Those whose new lines fit it are offered.
-    for (si, p) in missing {
-        let s = &statements[si];
-        let pool = chart.pool_siblings(&s.account);
-        let siblings = statements
-            .iter()
-            .enumerate()
-            .filter(|(o, other)| {
-                pool.contains(&other.account)
-                    && other.statement.currency == s.statement.currency
-                    && other.statement.lines.iter().enumerate().any(|(li, l)| {
-                        status[*o][li] == Status::New
-                            && l.delta() == p.amount
-                            && within_window(l.book_date, p.date)
-                    })
-            })
-            .map(|(_, other)| other.account.clone())
-            .collect();
-        stops.push(Stop::NotOnStatement {
-            transaction_id: p.transaction_id,
-            account: s.account.clone(),
-            currency: s.statement.currency,
-            date: p.date,
-            amount: p.amount,
-            through: s.statement.settled_through(),
-            siblings,
-        });
+    // A record its statement passes by may be a sibling's: the app records the
+    // pooled accounts only together. With exactly one new sibling line of its
+    // amount, which no other such record fits, it moves there and that line
+    // verifies it; otherwise the import stops, naming the siblings that fit.
+    let fitting: Vec<Vec<(usize, usize)>> = missing
+        .iter()
+        .map(|(si, p)| {
+            let s = &statements[*si];
+            let pool = chart.pool_siblings(&s.account);
+            let mut at = Vec::new();
+            for (o, other) in statements.iter().enumerate() {
+                if !pool.contains(&other.account)
+                    || other.statement.currency != s.statement.currency
+                {
+                    continue;
+                }
+                for (li, l) in other.statement.lines.iter().enumerate() {
+                    if status[o][li] == Status::New
+                        && l.delta() == p.amount
+                        && within_window(l.book_date, p.date)
+                    {
+                        at.push((o, li));
+                    }
+                }
+            }
+            at
+        })
+        .collect();
+    let claims = |line: &(usize, usize)| fitting.iter().filter(|f| f.contains(line)).count();
+    for ((si, p), fits) in missing.iter().zip(&fitting) {
+        let s = &statements[*si];
+        match fits.as_slice() {
+            [only] if claims(only) == 1 => {
+                status[only.0][only.1] = Status::Verifies(p.transaction_id);
+                plan.counts.new -= 1;
+                plan.counts.verified += 1;
+                plan.counts.moved += 1;
+                plan.moved.push(Moved {
+                    transaction_id: p.transaction_id,
+                    from: s.account.clone(),
+                    to: statements[only.0].account.clone(),
+                    amount: p.amount,
+                    date: p.date,
+                });
+            }
+            _ => {
+                let mut siblings: Vec<String> =
+                    fits.iter().map(|(o, _)| statements[*o].account.clone()).collect();
+                siblings.dedup();
+                stops.push(Stop::NotOnStatement {
+                    transaction_id: p.transaction_id,
+                    account: s.account.clone(),
+                    currency: s.statement.currency,
+                    date: p.date,
+                    amount: p.amount,
+                    through: s.statement.settled_through(),
+                    siblings,
+                });
+            }
+        }
     }
 
     // --- how the new lines pair up, as the freeze pairs them ---
@@ -550,9 +596,11 @@ pub fn plan(
     for (si, s) in statements.iter().enumerate() {
         for (li, l) in s.statement.lines.iter().enumerate() {
             if let Status::Verifies(transaction_id) = status[si][li] {
+                // A record moved here from a sibling is that sibling's.
                 let record = s
                     .existing
                     .iter()
+                    .chain(statements.iter().flat_map(|o| &o.existing))
                     .find(|p| p.transaction_id == transaction_id)
                     .expect("the record a line verifies");
                 let unchecked: Vec<String> = record
@@ -610,7 +658,7 @@ pub fn plan(
             redated.insert(transaction_id, day);
             let these =
                 statements.iter().zip(openings.iter().copied()).filter(|(s, _)| on(s, &dates));
-            chain(these, &plan.transactions, &redated).is_none()
+            chain(these, &plan.transactions, &plan.moved, &redated).is_none()
         });
         match kept {
             Some(day) => {
@@ -626,9 +674,12 @@ pub fn plan(
         return Err(Refused(stops).into());
     }
 
-    if let Some(stop) =
-        chain(statements.iter().zip(openings.iter().copied()), &plan.transactions, &redated)
-    {
+    if let Some(stop) = chain(
+        statements.iter().zip(openings.iter().copied()),
+        &plan.transactions,
+        &plan.moved,
+        &redated,
+    ) {
         return Err(Refused(vec![stop]).into());
     }
     plan.openings = openings;
@@ -645,6 +696,7 @@ pub fn plan(
 fn chain<'a>(
     statements: impl IntoIterator<Item = (&'a Statement<'a>, NaiveDate)>,
     planned: &[(usize, Transaction)],
+    moved: &[Moved],
     redated: &HashMap<i64, NaiveDate>,
 ) -> Option<Stop> {
     for (s, opening) in statements {
@@ -653,10 +705,21 @@ fn chain<'a>(
         for l in s.statement.lines.iter().filter(|l| l.book_date > opening) {
             expected.insert(l.book_date, l.balance);
         }
+        let on_day = |id: i64, date: NaiveDate| redated.get(&id).copied().unwrap_or(date);
+        let moved_off = |p: &LedgerPosting| {
+            moved.iter().any(|m| m.transaction_id == p.transaction_id && m.from == s.account)
+        };
         let mut movements: Vec<(NaiveDate, Decimal)> = s
             .existing
             .iter()
-            .map(|p| (redated.get(&p.transaction_id).copied().unwrap_or(p.date), p.amount))
+            .filter(|p| !moved_off(p))
+            .map(|p| (on_day(p.transaction_id, p.date), p.amount))
+            .chain(
+                moved
+                    .iter()
+                    .filter(|m| m.to == s.account)
+                    .map(|m| (on_day(m.transaction_id, m.date), m.amount)),
+            )
             .collect();
         let last = s.statement.lines.last().expect("load rejects empty statements").book_date;
         let mut adds_to_last_day = false;

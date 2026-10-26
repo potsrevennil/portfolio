@@ -172,8 +172,9 @@ pub struct Files<'a> {
 
 /// A record's statement leg, and how it books.
 enum Fate {
-    /// Relabels this uncategorised line's fallback posting.
-    Pairs { transaction_id: i64, fallback_posting: i64 },
+    /// Stands for this line, relabelling its fallback posting if it still has
+    /// one: a line a person categorised keeps their category.
+    Pairs { transaction_id: i64, fallback_posting: Option<i64> },
     /// Books tagged unverified on this day.
     Waits(NaiveDate),
 }
@@ -287,7 +288,9 @@ pub async fn import(
         for &(l, m) in &pairing.pairs {
             let (t, fallback_posting) = lines[m];
             taken.insert(t.id);
-            fates.insert(at[l], Fate::Pairs { transaction_id: t.id, fallback_posting });
+            let fate =
+                Fate::Pairs { transaction_id: t.id, fallback_posting: Some(fallback_posting) };
+            fates.insert(at[l], fate);
         }
         let through = vouched(account, *currency);
         let ambiguous: BTreeSet<usize> = pairing.ambiguous.iter().map(|(l, _)| *l).collect();
@@ -310,9 +313,10 @@ pub async fn import(
             }
         }
     }
-    // What each may be all the same, for the person fixing it: a line of its
-    // amount no other record takes, one categorised already or on a sibling
-    // account, which the app records only together.
+    // The lines of its amount each may be all the same, no other record of
+    // this export taking them: by account, its own first, then the siblings
+    // the app records together with it.
+    let mut maybe: Vec<(usize, NaiveDate, Vec<(String, i64)>)> = Vec::new();
     for (i, through) in unexplained {
         let (leg, _) = on_statement(i);
         let mut lines = Vec::new();
@@ -330,10 +334,34 @@ pub async fn import(
                             && !stands_for_a_record(t)
                             && line_fits(t, &account, leg, records[i].date)
                     })
-                    .map(|t| t.id),
+                    .map(|t| (account.clone(), t.id)),
             );
         }
-        problems.push(Stop::RecordUnexplained { record: record(i), through, lines });
+        maybe.push((i, through, lines));
+    }
+    // One line on its own account that a person already categorised, and no
+    // other record's: it is that line, which keeps its category. Anything
+    // else is for the person to fix.
+    let own = |i: usize, lines: &[(String, i64)]| -> Vec<i64> {
+        let (leg, _) = on_statement(i);
+        lines.iter().filter(|(a, _)| *a == leg.account).map(|(_, id)| *id).collect()
+    };
+    let claims =
+        |line: i64| maybe.iter().filter(|(i, _, lines)| own(*i, lines).contains(&line)).count();
+    for (i, through, lines) in &maybe {
+        match own(*i, lines).as_slice() {
+            [only] if claims(*only) == 1 => {
+                fates.insert(*i, Fate::Pairs { transaction_id: *only, fallback_posting: None });
+            }
+            _ => {
+                let lines = lines.iter().map(|(_, id)| *id).collect();
+                problems.push(Stop::RecordUnexplained {
+                    record: record(*i),
+                    through: *through,
+                    lines,
+                });
+            }
+        }
     }
     if !problems.is_empty() {
         return Err(Refused(problems).into());
@@ -360,11 +388,13 @@ pub async fn import(
             (Some(leg), Some(Fate::Pairs { transaction_id, fallback_posting })) => {
                 let external_ref = transaction.external_ref.clone().expect("booked with its ref");
                 // The bank line's category now comes from the record.
-                let far: Vec<Posting> = far_legs(&transaction, &leg, placeholder)?
-                    .into_iter()
-                    .map(|p| p.with_origin(Origin::Tiantian))
-                    .collect();
-                import_batch::replace_leg(db, &labels, fallback_posting, &far).await?;
+                if let Some(fallback_posting) = fallback_posting {
+                    let far: Vec<Posting> = far_legs(&transaction, &leg, placeholder)?
+                        .into_iter()
+                        .map(|p| p.with_origin(Origin::Tiantian))
+                        .collect();
+                    import_batch::replace_leg(db, &labels, fallback_posting, &far).await?;
+                }
                 if !transaction.narration.is_empty() {
                     import_batch::append_narration(db, transaction_id, &transaction.narration)
                         .await?;

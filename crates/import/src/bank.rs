@@ -58,6 +58,13 @@ impl fmt::Display for Report {
         if c.verified > 0 {
             writeln!(f, "  {} unverified records verified by their lines, in place", c.verified)?;
         }
+        if c.moved > 0 {
+            writeln!(
+                f,
+                "  {} unverified records moved to the sibling account whose statement shows them",
+                c.moved
+            )?;
+        }
         if c.deferred > 0 {
             writeln!(
                 f,
@@ -125,8 +132,12 @@ pub async fn import(
         statements.push(plan::Statement { account, statement, files, existing, chosen });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
-    let Plan { transactions, mut counts, openings, verified, deferred } =
+    let Plan { transactions, mut counts, openings, verified, deferred, moved } =
         plan::plan(chart, &statements, &known, candidates)?;
+    let labels = Labels::from(chart);
+    for m in &moved {
+        import_batch::move_leg(db, &labels, m.transaction_id, &m.from, &m.to, m.amount).await?;
+    }
     for v in &verified {
         import_batch::verify(db, v).await?;
     }
@@ -134,7 +145,6 @@ pub async fn import(
         import_batch::redate(db, d.transaction_id, d.date).await?;
     }
 
-    let labels = Labels::from(chart);
     let mut inserted = transactions.len();
     let mut batches: BTreeMap<usize, i64> = BTreeMap::new();
     for (file, mut txn) in transactions {
