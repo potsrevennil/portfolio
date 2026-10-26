@@ -223,8 +223,8 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
         |si: usize, li: usize| (0..statements.len()).any(|sj| names_other(si, li, sj));
 
     // Both statements record the same internal movement, so pair the halves and
-    // emit one transaction from the sending side, on its day. Nothing has to be
-    // recorded by hand, and no clearing balance is left behind; only halves
+    // emit one transaction from the sending side. Nothing has to be recorded by
+    // hand, and no clearing balance is left behind; only halves
     // `transfer::Half::pairs_with` keeps apart go through the clearing account.
     let internal: Vec<(usize, usize)> =
         flat.iter().copied().filter(|(si, li)| is_internal(*si, *li)).collect();
@@ -723,7 +723,6 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                 .join(" · ");
             tags.sort();
             tags.dedup();
-            // A pair is booked on its earlier half's day.
             let date = match partner.get(&(si, li)) {
                 Some(&p) => half((si, li)).booked_with(&half(p)),
                 None => line.book_date,

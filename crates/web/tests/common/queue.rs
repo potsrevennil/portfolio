@@ -40,8 +40,6 @@ pub const FEE: &str = "手續費";
 pub const LUNCH: &str = "午餐";
 pub const TAXI: &str = "計程車";
 pub const COFFEE: &str = "咖啡";
-/// Emptied by its two entries: the balance sheet shows it only on request.
-pub const OLD_WALLET: &str = "Assets:Old-Wallet";
 
 type Legs = &'static [(&'static str, &'static str)];
 
@@ -73,14 +71,6 @@ const TXNS: &[Txn] = &[
         ("Assets:Bank:Savings", "3000"),
         ("Income:Salary", "-3000"),
     ]),
-    txn("2024-01-03", "存入舊錢包", Source::Tiantian, &[
-        (OLD_WALLET, "70"),
-        ("Assets:Cash", "-70"),
-    ]),
-    txn("2024-01-04", "領出舊錢包", Source::Tiantian, &[
-        (OLD_WALLET, "-70"),
-        ("Assets:Cash", "70"),
-    ]),
     txn("2024-02-01", FEE, Source::Import, &[
         ("Assets:Bank:Savings", "-500"),
         ("Expenses:Uncategorized", "500"),
@@ -103,6 +93,15 @@ const TXNS: &[Txn] = &[
     txn("2024-01-05", "代墊", Source::Import, &[
         ("Assets:Split:Alpha:Tab", "200"),
         ("Assets:Bank:Savings", "-200"),
+    ]),
+    // Emptied, so the balance sheet shows it only on request.
+    txn("2024-01-03", "存入舊錢包", Source::Tiantian, &[
+        ("Assets:Old-Wallet", "70"),
+        ("Assets:Cash", "-70"),
+    ]),
+    txn("2024-01-04", "領出舊錢包", Source::Tiantian, &[
+        ("Assets:Old-Wallet", "-70"),
+        ("Assets:Cash", "70"),
     ]),
 ];
 

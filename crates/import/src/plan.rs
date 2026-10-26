@@ -517,7 +517,6 @@ pub fn plan(
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
             .join(" · ");
-        // A pair is booked on its earlier half's day.
         let date = match &shape[&at] {
             Shape::Transfer(other) => half(at).booked_with(&half(*other)),
             _ => l.book_date,

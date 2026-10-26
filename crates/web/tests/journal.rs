@@ -21,7 +21,6 @@ use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 use web::{
-    entries::Plumbing,
     journal::{load_journal, JournalFilter, JournalList},
     model::{
         offered_for, AccountChoice, AccountNode, Journal as Page, JournalQuery, Review,
@@ -212,7 +211,6 @@ async fn load(pool: &SqlitePool, query: JournalQuery) -> Result<Page, ServerFnEr
     let owner = Owner::new();
     let call = owner.with(|| {
         provide_context(pool.clone());
-        provide_context(Plumbing::default());
         ScopedFuture::new(load_journal(query))
     });
     call.await
@@ -283,15 +281,7 @@ async fn site() -> Site {
         let (dir, pool) = ledger().await;
         let options = LeptosOptions::builder().output_name("web").build();
         let market = common::market::beside(dir.path()).await;
-        let router = server::router(
-            options,
-            pool,
-            market,
-            AtCost::default(),
-            Default::default(),
-            Default::default(),
-        );
-        (router, dir)
+        (server::router(options, pool, market, AtCost::default(), Default::default()), dir)
     })
     .await
 }

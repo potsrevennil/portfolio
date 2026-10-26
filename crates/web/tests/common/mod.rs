@@ -3,4 +3,3 @@
 pub mod market;
 pub mod page;
 pub mod queue;
-pub mod server;

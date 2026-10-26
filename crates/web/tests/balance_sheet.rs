@@ -24,7 +24,7 @@ use prices::YFinanceSource;
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
-use web::{balance_sheet::SheetView, entries::Plumbing, server};
+use web::{balance_sheet::SheetView, server};
 
 const MAPPING: &str = r#"
 [accounts]
@@ -160,9 +160,7 @@ async fn ledger() -> (TempDir, SqlitePool, Market) {
 async fn render(pool: &SqlitePool, market: &Market) -> String {
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
-    let plumbing = Plumbing::default();
-    let sheet =
-        web::sheet::load(pool, market, as_of, Currency::TWD, &at_cost, &plumbing).await.unwrap();
+    let sheet = web::sheet::load(pool, market, as_of, Currency::TWD, &at_cost).await.unwrap();
     Owner::new().with(|| view! { <SheetView sheet /> }.to_html())
 }
 
@@ -327,15 +325,7 @@ async fn site() -> Site {
     Site::new(|| async {
         let (dir, pool, market) = ledger().await;
         let options = LeptosOptions::builder().output_name("web").build();
-        let router = server::router(
-            options,
-            pool,
-            market,
-            AtCost::default(),
-            Default::default(),
-            Default::default(),
-        );
-        (router, dir)
+        (server::router(options, pool, market, AtCost::default(), Default::default()), dir)
     })
     .await
 }
@@ -423,11 +413,9 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
         ("Assets:Unlisted:Gamma", "丙"),
         ("Assets:Unlisted:Delta", "丁"),
     ]);
-    let plumbing = Plumbing::default();
-    let sheet =
-        web::sheet::build(&labels, &balances, as_of, Currency::TWD, &at_cost, &plumbing, |_| {
-            Some(Decimal::ONE)
-        });
+    let sheet = web::sheet::build(&labels, &balances, as_of, Currency::TWD, &at_cost, |_| {
+        Some(Decimal::ONE)
+    });
     let assets = &sheet.sections[0];
     assert_eq!(assets.total.money.amount, Decimal::from(100));
     assert!(assets.nodes.iter().all(|n| n.path == "Assets:Cash"), "{:?}", assets.nodes);
@@ -450,27 +438,20 @@ fn at_cost_holdings_are_listed_apart_from_every_total() {
 }
 
 /// An account at zero stays in the tree, marked, for the page to show on
-/// request; plumbing and holdings at cost at zero do not.
+/// request; a holding at cost at zero does not.
 #[test]
 fn an_account_at_zero_is_kept_and_marked() {
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let balances = [
         balance("Assets:Bank:Old", "0"),
-        balance("Assets:Bank:Clearing", "0"),
         balance("Assets:Bank:Savings", "100"),
         balance("Assets:Unlisted:Gamma", "0"),
     ];
     let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted\"]\n").unwrap();
-    let plumbing = Plumbing::from_iter(["Assets:Bank:Clearing"]);
-    let sheet = web::sheet::build(
-        &BTreeMap::new(),
-        &balances,
-        as_of,
-        Currency::TWD,
-        &at_cost,
-        &plumbing,
-        |_| Some(Decimal::ONE),
-    );
+    let sheet =
+        web::sheet::build(&BTreeMap::new(), &balances, as_of, Currency::TWD, &at_cost, |_| {
+            Some(Decimal::ONE)
+        });
     let bank = &sheet.sections[0].nodes[0];
     let rows: Vec<(&str, bool)> = bank.children.iter().map(|n| (n.path.as_str(), n.zero)).collect();
     assert_eq!(rows, [("Assets:Bank:Old", true), ("Assets:Bank:Savings", false)]);
@@ -484,9 +465,7 @@ async fn the_summary_shows_holdings_at_cost_apart_from_net_worth() {
     let (_dir, pool, market) = ledger().await;
     let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
     let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
-    let plumbing = Plumbing::default();
-    let sheet =
-        web::sheet::load(&pool, &market, as_of, Currency::TWD, &at_cost, &plumbing).await.unwrap();
+    let sheet = web::sheet::load(&pool, &market, as_of, Currency::TWD, &at_cost).await.unwrap();
     let html = Owner::new().with(|| view! { <web::summary::SummaryView sheet /> }.to_html());
     let text = visible(&html);
     // JPY has no rate, so no total that holds it shows a figure; the 資產

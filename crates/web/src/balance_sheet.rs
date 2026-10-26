@@ -21,9 +21,8 @@ pub async fn load_balance_sheet() -> Result<BalanceSheet, ServerFnError> {
     let pool = expect_context::<db::SqlitePool>();
     let market = expect_context::<db::market::Market>();
     let at_cost = expect_context::<ledger::valuation::AtCost>();
-    let plumbing = expect_context::<crate::entries::Plumbing>();
     let today = chrono::Local::now().date_naive();
-    crate::sheet::load(&pool, &market, today, Currency::TWD, &at_cost, &plumbing)
+    crate::sheet::load(&pool, &market, today, Currency::TWD, &at_cost)
         .await
         .map_err(|e| ServerFnError::new(format!("{e:#}")))
 }

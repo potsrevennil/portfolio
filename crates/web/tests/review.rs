@@ -6,30 +6,49 @@ mod common;
 
 use chrono::NaiveDate;
 use common::{
-    page::{position, visible},
-    queue::{ledger, COFFEE, FEE, LUNCH, OLD_WALLET, TAXI},
-    server::{call, call_with, id_of, leg, legs, save, site},
+    page::{position, visible, Site},
+    queue::{ledger, COFFEE, FEE, LUNCH, TAXI},
 };
 use db::{
     pairing::{self, Ambiguity},
     review::StatementAccounts,
 };
+use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
-use leptos::prelude::*;
+use leptos::{prelude::*, reactive::computed::ScopedFuture};
 use rust_decimal_macros::dec;
 use serde_json::Value;
 use sqlx::SqlitePool;
 use web::{
-    entries::Plumbing,
     journal::{load_journal, JournalList},
-    manual::{enter_manual, load_manual},
-    model::{Editing, JournalQuery, Origin, Queue, Source as TxnSource},
+    manual::enter_manual,
+    model::{Editing, JournalQuery, LegInput, Origin, Queue, Source as TxnSource},
     review::{
         choose_pairing, confirm_entry, delete_entry, load_entry, load_queue, review_count,
-        unconfirm_entry, Actions, Editor, SPARE_ROWS,
+        save_entry, unconfirm_entry, Actions, Editor, SPARE_ROWS,
     },
     server,
 };
+
+/// Runs a server function as the server would, with the pool in context.
+async fn call<T, F>(pool: &SqlitePool, f: impl FnOnce() -> F) -> Result<T, ServerFnError>
+where
+    F: std::future::Future<Output = Result<T, ServerFnError>>,
+{
+    let owner = Owner::new();
+    let call = owner.with(|| {
+        provide_context(pool.clone());
+        provide_context(statement_accounts());
+        ScopedFuture::new(f())
+    });
+    call.await
+}
+
+/// What the chart would name: the savings account, and a card whose first
+/// statement is still to come. Cash is neither.
+fn statement_accounts() -> StatementAccounts {
+    ["Assets:Bank:Savings", "Liabilities:Card"].into_iter().collect()
+}
 
 async fn queue(pool: &SqlitePool, query: JournalQuery) -> Queue {
     call(pool, || load_queue(query)).await.unwrap()
@@ -37,6 +56,14 @@ async fn queue(pool: &SqlitePool, query: JournalQuery) -> Queue {
 
 fn narrations(q: &Queue) -> Vec<String> {
     q.journal.entries.iter().map(|e| e.narration.clone().unwrap_or_default()).collect()
+}
+
+async fn id_of(pool: &SqlitePool, narration: &str) -> i64 {
+    sqlx::query_scalar("SELECT id FROM transactions WHERE narration = ?")
+        .bind(narration)
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 /// `(kind, payload)` of every event on a transaction, oldest first.
@@ -51,6 +78,18 @@ async fn events(pool: &SqlitePool, id: i64) -> Vec<(String, Value)> {
     rows.into_iter().map(|(k, p)| (k, serde_json::from_str(&p).unwrap())).collect()
 }
 
+/// `(posting id, account, amount, origin)` in posting order.
+async fn legs(pool: &SqlitePool, id: i64) -> Vec<(i64, String, String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT p.id, a.path, p.amount, p.origin FROM postings p JOIN accounts a ON a.id = \
+         p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
 async fn reviewed(pool: &SqlitePool, id: i64) -> bool {
     sqlx::query_scalar("SELECT reviewed != 0 FROM transactions WHERE id = ?")
         .bind(id)
@@ -59,11 +98,42 @@ async fn reviewed(pool: &SqlitePool, id: i64) -> bool {
         .unwrap()
 }
 
+fn leg(posting: Option<i64>, account: &str, amount: &str) -> LegInput {
+    LegInput {
+        posting: posting.map(|p| p.to_string()).unwrap_or_default(),
+        account: account.into(),
+        amount: amount.into(),
+        currency: "TWD".into(),
+    }
+}
+
+async fn save(
+    pool: &SqlitePool,
+    id: i64,
+    narration: &str,
+    legs: Vec<LegInput>,
+    confirm: bool,
+) -> Result<(), ServerFnError> {
+    let narration = Some(narration.to_string());
+    let confirm = confirm.then(|| "1".to_string());
+    call(pool, || save_entry(id, narration, legs, confirm)).await
+}
+
 fn with_actions<T>(f: impl FnOnce() -> T) -> T {
     Owner::new().with(|| {
         provide_context(Actions::new());
         f()
     })
+}
+
+async fn site() -> Site {
+    Site::new(|| async {
+        let (dir, pool) = ledger().await;
+        let options = LeptosOptions::builder().output_name("web").build();
+        let market = common::market::beside(dir.path()).await;
+        (server::router(options, pool, market, AtCost::default(), statement_accounts()), dir)
+    })
+    .await
 }
 
 // --- The queue --------------------------------------------------------------
@@ -912,26 +982,6 @@ async fn a_mismatch_elsewhere_does_not_block_a_write() {
     assert!(reviewed(&pool, fee).await);
 }
 
-// --- Plumbing -----------------------------------------------------------
-
-#[tokio::test]
-async fn plumbing_stays_out_of_the_pickers() {
-    let (_dir, pool) = ledger().await;
-    let plumbing = || Plumbing::from_iter([OLD_WALLET]);
-    let journal =
-        call_with(&pool, plumbing(), || load_journal(JournalQuery::default())).await.unwrap();
-    assert!(!journal.accounts.iter().any(|a| a.path == OLD_WALLET));
-    let manual = call_with(&pool, plumbing(), load_manual).await.unwrap();
-    assert!(!manual.accounts.iter().any(|a| a.path == OLD_WALLET));
-    let fee = id_of(&pool, FEE).await;
-    let editing = call_with(&pool, plumbing(), || load_entry(fee)).await.unwrap();
-    assert!(!editing.accounts.iter().any(|a| a.path == OLD_WALLET));
-    // Its history still filters by it.
-    let filtered =
-        call_with(&pool, plumbing(), || load_journal(JournalQuery::account(OLD_WALLET))).await;
-    assert_eq!(filtered.unwrap().total, 2);
-}
-
 // --- Through the router ---------------------------------------------------
 
 #[tokio::test]
@@ -960,7 +1010,7 @@ async fn the_review_pages_render() {
         assert!(lines[1].starts_with("未對帳 記了但銀行對帳單還沒出現"), "{legend}");
     }
 
-    let edit = visible(&site.page("/review/6").await);
+    let edit = visible(&site.page("/review/4").await);
     position(&edit, "修改 · 帳簿");
     position(&edit, "手續費");
     position(&visible(&site.page("/review/999").await), "讀取失敗：查無交易 999");

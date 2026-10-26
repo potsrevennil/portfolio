@@ -118,14 +118,8 @@ impl Journey {
             .site_pkg_dir("pkg")
             .build();
         let market = market::beside(dir.path()).await;
-        let router = server::router(
-            options,
-            pool.clone(),
-            market,
-            AtCost::default(),
-            Default::default(),
-            Default::default(),
-        );
+        let router =
+            server::router(options, pool.clone(), market, AtCost::default(), Default::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router.into_make_service()).await });
