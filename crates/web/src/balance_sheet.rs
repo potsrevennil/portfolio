@@ -69,19 +69,19 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
         collect_groups(&s.nodes, &mut groups);
     }
     let has_groups = groups.len() > sections.len();
-    let show_zero = RwSignal::new(false);
+    let hide_zero = RwSignal::new(true);
 
     view! {
-        <div class="sheet" class:hide-zero=move || !show_zero.get()>
+        <div class="sheet" class:hide-zero=hide_zero>
             <div class="tools">
                 <span class="as-of">{sheet.as_of}</span>
                 <label>
                     <input
                         type="checkbox"
-                        prop:checked=show_zero
-                        on:change=move |ev| show_zero.set(event_target_checked(&ev))
+                        checked=hide_zero
+                        on:change=move |ev| hide_zero.set(event_target_checked(&ev))
                     />
-                    "顯示餘額 0 的帳戶"
+                    "不顯示餘額 0 的帳戶"
                 </label>
                 <Show when=move || has_groups>
                     <button type="button" on:click={

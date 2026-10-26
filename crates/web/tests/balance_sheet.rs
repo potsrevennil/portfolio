@@ -164,8 +164,8 @@ async fn render(pool: &SqlitePool, market: &Market) -> String {
     Owner::new().with(|| view! { <SheetView sheet /> }.to_html())
 }
 
-/// The markup as the page first shows it: a row at zero waits for
-/// 顯示餘額 0 的帳戶.
+/// The markup as the page first shows it: a row at zero stays hidden until
+/// 不顯示餘額 0 的帳戶 is unticked.
 fn shown(html: &str) -> String {
     let mut out = String::new();
     let mut rest = html;
@@ -208,7 +208,8 @@ async fn an_emptied_account_waits_for_the_toggle() {
     let (_dir, pool, market) = ledger().await;
     let html = render(&pool, &market).await;
     assert!(html.contains(r#"<div class="sheet hide-zero">"#), "{html}");
-    position(&visible(&html), "顯示餘額 0 的帳戶");
+    position(&visible(&html), "不顯示餘額 0 的帳戶");
+    assert!(html.contains(r#"<input type="checkbox" checked"#), "{html}");
     let row = &html[..position(&html, "Old-Wallet")];
     assert!(row[row.rfind("<div").unwrap()..].contains(r#" zero""#), "{html}");
     assert!(!visible(&shown(&html)).contains("Old-Wallet"));
