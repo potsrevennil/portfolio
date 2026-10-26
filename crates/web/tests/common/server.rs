@@ -6,7 +6,7 @@ use db::review::StatementAccounts;
 use ledger::valuation::AtCost;
 use leptos::{prelude::*, reactive::computed::ScopedFuture};
 use sqlx::SqlitePool;
-use web::{model::LegInput, review::save_entry, server};
+use web::{entries::Plumbing, model::LegInput, review::save_entry, server};
 
 use super::{page::Site, queue::ledger};
 
@@ -15,10 +15,23 @@ pub async fn call<T, F>(pool: &SqlitePool, f: impl FnOnce() -> F) -> Result<T, S
 where
     F: std::future::Future<Output = Result<T, ServerFnError>>,
 {
+    call_with(pool, Plumbing::default(), f).await
+}
+
+/// [`call`], with `plumbing` as the accounts the app books to on its own.
+pub async fn call_with<T, F>(
+    pool: &SqlitePool,
+    plumbing: Plumbing,
+    f: impl FnOnce() -> F,
+) -> Result<T, ServerFnError>
+where
+    F: std::future::Future<Output = Result<T, ServerFnError>>,
+{
     let owner = Owner::new();
     let call = owner.with(|| {
         provide_context(pool.clone());
         provide_context(statement_accounts());
+        provide_context(plumbing);
         ScopedFuture::new(f())
     });
     call.await
@@ -35,7 +48,15 @@ pub async fn site() -> Site {
         let (dir, pool) = ledger().await;
         let options = LeptosOptions::builder().output_name("web").build();
         let market = super::market::beside(dir.path()).await;
-        (server::router(options, pool, market, AtCost::default(), statement_accounts()), dir)
+        let router = server::router(
+            options,
+            pool,
+            market,
+            AtCost::default(),
+            statement_accounts(),
+            Default::default(),
+        );
+        (router, dir)
     })
     .await
 }

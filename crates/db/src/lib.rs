@@ -3,7 +3,6 @@
 //! (`prices::PriceStore`, `prices::rates::RateStore`, `portfolio::SplitStore`)
 //! and this crate implements it.
 
-pub mod account_status;
 pub mod assertions;
 pub mod broker;
 pub mod chart;
@@ -22,7 +21,6 @@ pub mod query;
 pub mod quotes;
 pub mod review;
 pub mod splits;
-pub mod sums;
 
 pub use connect::{connect, init_db, open_db};
 // The handles callers pass around, so only this crate depends on sqlx.

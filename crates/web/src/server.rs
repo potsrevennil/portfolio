@@ -13,7 +13,10 @@ use ledger::{accounts::Chart, valuation::AtCost};
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
 
-use crate::app::{shell, App};
+use crate::{
+    app::{shell, App},
+    entries::Plumbing,
+};
 
 /// The database the server reads, unless `LEDGER_DATABASE_URL` names another.
 /// The same default `load-journal` writes to.
@@ -29,6 +32,7 @@ pub fn router(
     market: Market,
     at_cost: AtCost,
     statements: StatementAccounts,
+    plumbing: Plumbing,
 ) -> Router {
     let routes = generate_route_list(App);
     let context = move || {
@@ -36,6 +40,7 @@ pub fn router(
         provide_context(market.clone());
         provide_context(at_cost.clone());
         provide_context(statements.clone());
+        provide_context(plumbing.clone());
     };
     Router::new()
         .leptos_routes_with_context(&options, routes, context, {
@@ -62,10 +67,11 @@ pub async fn run() -> Result<()> {
     let mapping = std::env::var("LEDGER_MAPPING").unwrap_or_else(|_| DEFAULT_MAPPING.into());
     let at_cost = at_cost(Path::new(&mapping))?;
     let statements = statement_accounts(Path::new(&mapping))?;
+    let plumbing = plumbing(Path::new(&mapping))?;
     let addr = options.site_addr;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log_listening(addr);
-    let app = router(options, pool, market, at_cost, statements);
+    let app = router(options, pool, market, at_cost, statements, plumbing);
     axum::serve(listener, app.into_make_service()).await?;
     Ok(())
 }
@@ -88,6 +94,14 @@ pub fn statement_accounts(mapping: &Path) -> Result<StatementAccounts> {
     match mapping.exists() {
         true => Ok(StatementAccounts::from(&Chart::load(mapping)?)),
         false => Ok(StatementAccounts::default()),
+    }
+}
+
+/// Without a mapping, no account is the app's own.
+pub fn plumbing(mapping: &Path) -> Result<Plumbing> {
+    match mapping.exists() {
+        true => Ok(Plumbing::from(&Chart::load(mapping)?)),
+        false => Ok(Plumbing::default()),
     }
 }
 

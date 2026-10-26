@@ -20,7 +20,8 @@ pub async fn load_queue(query: JournalQuery) -> Result<Queue, ServerFnError> {
     use ledger_types::currency::Currency;
 
     let pool = expect_context::<db::SqlitePool>();
-    crate::queue::load(&pool, &query, Currency::TWD).await.map_err(failed)
+    let plumbing = expect_context::<crate::entries::Plumbing>();
+    crate::queue::load(&pool, &plumbing, &query, Currency::TWD).await.map_err(failed)
 }
 
 #[server]
@@ -48,7 +49,8 @@ pub async fn load_entry(id: i64) -> Result<Editing, ServerFnError> {
     use ledger_types::currency::Currency;
 
     let pool = expect_context::<db::SqlitePool>();
-    crate::queue::editing(&pool, id, Currency::TWD).await.map_err(failed)
+    let plumbing = expect_context::<crate::entries::Plumbing>();
+    crate::queue::editing(&pool, &plumbing, id, Currency::TWD).await.map_err(failed)
 }
 
 /// Rewrites a transaction's legs and note; `confirm` marks it reviewed too,
@@ -449,7 +451,7 @@ fn leg_row(
     }
 }
 
-/// A plain select of accounts, indented by depth; a closed one is marked.
+/// A plain select of accounts, indented by depth.
 #[component]
 pub fn AccountSelect(
     name: String,
@@ -467,8 +469,7 @@ pub fn AccountSelect(
                 .map(|a| {
                     let is_selected = a.path == selected;
                     // Full-width spaces: a select draws no tree.
-                    let closed = if a.closed { "（已結清）" } else { "" };
-                    let text = format!("{}{}{closed}", "\u{3000}".repeat(a.depth), a.label);
+                    let text = format!("{}{}", "\u{3000}".repeat(a.depth), a.label);
                     view! {
                         <option value=a.path selected=is_selected>
                             {text}

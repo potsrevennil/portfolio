@@ -454,10 +454,6 @@ details.group > summary.row.section {
   color: var(--accent);
 }
 
-.badge.closed {
-  color: var(--muted);
-}
-
 /* The queue's size beside its link. */
 .count-badge {
   display: inline-block;
@@ -484,8 +480,7 @@ details.group > summary.row.section {
 
 .review button,
 .edit button,
-.manual button,
-.accounts button {
+.manual button {
   font: inherit;
   padding: 0.2rem 0.8rem;
 }
@@ -610,17 +605,15 @@ input.currency {
   color: var(--fg);
 }
 
-.account-row form {
-  margin: 0 0 0 auto;
+/* 帳戶: an account at zero, and all under it, until the filter is off. */
+.account-tree.hide-zero .zero {
+  display: none;
 }
 
-.account-row button {
-  font-size: 0.85rem;
-  padding: 0.1rem 0.6rem;
-}
-
-.account-row.closed a.name {
-  color: var(--muted);
+.tools label {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
 }
 
 /* 支出 / 收入 / 轉帳: which accounts the entry asks for. */

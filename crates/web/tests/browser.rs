@@ -32,7 +32,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use leptos::prelude::LeptosOptions;
-use queue::{is_closed, ledger, COFFEE, LUNCH, OLD_WALLET, TAXI};
+use queue::{ledger, COFFEE, LUNCH, TAXI};
 use rust_decimal_macros::dec;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -118,8 +118,14 @@ impl Journey {
             .site_pkg_dir("pkg")
             .build();
         let market = market::beside(dir.path()).await;
-        let router =
-            server::router(options, pool.clone(), market, AtCost::default(), Default::default());
+        let router = server::router(
+            options,
+            pool.clone(),
+            market,
+            AtCost::default(),
+            Default::default(),
+            Default::default(),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router.into_make_service()).await });
@@ -253,7 +259,7 @@ async fn journeys() {
     split_in_the_editor().await;
     pick_a_pairing().await;
     enter_cash_by_hand().await;
-    close_and_reopen_an_account().await;
+    show_the_accounts_at_zero().await;
 }
 
 async fn confirm_from_the_queue() {
@@ -399,7 +405,7 @@ async fn enter_cash_by_hand() {
     j.close().await;
 }
 
-async fn close_and_reopen_an_account() {
+async fn show_the_accounts_at_zero() {
     let j = Journey::start().await;
     j.open("/accounts").await;
     // Groups start folded; 全部展開 opens every one.
@@ -408,14 +414,10 @@ async fn close_and_reopen_an_account() {
     j.find(".tools button").await.click().await.unwrap();
     assert!(j.find(tab).await.is_displayed().await.unwrap());
 
+    // The emptied wallet is left out until the filter is off.
     let wallet = r#".account-row:has(a[href="/journal?account=Assets%3AOld-Wallet"])"#;
-    j.find(&format!("{wallet} button")).await.click().await.unwrap();
-    // Closed, it stays in the list, marked.
-    j.until_count(&format!("{wallet}.closed"), 1).await;
-    let row = j.find(wallet).await;
-    assert!(row.text().await.unwrap().contains("已結清"));
-    row.find(Locator::Css("button")).await.unwrap().click().await.unwrap();
-    j.until_count(&format!("{wallet}.closed"), 0).await;
-    assert!(!is_closed(&j.pool, OLD_WALLET).await);
+    assert!(!j.find(wallet).await.is_displayed().await.unwrap());
+    j.find(".tools input[type=checkbox]").await.click().await.unwrap();
+    assert!(j.find(wallet).await.is_displayed().await.unwrap());
     j.close().await;
 }

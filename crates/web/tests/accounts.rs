@@ -1,127 +1,86 @@
-//! 帳戶: closing and reopening accounts over the queue ledger, through the
-//! server functions and the rendered page. All values are invented.
+//! 帳戶: every account as a tree with what it holds, over the queue ledger,
+//! through the server function and the rendered page. All values are
+//! invented.
 
 mod common;
 
 use common::{
     page::{position, visible},
-    queue::{account_events, is_closed, ledger, FEE, INTO_WALLET, OLD_WALLET},
-    server::{call, id_of, leg, legs, save, site},
+    queue::{ledger, OLD_WALLET},
+    server::{call, call_with, site},
 };
 use web::{
-    accounts::{close_account, load_accounts, reopen_account},
+    accounts::load_accounts,
+    entries::Plumbing,
     journal::load_journal,
+    manual::load_manual,
     model::{AccountBranch, AccountTree, JournalQuery},
-    review::delete_entry,
 };
 
 /// The branch at `path`, wherever it sits in the tree.
-fn branch<'a>(tree: &'a AccountTree, path: &str) -> &'a AccountBranch {
+fn branch<'a>(tree: &'a AccountTree, path: &str) -> Option<&'a AccountBranch> {
     fn find<'a>(nodes: &'a [AccountBranch], path: &str) -> Option<&'a AccountBranch> {
-        nodes.iter().find_map(|n| match n.account.path == path {
+        nodes.iter().find_map(|n| match n.path == path {
             true => Some(n),
             false => find(&n.children, path),
         })
     }
-    find(&tree.0, path).unwrap_or_else(|| panic!("{path} not in {tree:?}"))
+    find(&tree.0, path)
+}
+
+fn balance(tree: &AccountTree, path: &str) -> Vec<String> {
+    let branch = branch(tree, path).unwrap_or_else(|| panic!("{path} not in {tree:?}"));
+    branch.balance.iter().map(ToString::to_string).collect()
 }
 
 #[tokio::test]
-async fn closing_an_account_marks_it_and_leaves_an_event() {
+async fn each_account_holds_what_it_and_those_under_it_hold() {
     let (_dir, pool) = ledger().await;
-    // 結清 is offered only where it would succeed.
     let tree = call(&pool, load_accounts).await.unwrap();
-    assert!(branch(&tree, OLD_WALLET).closable);
-    assert!(!branch(&tree, "Assets:Cash").closable);
-    assert!(!branch(&tree, "Assets:Split").closable);
-    call(&pool, || close_account(OLD_WALLET.into(), Some("不用了".into()))).await.unwrap();
-    assert!(is_closed(&pool, OLD_WALLET).await);
-    let closed = ("closed".to_string(), Some("不用了".to_string()));
-    assert_eq!(account_events(&pool, OLD_WALLET).await.last(), Some(&closed));
+    assert_eq!(balance(&tree, "Assets:Cash"), ["880 TWD"]);
+    assert_eq!(balance(&tree, "Assets:Split"), ["200 TWD"]);
+    // An emptied account holds nothing, and the filter hides it.
+    let wallet = branch(&tree, OLD_WALLET).unwrap();
+    assert!(wallet.balance.is_empty() && wallet.zero);
+    assert!(!branch(&tree, "Assets").unwrap().zero);
+    // Equity holds the loader's system accounts; it is not listed.
+    assert!(branch(&tree, "Equity").is_none());
+    // In a tree, the row above gives the context.
+    assert_eq!(branch(&tree, "Assets:Split:Alpha:Tab").unwrap().label, "分帳");
+}
 
-    // Gone from the pickers; still in the 帳戶 tree, marked closed.
-    let journal = call(&pool, || load_journal(JournalQuery::default())).await.unwrap();
+#[tokio::test]
+async fn plumbing_stays_out_of_the_tree_and_the_pickers() {
+    let (_dir, pool) = ledger().await;
+    let plumbing = || Plumbing::from_iter([OLD_WALLET]);
+    let tree = call_with(&pool, plumbing(), load_accounts).await.unwrap();
+    assert!(branch(&tree, OLD_WALLET).is_none());
+    let journal =
+        call_with(&pool, plumbing(), || load_journal(JournalQuery::default())).await.unwrap();
     assert!(!journal.accounts.iter().any(|a| a.path == OLD_WALLET));
-    let tree = call(&pool, load_accounts).await.unwrap();
-    let wallet = branch(&tree, OLD_WALLET);
-    assert!(wallet.account.closed && !wallet.closable);
-    // Its history still filters by it: the box names it, though the picker
-    // no longer offers it.
-    let filtered = call(&pool, || load_journal(JournalQuery::account(OLD_WALLET))).await.unwrap();
-    assert_eq!(filtered.total, 2);
-    assert_eq!(filtered.query.account.as_deref(), Some(OLD_WALLET));
-    assert!(filtered.chosen.is_some());
-    assert!(!filtered.accounts.iter().any(|a| a.path == OLD_WALLET));
-    // Nothing new posts to it.
-    let fee = id_of(&pool, FEE).await;
-    let rows = legs(&pool, fee).await;
-    let error = save(
-        &pool,
-        fee,
-        FEE,
-        vec![
-            leg(Some(rows[0].0), "Assets:Bank:Savings", "-500"),
-            leg(Some(rows[1].0), OLD_WALLET, "500"),
-        ],
-        false,
-    )
-    .await
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("帳戶已結清：Assets:Old-Wallet"), "{error}");
-
-    call(&pool, || reopen_account(OLD_WALLET.into())).await.unwrap();
-    let events: Vec<String> =
-        account_events(&pool, OLD_WALLET).await.into_iter().map(|(e, _)| e).collect();
-    assert_eq!(events, ["created", "closed", "reopened"]);
-}
-
-#[tokio::test]
-async fn a_write_that_would_leave_money_in_a_closed_account_is_refused() {
-    let (_dir, pool) = ledger().await;
-    call(&pool, || close_account(OLD_WALLET.into(), None)).await.unwrap();
-    // Deleting one of its two entries would leave the other's 70 in it.
-    let into = id_of(&pool, INTO_WALLET).await;
-    let held = call(&pool, || delete_entry(into, Some("1".into()))).await.unwrap_err();
-    assert!(held.to_string().contains("會讓已結清的「舊錢包」剩 -70 TWD"), "{held}");
-    assert_eq!(legs(&pool, into).await.len(), 2);
-}
-
-#[tokio::test]
-async fn an_account_holding_money_is_not_closed() {
-    let (_dir, pool) = ledger().await;
-    let held = call(&pool, || close_account("Assets:Cash".into(), None)).await.unwrap_err();
-    assert!(held.to_string().contains("餘額不是 0，不能結清：880 TWD"), "{held}");
-    let parent = call(&pool, || close_account("Assets:Split".into(), None)).await.unwrap_err();
-    assert!(parent.to_string().contains("底下還有 2 個帳戶沒結清"), "{parent}");
-    let root = call(&pool, || close_account("Assets".into(), None)).await.unwrap_err();
-    assert!(root.to_string().contains("這個帳戶不能結清"), "{root}");
-}
-
-/// What flowed through a category is not money it holds.
-#[tokio::test]
-async fn a_used_category_can_be_closed() {
-    let (_dir, pool) = ledger().await;
-    let tree = call(&pool, load_accounts).await.unwrap();
-    assert!(branch(&tree, "Expenses:Food").closable);
-    call(&pool, || close_account("Expenses:Food".into(), None)).await.unwrap();
-    assert!(is_closed(&pool, "Expenses:Food").await);
+    let manual = call_with(&pool, plumbing(), load_manual).await.unwrap();
+    assert!(!manual.accounts.iter().any(|a| a.path == OLD_WALLET));
+    // Its history still filters by it.
+    let filtered =
+        call_with(&pool, plumbing(), || load_journal(JournalQuery::account(OLD_WALLET))).await;
+    assert_eq!(filtered.unwrap().total, 2);
 }
 
 #[tokio::test]
 async fn the_accounts_page_renders() {
     let site = site().await;
     let accounts = site.page("/accounts").await;
-    position(&visible(&accounts), "舊錢包 結清");
-    assert!(!visible(&accounts).contains("現金 結清"), "{accounts}");
-    // Equity holds the loader's system accounts; it is not listed.
-    assert!(!accounts.contains("Equity"), "{accounts}");
+    position(&visible(&accounts), "現金 880 TWD");
+    position(&visible(&accounts), "不顯示餘額 0 的帳戶");
+    // The emptied wallet is in the markup, hidden until the filter is off.
+    assert!(accounts.contains(r#"<div class="account-tree hide-zero">"#), "{accounts}");
+    let wallet = &accounts[..position(&accounts, "舊錢包")];
+    let row = &wallet[wallet.rfind("<div").unwrap()..];
+    assert!(row.contains("zero"), "{row}");
     // Every account, as a tree: the roots open, the groups under them folded.
     let assets = &accounts[position(&accounts, "資產")..];
     assert_eq!(accounts.matches(r#"<details open class="group">"#).count(), 4, "{accounts}");
     let folded = &assets[position(assets, r#"<details class="group">"#)..];
     position(&visible(folded), "分帳");
     position(&visible(&accounts), "全部展開");
-    // The button says what it does.
-    assert!(accounts.contains("不再使用這個帳戶"), "{accounts}");
 }

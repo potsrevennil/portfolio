@@ -363,8 +363,7 @@ pub struct AccountNode {
     pub children: Vec<AccountNode>,
 }
 
-/// An account as the editor's pickers and the 帳戶 page list it, or a leg
-/// posted to.
+/// An account as the editor's pickers list it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChartAccount {
     pub path: String,
@@ -373,16 +372,20 @@ pub struct ChartAccount {
     pub depth: usize,
     /// None for equity, which holds the loader's system accounts.
     pub kind: Option<AccountKind>,
-    pub closed: bool,
 }
 
 /// An account with the accounts under it, as the 帳戶 page folds them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountBranch {
-    pub account: ChartAccount,
-    /// Whether 結清 would succeed: open, holding nothing, nothing open under
-    /// it.
-    pub closable: bool,
+    pub path: String,
+    /// As a tree shows it, under the row above.
+    pub label: String,
+    pub depth: usize,
+    /// What it and the accounts under it hold, per currency; empty at zero.
+    pub balance: Vec<Money>,
+    /// Neither it nor any account under it holds anything, so the zero
+    /// filter hides it.
+    pub zero: bool,
     pub children: Vec<AccountBranch>,
 }
 
@@ -395,11 +398,7 @@ impl FromIterator<AccountBranch> for AccountTree {
     fn from_iter<I: IntoIterator<Item = AccountBranch>>(branches: I) -> Self {
         fn place(nodes: &mut Vec<AccountBranch>, branch: AccountBranch) {
             let parent = nodes.last_mut().filter(|last| {
-                branch
-                    .account
-                    .path
-                    .strip_prefix(last.account.path.as_str())
-                    .is_some_and(|r| r.starts_with(':'))
+                branch.path.strip_prefix(last.path.as_str()).is_some_and(|r| r.starts_with(':'))
             });
             match parent {
                 Some(parent) => place(&mut parent.children, branch),
@@ -557,14 +556,11 @@ mod tests {
     #[test]
     fn accounts_nest_under_their_parents_only() {
         let choice = |path: &str| AccountBranch {
-            account: ChartAccount {
-                path: path.into(),
-                label: path.into(),
-                depth: path.matches(':').count(),
-                kind: Some(AccountKind::Asset),
-                closed: false,
-            },
-            closable: true,
+            path: path.into(),
+            label: path.into(),
+            depth: path.matches(':').count(),
+            balance: Vec::new(),
+            zero: true,
             children: Vec::new(),
         };
         let tree: AccountTree =
@@ -576,12 +572,7 @@ mod tests {
             .0
             .iter()
             .flat_map(|root| &root.children)
-            .map(|n| {
-                (
-                    n.account.path.clone(),
-                    n.children.iter().map(|c| c.account.path.clone()).collect(),
-                )
-            })
+            .map(|n| (n.path.clone(), n.children.iter().map(|c| c.path.clone()).collect()))
             .collect();
         // A shared prefix is not a parent.
         assert_eq!(shape, [

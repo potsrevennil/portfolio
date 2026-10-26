@@ -25,7 +25,8 @@ pub async fn load_journal(query: JournalQuery) -> Result<Journal, ServerFnError>
     use ledger_types::currency::Currency;
 
     let pool = expect_context::<db::SqlitePool>();
-    crate::entries::load(&pool, &query, Currency::TWD)
+    let plumbing = expect_context::<crate::entries::Plumbing>();
+    crate::entries::load(&pool, &plumbing, &query, Currency::TWD)
         .await
         .map_err(|e| ServerFnError::new(format!("{e:#}")))
 }
