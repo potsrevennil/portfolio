@@ -85,3 +85,22 @@ async fn flows_are_per_account_and_converted_at_each_postings_date() {
     let income = data.flows(Currency::TWD, d(2026, 1, 1), d(2026, 1, 31), &prices);
     assert_eq!(income[0].accounts["Income:Salary"].value, dec!(-50000));
 }
+
+#[tokio::test]
+async fn a_subtree_keeps_each_currency_of_its_own() {
+    let (_dir, pool, market) = fresh_db().await;
+    seed_multicurrency(&pool, &market).await;
+    let data = LedgerData::load(&pool).await.unwrap();
+    let points = data.subtree_over_time("Assets:IB", d(2026, 1, 1), d(2026, 2, 28));
+    assert_eq!(points, [
+        (d(2026, 1, 31), BTreeMap::from([(Currency::USD, dec!(1000))])),
+        (d(2026, 2, 28), BTreeMap::from([(Currency::USD, dec!(1070))])),
+    ]);
+    // A sibling whose path only starts the same is not under it.
+    assert!(data.subtree_over_time("Assets:I", d(2026, 1, 1), d(2026, 1, 31))[0].1.is_empty());
+    assert_eq!(data.first_date(), Some(d(2026, 1, 1)));
+    // Held to a subtree, a report is that subtree's.
+    let ib = data.subtree("Assets:IB");
+    assert_eq!(ib.first_date(), Some(d(2026, 1, 1)));
+    assert_eq!(ib.currencies(), [Currency::USD].into());
+}
