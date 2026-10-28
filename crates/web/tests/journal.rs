@@ -789,8 +789,8 @@ async fn the_journal_route_renders_with_its_filter() {
 }
 
 #[tokio::test]
-async fn balance_sheet_accounts_open_their_journal() {
+async fn balance_sheet_accounts_open_their_page() {
     let html = site().await.page("/balance-sheet").await;
-    assert!(html.contains(r#"href="/journal?account=Assets%3ABank%3ASavings""#), "{html}");
-    assert!(html.contains(r#"href="/journal?account=Assets%3ASplit%3AAlpha%3ATab""#), "{html}");
+    assert!(html.contains(r#"href="/account?account=Assets%3ABank%3ASavings""#), "{html}");
+    assert!(html.contains(r#"href="/account?account=Assets%3ASplit%3AAlpha%3ATab""#), "{html}");
 }

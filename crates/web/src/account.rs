@@ -1,0 +1,174 @@
+//! One account's page, as Fava's account page: where it stands, its balance
+//! (or, for income and expense, what moved) month by month, the outside
+//! figures that vouch for it, and its journal, loaded apart.
+
+use leptos::prelude::*;
+use leptos_meta::Title;
+use leptos_router::hooks::use_query_map;
+
+use crate::{
+    balance_sheet::{MoneyText, TotalText},
+    error::LoadFailed,
+    journal::{load_journal, JournalList},
+    model::{AccountPage, BalanceCheck, Journal, JournalQuery},
+    plot::{ColumnChart, LineChart},
+};
+
+#[server]
+pub async fn load_account(account: String) -> Result<AccountPage, ServerFnError> {
+    use ledger_types::currency::Currency;
+
+    let pool = expect_context::<db::SqlitePool>();
+    let market = expect_context::<db::market::Market>();
+    let today = chrono::Local::now().date_naive();
+    crate::detail::load(&pool, &market, &account, today, Currency::TWD)
+        .await
+        .map_err(|e| ServerFnError::new(format!("{e:#}")))
+}
+
+/// The account and its journal load apart: paging the journal leaves the
+/// rest of the page as it is.
+#[component]
+pub fn AccountRoute() -> impl IntoView {
+    let params = use_query_map();
+    let account = Resource::new(
+        move || params.read().get("account").unwrap_or_default(),
+        |account| async move {
+            match account.is_empty() {
+                true => Err(ServerFnError::new("沒指定口座")),
+                false => load_account(account).await,
+            }
+        },
+    );
+    let journal = Resource::new(move || JournalQuery::from(&params.get()), load_journal);
+    view! {
+        <Title text="口座" />
+        <div class="account-page">
+            <Transition fallback=|| view! { <p class="note">"載入中…"</p> }>
+                {move || Suspend::new(async move {
+                    match account.await {
+                        Ok(page) => view! { <AccountView page /> }.into_any(),
+                        Err(e) => view! { <LoadFailed error=e /> }.into_any(),
+                    }
+                })}
+            </Transition>
+            <section class="journal">
+                <h2>"交易"</h2>
+                <Transition fallback=|| ()>
+                    {move || Suspend::new(async move {
+                        match journal.await {
+                            // The page has its own heading.
+                            Ok(journal) => {
+                                let journal = Journal { account: None, ..journal };
+                                view! { <JournalList action="/account" journal /> }.into_any()
+                            }
+                            Err(e) => view! { <LoadFailed error=e /> }.into_any(),
+                        }
+                    })}
+                </Transition>
+            </section>
+        </div>
+    }
+}
+
+#[component]
+pub fn AccountView(page: AccountPage) -> AnyView {
+    let AccountPage { path, label, trail, balance, total, flow, trends, checks } = page;
+    // A figure per currency only says more than the total when there is a
+    // currency besides the base.
+    let native = balance.iter().any(|m| m.currency != total.money.currency).then(|| {
+        let text = balance.iter().map(ToString::to_string).collect::<Vec<_>>().join(" · ");
+        view! { <span class="native">{text}</span> }
+    });
+    let several = trends.len() > 1;
+    let charts = trends
+        .into_iter()
+        .map(|trend| {
+            let heading = several.then(|| view! { <h3>{trend.series[0].name.clone()}</h3> });
+            let chart = match flow {
+                true => view! { <ColumnChart trend /> },
+                false => view! { <LineChart trend /> },
+            };
+            view! { {heading} {chart} }
+        })
+        .collect_view();
+    let checks = (!flow).then(|| view! { <Checks checks /> });
+    view! {
+        <Title text=label.clone() />
+        <header class="account-head">
+                <p class="trail">{trail}</p>
+                <h1>{label}</h1>
+                <p class="standing">
+                    <TotalText total />
+                    {native}
+                </p>
+            <a href=format!("/journal{}", JournalQuery::account(&path))>"去日記帳篩選"</a>
+        </header>
+        <section>
+            <h2>{if flow { "每月金額" } else { "餘額走勢" }}</h2>
+            {charts}
+        </section>
+        {checks}
+    }
+    .into_any()
+}
+
+/// The figures statements, 天天記帳 and counts state for the account, each
+/// against what the books say that day.
+#[component]
+fn Checks(checks: Vec<BalanceCheck>) -> impl IntoView {
+    let body = match checks.is_empty() {
+        true => view! { <p class="note">"無對帳紀錄"</p> }.into_any(),
+        false => {
+            let named = checks.iter().any(|c| c.account.is_some());
+            let rows = checks
+                .into_iter()
+                .map(|c| {
+                    let account =
+                        named.then(|| view! { <td>{c.account.clone().unwrap_or_default()}</td> });
+                    let result = match c.ok {
+                        true => view! { <span class="check ok">"✓ 相符"</span> }.into_any(),
+                        false => view! {
+                            <span class="check failed">{format!("✗ 差 {}", c.difference)}</span>
+                        }
+                        .into_any(),
+                    };
+                    view! {
+                        <tr class:failed=!c.ok>
+                            <th scope="row">{c.date}</th>
+                            <td>{c.voucher.to_string()}</td>
+                            {account}
+                            <td class="figure"><MoneyText money=c.expected /></td>
+                            <td class="figure"><MoneyText money=c.computed /></td>
+                            <td>{result}</td>
+                        </tr>
+                    }
+                })
+                .collect_view();
+            view! {
+                <div class="scroll">
+                    <table class="checks">
+                        <thead>
+                            <tr>
+                                <th scope="col">"日期"</th>
+                                <th scope="col">"來源"</th>
+                                {named.then(|| view! { <th scope="col">"口座"</th> })}
+                                <th scope="col">"應有"</th>
+                                <th scope="col">"帳上"</th>
+                                <th scope="col">"結果"</th>
+                            </tr>
+                        </thead>
+                        <tbody>{rows}</tbody>
+                    </table>
+                </div>
+            }
+            .into_any()
+        }
+    };
+    view! {
+        <section>
+            <h2>"對帳"</h2>
+            {body}
+        </section>
+    }
+}

@@ -19,6 +19,7 @@
   --series-5: #e87ba4;
   --series-other: #b8b6ad;
   --axis: #c3c2b7;
+  --good: #1d7a1d;
   color-scheme: light dark;
 }
 
@@ -40,6 +41,7 @@
     --series-5: #d55181;
     --series-other: #5c5b56;
     --axis: #44443f;
+    --good: #4fbf4f;
   }
 }
 
@@ -806,7 +808,8 @@ input.currency {
   align-items: start;
 }
 
-.charts h2 {
+.charts h2,
+.account-page h2 {
   font-size: 1.1rem;
   margin: 1.2rem 0 0.4rem;
 }
@@ -1224,4 +1227,90 @@ input.currency {
   .pie .legend-list {
     width: 100%;
   }
+}
+
+/* 口座 */
+
+.account-page > header,
+.account-page > section:not(.journal) {
+  padding: 0 1rem;
+}
+
+.account-head .trail {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0.8rem 0 0;
+}
+
+.account-head h1 {
+  font-size: 1.5rem;
+  margin: 0.1rem 0 0.3rem;
+}
+
+.account-head .standing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.8rem;
+  align-items: baseline;
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin: 0 0 0.4rem;
+}
+
+.account-head a,
+.legend-list a.name {
+  color: var(--accent);
+}
+
+.legend-list a.name {
+  text-decoration: none;
+}
+
+.legend-list a.name:hover {
+  text-decoration: underline;
+}
+
+
+.account-page h3 {
+  font-size: 1rem;
+  margin: 0.8rem 0 0.2rem;
+  color: var(--muted);
+}
+
+.account-page .scroll {
+  overflow-x: auto;
+}
+
+
+
+/* Words read from the left; only the figures line up on the right. */
+table.checks {
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+table.checks th,
+table.checks td {
+  padding: 0.3rem 0.6rem 0.3rem 0;
+  border-bottom: 1px solid var(--line);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+
+table.checks td.figure {
+  text-align: right;
+}
+
+table.checks thead th {
+  color: var(--muted);
+}
+
+.check.ok {
+  color: var(--good);
+}
+
+.check.failed {
+  color: var(--negative);
+  font-weight: 600;
 }

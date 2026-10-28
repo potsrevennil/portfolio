@@ -90,6 +90,13 @@ impl Context {
     }
 }
 
+/// The `nth` table body's rows, each as a reader sees it.
+pub fn table(html: &str, nth: usize) -> Vec<String> {
+    let body = html.split("<tbody>").nth(nth + 1).expect("the table");
+    let body = &body[..body.find("</tbody>").unwrap()];
+    body.split("<tr").skip(1).map(|row| visible(&format!("<tr{row}"))).collect()
+}
+
 /// Each figure of a series as a page prints it.
 pub fn printed(series: &Series) -> Vec<String> {
     series
