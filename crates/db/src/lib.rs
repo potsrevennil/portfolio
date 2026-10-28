@@ -20,6 +20,7 @@ pub mod pairing;
 pub mod query;
 pub mod quotes;
 pub mod review;
+pub mod series;
 pub mod splits;
 
 pub use connect::{connect, init_db, open_db};

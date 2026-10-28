@@ -28,7 +28,13 @@ serde_json   = { workspace = true }
 # Pinned to the devShell's wasm-bindgen-cli (nixpkgs); the two must match
 # exactly. web-sys is the release built against it.
 wasm-bindgen = { version = "=0.2.100", optional = true }
-web-sys      = { version = "=0.3.77", features = ["HtmlDetailsElement", "Storage", "Window"] }
+web-sys = { version = "=0.3.77", features = [
+  "DomRect",
+  "Element",
+  "HtmlDetailsElement",
+  "Storage",
+  "Window",
+] }
 
 # Server only.
 anyhow      = { workspace = true, optional = true }

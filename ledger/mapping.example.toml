@@ -83,6 +83,11 @@ expense = "Expenses:Uncategorized"
 [at_cost]
 accounts = ["Assets:Unlisted"]
 
+# Investment results: realised gains and losses, dividends. The charts show
+# their net result apart from day-to-day income and spending.
+[investments]
+accounts = ["Income:Investment", "Expenses:Investment"]
+
 # Split accounts: running two-way balances with a person or group (current
 # accounts), one account per person or group, and the sign says who owes whom —
 # positive, they owe you; negative, you owe them. The freeze therefore lets

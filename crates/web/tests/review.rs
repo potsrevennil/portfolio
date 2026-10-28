@@ -6,16 +6,15 @@ mod common;
 
 use chrono::NaiveDate;
 use common::{
-    page::{position, visible, Site},
+    page::{position, visible, Context, Site},
     queue::{ledger, COFFEE, FEE, LUNCH, TAXI},
 };
 use db::{
     pairing::{self, Ambiguity},
     review::StatementAccounts,
 };
-use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
-use leptos::{prelude::*, reactive::computed::ScopedFuture};
+use leptos::prelude::*;
 use rust_decimal_macros::dec;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -31,17 +30,8 @@ use web::{
 };
 
 /// Runs a server function as the server would, with the pool in context.
-async fn call<T, F>(pool: &SqlitePool, f: impl FnOnce() -> F) -> Result<T, ServerFnError>
-where
-    F: std::future::Future<Output = Result<T, ServerFnError>>,
-{
-    let owner = Owner::new();
-    let call = owner.with(|| {
-        provide_context(pool.clone());
-        provide_context(statement_accounts());
-        ScopedFuture::new(f())
-    });
-    call.await
+async fn call<F: std::future::Future>(pool: &SqlitePool, f: impl FnOnce() -> F) -> F::Output {
+    Context::from(pool).statements(statement_accounts()).call(f).await
 }
 
 /// What the chart would name: the savings account, and a card whose first
@@ -126,15 +116,7 @@ fn with_actions<T>(f: impl FnOnce() -> T) -> T {
     })
 }
 
-async fn site() -> Site {
-    Site::new(|| async {
-        let (dir, pool) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        let market = common::market::beside(dir.path()).await;
-        (server::router(options, pool, market, AtCost::default(), statement_accounts()), dir)
-    })
-    .await
-}
+async fn site() -> Site { Site::serving_with(ledger, statement_accounts()).await }
 
 // --- The queue --------------------------------------------------------------
 
@@ -879,7 +861,7 @@ async fn deleting_the_bank_leg_clears_the_mark() {
 fn statement_accounts_come_from_the_chart() {
     let dir = tempfile::tempdir().unwrap();
     let mapping = dir.path().join("mapping.toml");
-    assert_eq!(server::statement_accounts(&mapping).unwrap(), StatementAccounts::default());
+    assert_eq!(server::Config::load(&mapping).unwrap().statements, StatementAccounts::default());
     std::fs::write(
         &mapping,
         r#"
@@ -899,7 +881,7 @@ fn statement_accounts_come_from_the_chart() {
     .unwrap();
     let expected: StatementAccounts =
         ["Assets:Bank:Savings", "Assets:Bank:Main", "Assets:Bank:Settlement"].into_iter().collect();
-    assert_eq!(server::statement_accounts(&mapping).unwrap(), expected);
+    assert_eq!(server::Config::load(&mapping).unwrap().statements, expected);
 }
 
 /// An entry made by mistake can be deleted: it leaves every list and every

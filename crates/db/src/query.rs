@@ -87,6 +87,20 @@ impl From<ledger::accounts::AccountType> for AccountType {
     }
 }
 
+impl AccountType {
+    /// What turns this type's Beancount sign into the one a page reads:
+    /// income, credit-negative, reads as money in.
+    pub fn shown(self) -> Decimal {
+        match self {
+            AccountType::Income => -Decimal::ONE,
+            AccountType::Asset
+            | AccountType::Liability
+            | AccountType::Equity
+            | AccountType::Expense => Decimal::ONE,
+        }
+    }
+}
+
 /// The calendar granularity a report is grouped by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumIter, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -191,21 +205,21 @@ pub struct HoldingsReport {
 
 /// The chart-of-accounts metadata every report row is decorated with.
 #[derive(Debug, Clone)]
-struct AccountMeta {
-    path: String,
+pub(crate) struct AccountMeta {
+    pub(crate) path: String,
     label: String,
-    account_type: AccountType,
+    pub(crate) account_type: AccountType,
     closed: bool,
 }
 
 /// One posting leg, with its transaction date denormalised in for date
 /// filtering without a re-join.
 #[derive(Debug, Clone)]
-struct PostingEntry {
-    account_id: i64,
-    date: NaiveDate,
-    currency: Currency,
-    amount: Decimal,
+pub(crate) struct PostingEntry {
+    pub(crate) account_id: i64,
+    pub(crate) date: NaiveDate,
+    pub(crate) currency: Currency,
+    pub(crate) amount: Decimal,
 }
 
 /// The whole ledger, read once and reported over many times in memory. A
@@ -213,8 +227,8 @@ struct PostingEntry {
 /// query per report date.
 #[derive(Debug, Clone, Default)]
 pub struct LedgerData {
-    accounts: BTreeMap<i64, AccountMeta>,
-    postings: Vec<PostingEntry>,
+    pub(crate) accounts: BTreeMap<i64, AccountMeta>,
+    pub(crate) postings: Vec<PostingEntry>,
 }
 
 // Column-mirror rows for `query_as`; money and dates stay as strings until the
@@ -695,12 +709,16 @@ fn ticker_rate(
 /// True when a balance adds to net worth: an asset or liability not carried
 /// at cost. Equity is out, so the `Equity:Conversions` plug never counts.
 pub fn in_net_worth(b: &AccountBalance, at_cost: &AtCost) -> bool {
-    matches!(b.account_type, AccountType::Asset | AccountType::Liability)
-        && !at_cost.covers(&b.path)
+    counts(b.account_type, &b.path, at_cost)
+}
+
+/// [`in_net_worth`] for an account not yet summed into a balance.
+pub(crate) fn counts(account_type: AccountType, path: &str, at_cost: &AtCost) -> bool {
+    matches!(account_type, AccountType::Asset | AccountType::Liability) && !at_cost.covers(path)
 }
 
 /// The first day of the period a date falls in.
-fn period_start_of(date: NaiveDate, grain: Grain) -> NaiveDate {
+pub(crate) fn period_start_of(date: NaiveDate, grain: Grain) -> NaiveDate {
     match grain {
         Grain::Day => date,
         Grain::Week => date - Duration::days(date.weekday().num_days_from_monday() as i64),
@@ -728,7 +746,7 @@ fn period_end_of(start: NaiveDate, grain: Grain) -> NaiveDate {
 /// Every `(start, end)` period that overlaps `[range_start, range_end]`, in
 /// order. The first period may begin before `range_start` and the last may end
 /// after `range_end`; callers clamp the reporting date where that matters.
-fn generate_periods(
+pub(crate) fn generate_periods(
     range_start: NaiveDate,
     range_end: NaiveDate,
     grain: Grain,

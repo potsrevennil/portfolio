@@ -37,24 +37,30 @@ impl Money {
 impl fmt::Display for Money {
     /// Grouped thousands, as Fava prints them.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let text = self.amount.abs().to_string();
-        let (int, frac) = match text.split_once('.') {
-            Some((int, frac)) => (int, Some(frac)),
-            None => (text.as_str(), None),
-        };
         if self.is_negative() {
             f.write_str("-")?;
         }
+        write!(f, "{} {}", Grouped(&self.amount.abs().to_string()), self.currency)
+    }
+}
+
+/// An unsigned decimal's text with its whole part grouped in thousands:
+/// 1234567.89 reads 1,234,567.89.
+pub struct Grouped<'a>(pub &'a str);
+
+impl fmt::Display for Grouped<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (int, frac) = self.0.split_once('.').map_or((self.0, None), |(i, f)| (i, Some(f)));
         for (i, digit) in int.chars().enumerate() {
             if i > 0 && (int.len() - i) % 3 == 0 {
                 f.write_str(",")?;
             }
             write!(f, "{digit}")?;
         }
-        if let Some(frac) = frac {
-            write!(f, ".{frac}")?;
+        match frac {
+            Some(frac) => write!(f, ".{frac}"),
+            None => Ok(()),
         }
-        write!(f, " {}", self.currency)
     }
 }
 
@@ -490,6 +496,145 @@ pub struct ManualInput {
     pub counter: String,
     #[serde(default)]
     pub note: String,
+}
+
+/// 總覽 as a URL carries it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChartQuery {
+    /// What is broken down by category: a month by its first day, a year,
+    /// or [`ChartQuery::WHOLE`]; none for the newest month with any flow.
+    pub period: Option<String>,
+}
+
+impl ChartQuery {
+    /// The whole ledger broken down at once.
+    pub const WHOLE: &'static str = "all";
+
+    pub fn period(period: &str) -> Self { ChartQuery { period: Some(period.to_string()) } }
+}
+
+/// A blank field asks for nothing.
+impl From<&ParamsMap> for ChartQuery {
+    fn from(params: &ParamsMap) -> Self {
+        ChartQuery {
+            period: params.get("period").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+        }
+    }
+}
+
+/// The query string, `?` included; empty when nothing is asked.
+impl fmt::Display for ChartQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.period {
+            Some(period) => {
+                let mut query = form_urlencoded::Serializer::new(String::new());
+                write!(f, "?{}", query.append_pair("period", period).finish())
+            }
+            None => Ok(()),
+        }
+    }
+}
+
+/// One line, or one column per period: a figure for each.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Series {
+    pub name: String,
+    pub figures: Vec<Converted>,
+}
+
+/// Figures over time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Trend {
+    /// Each period's name, in date order.
+    pub periods: Vec<String>,
+    pub series: Vec<Series>,
+    /// Read out beside the drawn series, not drawn.
+    pub noted: Vec<Series>,
+    /// What the readout shows while no period is picked; the newest period
+    /// when none.
+    pub summary: Option<Summary>,
+}
+
+/// The whole ledger in one readout: a balance's newest figure, a flow's sum.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Summary {
+    pub name: String,
+    /// One per series, then one per noted series.
+    pub figures: Vec<Converted>,
+}
+
+/// One account's part of a flow, its sub-accounts' included.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Slice {
+    pub path: String,
+    pub label: String,
+    pub total: Converted,
+    /// Its part of the whole, 0 to 1; none when either is not a whole sum.
+    pub part: Option<Decimal>,
+}
+
+/// A flow's whole and its parts, largest first.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pie {
+    pub label: String,
+    pub total: Converted,
+    pub slices: Vec<Slice>,
+}
+
+/// One period's income and expense by category.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Breakdown {
+    /// What it covers: 2026 年 9 月, 2026 年, 全部期間.
+    pub name: String,
+    pub income: Pie,
+    pub expense: Pie,
+    /// The years to pick, 全部 first, and the periods of the year shown.
+    pub years: Vec<PeriodChoice>,
+    pub periods: Vec<PeriodChoice>,
+    /// Which of 收支's periods it covers, to mark them there.
+    pub marked: Vec<usize>,
+}
+
+/// The figures 總覽 leads with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Headline {
+    pub as_of: String,
+    pub tiles: Vec<Tile>,
+}
+
+/// One headline figure, and a second one beside it, named.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Tile {
+    pub label: String,
+    pub figure: Converted,
+    pub beside: Option<(String, Converted)>,
+}
+
+/// Something the breakdown can be set to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PeriodChoice {
+    /// A [`ChartQuery::period`] value.
+    pub key: String,
+    pub label: String,
+    pub selected: bool,
+}
+
+/// 總覽: where things stand, net worth over time, day-to-day income against
+/// expense per month with the net result of investments apart, and one
+/// period's flows by category.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Charts {
+    pub headline: Headline,
+    pub worth: Trend,
+    pub flows: Trend,
+    /// Each of `flows`' months by its first day, to pick it by.
+    pub starts: Vec<String>,
+    /// None when nothing `[investments]` lists has moved.
+    pub investments: Option<Trend>,
+    pub breakdown: Breakdown,
+    /// What holdings carried at cost stand at today, outside net worth;
+    /// none when there are none.
+    pub at_cost: Option<Converted>,
 }
 
 #[cfg(test)]

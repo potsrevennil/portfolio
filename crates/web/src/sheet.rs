@@ -8,8 +8,10 @@ use std::collections::BTreeMap;
 use anyhow::Result;
 use chrono::NaiveDate;
 use db::{
+    chart::{root_label, tree_label, Root, ASSETS, LIABILITIES},
     market::Market,
     query::{self, AccountBalance, AccountType, LedgerData},
+    series::Valued,
     SqlitePool,
 };
 use ledger::valuation::AtCost;
@@ -18,8 +20,8 @@ use rust_decimal::Decimal;
 
 use crate::model::{BalanceSheet, Converted, Money, Node, Section, Unpriced};
 
-/// Section headings when the chart has no label for the root.
-const SECTIONS: [(&str, &str); 2] = [("Assets", "資產"), ("Liabilities", "負債")];
+/// The balance sheet's sections, in order.
+const SECTIONS: [Root; 2] = [ASSETS, LIABILITIES];
 
 /// The at-cost section: named as Taiwanese statements name the line item.
 const AT_COST: (&str, &str) = ("at-cost", "以成本衡量之投資");
@@ -58,29 +60,17 @@ pub fn build(
     at_cost: &AtCost,
     rate: impl Fn(Currency) -> Option<Decimal>,
 ) -> BalanceSheet {
-    let label = |path: &str| -> String {
-        labels
-            .get(path)
-            .map(|l| l.to_string())
-            .unwrap_or_else(|| path.rsplit(':').next().unwrap_or(path).to_string())
-    };
+    let label = |path: &str| tree_label(labels, path);
     let foreign =
         |sums: &BTreeMap<Currency, Decimal>| sums.iter().any(|(c, v)| *c != base && !v.is_zero());
     let convert = |sums: &BTreeMap<Currency, Decimal>| -> Converted {
-        let mut total = Decimal::ZERO;
-        let mut unpriced = Vec::new();
-        for (&currency, &amount) in sums.iter().filter(|(_, v)| !v.is_zero()) {
-            match rate(currency) {
-                Some(r) => total += amount * r,
-                None => unpriced.push(Money::new(amount, currency, base)),
-            }
-        }
-        Converted { money: Money::new(total, base, base), unpriced: Unpriced(unpriced) }
+        let sum: Valued = sums.iter().map(|(&c, &a)| Valued::of(a, c, rate(c))).sum();
+        converted(&sum, base)
     };
 
     // Equity, income and expense never reach the tree.
     let mut roots: BTreeMap<&str, Tree> =
-        SECTIONS.iter().map(|(p, _)| (*p, Tree::default())).collect();
+        SECTIONS.iter().map(|r| (r.path, Tree::default())).collect();
     // An account at zero is kept, for the page to show on request, but for a
     // holding carried at cost.
     let shown = balances.iter().filter(|b| {
@@ -139,15 +129,14 @@ pub fn build(
     let mut net = BTreeMap::<Currency, Decimal>::new();
     let sections = SECTIONS
         .iter()
-        .map(|(root, fallback)| {
-            let tree = roots.remove(root).unwrap_or_default();
+        .map(|&root| {
+            let tree = roots.remove(root.path).unwrap_or_default();
             for (c, v) in &tree.sums {
                 *net.entry(*c).or_default() += v;
             }
-            let own = label(root);
             Section {
-                path: root.to_string(),
-                label: if own == *root { fallback.to_string() } else { own },
+                path: root.path.to_string(),
+                label: root_label(labels, root),
                 total: convert(&tree.sums),
                 nodes: nodes(tree.children, &label, &convert, &foreign, base),
             }
@@ -212,7 +201,7 @@ fn at_cost_section(
 }
 
 /// The first `depth` segments of `path`.
-fn node_path(path: &str, depth: usize) -> &str {
+pub(crate) fn node_path(path: &str, depth: usize) -> &str {
     match path.match_indices(':').nth(depth - 1) {
         Some((i, _)) => &path[..i],
         None => path,
@@ -221,4 +210,12 @@ fn node_path(path: &str, depth: usize) -> &str {
 
 fn amounts(sums: &BTreeMap<Currency, Decimal>, base: Currency) -> Vec<Money> {
     sums.iter().filter(|(_, v)| !v.is_zero()).map(|(c, v)| Money::new(*v, *c, base)).collect()
+}
+
+/// A sum in `base` as a page shows it: rounded, with what had no rate named.
+pub fn converted(v: &Valued, base: Currency) -> Converted {
+    Converted {
+        money: Money::new(v.value, base, base),
+        unpriced: Unpriced(v.unpriced.iter().map(|(&c, &a)| Money::new(a, c, base)).collect()),
+    }
 }
