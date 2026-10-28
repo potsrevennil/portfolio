@@ -85,10 +85,39 @@ pub struct Chart {
     branches: Vec<String>,
     /// Every text the box may hold, and what it names.
     names: BTreeMap<String, Named>,
+    unlisted: Unlisted,
+}
+
+/// Accounts no record is filed under, so no picker offers them: the bank's
+/// clearing account, which only holds a transfer between its two legs. A
+/// leg on one still shows, and still links.
+#[derive(Debug, Clone, Default)]
+pub struct Unlisted(BTreeSet<String>);
+
+impl From<&ledger::accounts::Chart> for Unlisted {
+    fn from(chart: &ledger::accounts::Chart) -> Self {
+        Unlisted(
+            [&chart.institution.clearing]
+                .into_iter()
+                .map(|a| a.to_string())
+                .filter(|a| !a.is_empty())
+                .collect(),
+        )
+    }
+}
+
+impl<'a> FromIterator<&'a str> for Unlisted {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(paths: I) -> Self {
+        Unlisted(paths.into_iter().filter(|p| !p.is_empty()).map(str::to_string).collect())
+    }
+}
+
+impl Unlisted {
+    pub fn contains(&self, path: &str) -> bool { self.0.contains(path) }
 }
 
 impl Chart {
-    pub async fn load(pool: &SqlitePool) -> Result<Self> {
+    pub async fn load(pool: &SqlitePool, unlisted: &Unlisted) -> Result<Self> {
         let accounts = journal::accounts(pool).await?;
         let tree: BTreeMap<&str, &str> =
             accounts.iter().map(|a| (a.path.as_str(), a.label.as_str())).collect();
@@ -97,6 +126,7 @@ impl Chart {
 
         let mut offered: Vec<_> = accounts
             .iter()
+            .filter(|a| !unlisted.contains(&a.path))
             .filter_map(|a| match AccountKind::try_from(a.account_type) {
                 Ok(kind) => Some((a, trail(&a.path, Some(kind), &tree))),
                 Err(_) => None,
@@ -137,7 +167,16 @@ impl Chart {
         let branches = offered.iter().map(|(a, _)| a.path.clone()).collect();
         let tree = tree.iter().map(|(p, l)| (p.to_string(), l.to_string())).collect();
         let choices = offered.into_iter().map(|(_, choice)| choice).collect();
-        Ok(Chart { accounts, labels, tree, full, choices, names, branches })
+        Ok(Chart {
+            accounts,
+            labels,
+            tree,
+            full,
+            choices,
+            names,
+            branches,
+            unlisted: unlisted.clone(),
+        })
     }
 
     pub fn label(&self, path: &str) -> String {
@@ -246,14 +285,19 @@ impl Chart {
     }
 
     /// The accounts a person picks from, in balance-sheet order. Equity,
-    /// which holds the loader's system accounts, is left out but for the
-    /// accounts in `keep`, already in use where the picker is: an opening
-    /// balance or a conversion keeps its equity leg when edited.
+    /// which holds the loader's system accounts, and the unlisted accounts
+    /// are left out but for the accounts in `keep`, already in use where the
+    /// picker is: an opening balance or a conversion keeps its equity leg
+    /// when edited.
     pub fn accounts_for(&self, keep: &[&str]) -> Vec<ChartAccount> {
         let mut shown: Vec<_> = self
             .accounts
             .iter()
-            .filter(|a| a.account_type != AccountType::Equity || keep.contains(&a.path.as_str()))
+            .filter(|a| {
+                let system =
+                    a.account_type == AccountType::Equity || self.unlisted.contains(&a.path);
+                !system || keep.contains(&a.path.as_str())
+            })
             .collect();
         shown.sort_by_key(|a| (a.account_type, a.path.as_str()));
         shown.into_iter().map(|a| self.account(a)).collect()
@@ -327,8 +371,13 @@ impl From<DbOrigin> for Origin {
     }
 }
 
-pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Result<Journal> {
-    let chart = Chart::load(pool).await?;
+pub async fn load(
+    pool: &SqlitePool,
+    unlisted: &Unlisted,
+    query: &JournalQuery,
+    base: Currency,
+) -> Result<Journal> {
+    let chart = Chart::load(pool, unlisted).await?;
     let filter = chart.filter(query)?;
 
     let total = journal::count(pool, &filter).await?;

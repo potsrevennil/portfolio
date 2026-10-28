@@ -13,7 +13,10 @@ use ledger::{accounts::Chart, investments::Investments, valuation::AtCost};
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
 
-use crate::app::{shell, App};
+use crate::{
+    app::{shell, App},
+    entries::Unlisted,
+};
 
 /// The database the server reads, unless `LEDGER_DATABASE_URL` names another.
 /// The same default `load-journal` writes to.
@@ -29,6 +32,7 @@ pub struct Config {
     pub at_cost: AtCost,
     pub investments: Investments,
     pub statements: StatementAccounts,
+    pub unlisted: Unlisted,
 }
 
 impl Config {
@@ -38,11 +42,15 @@ impl Config {
     /// the server, or its rules would be dropped silently.
     pub fn load(mapping: &Path) -> Result<Self> {
         match mapping.exists() {
-            true => Ok(Config {
-                at_cost: AtCost::load(mapping)?,
-                investments: Investments::load(mapping)?,
-                statements: StatementAccounts::from(&Chart::load(mapping)?),
-            }),
+            true => {
+                let chart = Chart::load(mapping)?;
+                Ok(Config {
+                    at_cost: AtCost::load(mapping)?,
+                    investments: Investments::load(mapping)?,
+                    statements: StatementAccounts::from(&chart),
+                    unlisted: Unlisted::from(&chart),
+                })
+            }
             false => {
                 println!("{} not found: no reporting rules", mapping.display());
                 Ok(Config::default())
@@ -59,6 +67,7 @@ pub fn router(options: LeptosOptions, pool: SqlitePool, market: Market, config: 
         provide_context(config.at_cost.clone());
         provide_context(config.investments.clone());
         provide_context(config.statements.clone());
+        provide_context(config.unlisted.clone());
     };
     Router::new()
         .leptos_routes_with_context(&options, routes, context, {

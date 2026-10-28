@@ -20,7 +20,8 @@ pub async fn load_queue(query: JournalQuery) -> Result<Queue, ServerFnError> {
     use ledger_types::currency::Currency;
 
     let pool = expect_context::<db::SqlitePool>();
-    crate::queue::load(&pool, &query, Currency::TWD).await.map_err(failed)
+    let unlisted = expect_context::<crate::entries::Unlisted>();
+    crate::queue::load(&pool, &unlisted, &query, Currency::TWD).await.map_err(failed)
 }
 
 #[server]
@@ -48,7 +49,8 @@ pub async fn load_entry(id: i64) -> Result<Editing, ServerFnError> {
     use ledger_types::currency::Currency;
 
     let pool = expect_context::<db::SqlitePool>();
-    crate::queue::editing(&pool, id, Currency::TWD).await.map_err(failed)
+    let unlisted = expect_context::<crate::entries::Unlisted>();
+    crate::queue::editing(&pool, &unlisted, id, Currency::TWD).await.map_err(failed)
 }
 
 /// Rewrites a transaction's legs and note; `confirm` marks it reviewed too,

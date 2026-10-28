@@ -18,7 +18,9 @@ pub struct ManualForm {
 #[server]
 pub async fn load_manual() -> Result<ManualForm, ServerFnError> {
     let pool = expect_context::<db::SqlitePool>();
-    let accounts = crate::queue::manual_accounts(&pool).await.map_err(crate::review::failed)?;
+    let unlisted = expect_context::<crate::entries::Unlisted>();
+    let accounts =
+        crate::queue::manual_accounts(&pool, &unlisted).await.map_err(crate::review::failed)?;
     Ok(ManualForm { today: chrono::Local::now().date_naive().to_string(), accounts })
 }
 
