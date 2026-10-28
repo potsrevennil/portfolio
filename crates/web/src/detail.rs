@@ -18,7 +18,7 @@ use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
 use crate::{
-    entries::Chart,
+    entries::{Chart, Unlisted},
     model::{AccountPage, BalanceCheck, Converted, Money, Series, Summary, Trend, Voucher},
     sheet::converted,
     trends::period_name,
@@ -31,7 +31,8 @@ pub async fn load(
     today: NaiveDate,
     base: Currency,
 ) -> Result<AccountPage> {
-    let chart = Chart::load(pool).await?;
+    // Only names are read here, and every account has one.
+    let chart = Chart::load(pool, &Unlisted::default()).await?;
     let account = chart
         .accounts
         .iter()
