@@ -7,17 +7,15 @@ mod common;
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
-use common::page::{position, visible, Site};
+use common::{
+    build::{self, Legs},
+    page::{position, visible, Site},
+};
 use db::{
     assertions::{AssertionSource, BalanceAssertion},
-    load,
     market::Market,
 };
-use ledger::{
-    journal::{self, Journal, Posting},
-    model::Source,
-    valuation::AtCost,
-};
+use ledger::{journal::Journal, valuation::AtCost};
 use ledger_types::currency::Currency;
 use leptos::prelude::*;
 use prices::YFinanceSource;
@@ -52,9 +50,6 @@ const MAPPING: &str = r#"
 "#;
 
 const AS_OF: &str = "2024-12-31";
-
-/// Legs of one transaction: (account, amount, currency).
-type Legs<'a> = &'a [(&'a str, &'a str, Currency)];
 
 fn journal() -> Journal {
     use Currency::*;
@@ -96,25 +91,7 @@ fn journal() -> Journal {
         // After the as-of date: must not count.
         ("2025-01-05", &[("Assets:Cash", "999", TWD), ("Equity:Opening-Balances", "-999", TWD)]),
     ];
-    let postings = txns
-        .iter()
-        .enumerate()
-        .flat_map(|(group, (date, legs))| {
-            legs.iter().map(move |(account, amount, currency)| Posting {
-                group: group as u64,
-                source: Source::Manual,
-                date: date.parse().unwrap(),
-                payee: None,
-                narration: "test".into(),
-                external_ref: None,
-                account: account.to_string(),
-                amount: amount.parse::<Decimal>().unwrap(),
-                currency: *currency,
-                tags: None,
-            })
-        })
-        .collect();
-    Journal { postings }
+    build::journal(txns)
 }
 
 /// What the loader's gate checks this fixture against.
@@ -134,26 +111,9 @@ fn assertions() -> Vec<BalanceAssertion> {
 }
 
 async fn ledger() -> (TempDir, SqlitePool, Market) {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    std::fs::write(root.join("mapping.toml"), MAPPING).unwrap();
-    let journal_path = root.join("journal.csv");
-    journal::write(&journal_path, &journal()).unwrap();
-    journal::write_assertions(&journal::assertions_path(&journal_path), &assertions()).unwrap();
-    let url = format!("sqlite:{}", root.join("ledger-app.db").display());
-    load::run(&load::Args {
-        journal: root.join("journal.csv"),
-        database_url: url.clone(),
-        market_url: format!("sqlite:{}", root.join("market.db").display()),
-        mapping: root.join("mapping.toml"),
-    })
-    .await
-    .unwrap();
-    let pool = db::init_db(&url).await.unwrap();
+    let (dir, pool, market) = build::load(MAPPING, &journal(), &assertions()).await;
     // USD has a rate; JPY has none.
-    let usd = YFinanceSource::ticker(Currency::USD, Currency::TWD);
-    let market = common::market::beside(root).await;
-    common::market::quote(&market, &usd, "2024-06-01", 30.0).await;
+    build::usd_rate(&market, "2024-06-01", 30.0).await;
     (dir, pool, market)
 }
 
@@ -322,14 +282,7 @@ async fn with_no_rates_no_total_shows_a_figure() {
     assert_eq!(savings.trim(), "活存 7,000 TWD");
 }
 
-async fn site() -> Site {
-    Site::new(|| async {
-        let (dir, pool, market) = ledger().await;
-        let options = LeptosOptions::builder().output_name("web").build();
-        (server::router(options, pool, market, AtCost::default(), Default::default()), dir)
-    })
-    .await
-}
+async fn site() -> Site { Site::serving(ledger).await }
 
 #[tokio::test]
 async fn the_server_renders_the_balance_sheet_route() {
@@ -339,19 +292,6 @@ async fn the_server_renders_the_balance_sheet_route() {
     let text = visible(&html);
     position(&text, "甲公司");
     position(&text, "淨資產");
-}
-
-#[tokio::test]
-async fn the_landing_page_summarises() {
-    let html = site().await.page("/").await;
-    assert!(html.contains("總覽 · 帳簿"), "{html}");
-    let text = visible(&html);
-    position(&text, "淨資產");
-    position(&text, "資產");
-    position(&text, "負債");
-    // The tree itself lives on its own page, reached from the nav.
-    assert!(html.contains(r#"href="/balance-sheet""#), "{html}");
-    assert!(!text.contains("全部展開"), "{text}");
 }
 
 #[tokio::test]
@@ -367,12 +307,12 @@ async fn shared_labels_stand_alone_with_their_parents() {
 #[test]
 fn a_missing_mapping_lists_no_at_cost_holdings_but_a_broken_one_stops_the_server() {
     let dir = TempDir::new().unwrap();
-    let missing = server::at_cost(&dir.path().join("mapping.toml")).unwrap();
-    assert!(!missing.covers("Assets:Unlisted"));
+    let missing = server::Config::load(&dir.path().join("mapping.toml")).unwrap();
+    assert!(!missing.at_cost.covers("Assets:Unlisted"));
 
     let broken = dir.path().join("broken.toml");
     std::fs::write(&broken, "[at_cost]\naccounts = \"Assets:Unlisted\"\n").unwrap();
-    assert!(server::at_cost(&broken).is_err());
+    assert!(server::Config::load(&broken).is_err());
 }
 
 /// A TWD asset balance as of [`AS_OF`].
@@ -459,27 +399,4 @@ fn an_account_at_zero_is_kept_and_marked() {
     assert!(!bank.zero);
     assert!(sheet.at_cost.is_none());
     assert_eq!(sheet.net_worth.money.amount, Decimal::from(100));
-}
-
-#[tokio::test]
-async fn the_summary_shows_holdings_at_cost_apart_from_net_worth() {
-    let (_dir, pool, market) = ledger().await;
-    let as_of = NaiveDate::parse_from_str(AS_OF, "%Y-%m-%d").unwrap();
-    let at_cost = AtCost::parse("[at_cost]\naccounts = [\"Assets:Unlisted:Gamma\"]\n").unwrap();
-    let sheet = web::sheet::load(&pool, &market, as_of, Currency::TWD, &at_cost).await.unwrap();
-    let html = Owner::new().with(|| view! { <web::summary::SummaryView sheet /> }.to_html());
-    let text = visible(&html);
-    // JPY has no rate, so no total that holds it shows a figure; the 資產
-    // tile follows net worth directly.
-    assert!(
-        text.contains(
-            "淨資產 未完整 （未換算：5,000.00 JPY） 資產 未完整 （未換算：5,000.00 JPY） 負債 \
-             -2,500 TWD"
-        ),
-        "{text}"
-    );
-    // After the tiles net worth sums, in a row of its own.
-    assert!(position(&text, "負債") < position(&text, "以成本衡量之投資"), "{text}");
-    assert!(text.trim_end().ends_with("以成本衡量之投資 40,000 TWD"), "{text}");
-    assert!(html.contains(r#"class="tiles aside""#), "{html}");
 }

@@ -27,9 +27,8 @@ use std::{
 };
 
 use db::pairing::{self, Ambiguity};
-use fantoccini::{elements::Element, Client, ClientBuilder, Locator};
+use fantoccini::{elements::Element, key::Key, Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
-use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
 use leptos::prelude::LeptosOptions;
 use queue::{ledger, COFFEE, LUNCH, TAXI};
@@ -118,8 +117,7 @@ impl Journey {
             .site_pkg_dir("pkg")
             .build();
         let market = market::beside(dir.path()).await;
-        let router =
-            server::router(options, pool.clone(), market, AtCost::default(), Default::default());
+        let router = server::router(options, pool.clone(), market, Default::default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router.into_make_service()).await });
@@ -254,6 +252,7 @@ async fn journeys() {
     pick_a_pairing().await;
     enter_cash_by_hand().await;
     show_the_accounts_at_zero().await;
+    explore_the_charts().await;
 }
 
 async fn confirm_from_the_queue() {
@@ -409,4 +408,76 @@ async fn show_the_accounts_at_zero() {
     j.find(".tools input[type=checkbox]").await.click().await.unwrap();
     assert!(j.find(wallet).await.is_displayed().await.unwrap());
     j.close().await;
+}
+
+async fn explore_the_charts() {
+    let journey = Journey::start().await;
+    let j = &journey;
+    j.open("/").await;
+    let period = || async { j.find(".chart.line .readout .period").await.text().await.unwrap() };
+    // What 收支分類 covers, once it reads `want`.
+    let covers = |want: &'static str| async move {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let now = j.find("#breakdown .subtitle").await.text().await.unwrap();
+            if now == want {
+                break;
+            }
+            assert!(Instant::now() < deadline, "covers {now:?}, not {want:?}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    // Until the pointer comes, the readout gives the newest figures.
+    assert_eq!(period().await, "至今");
+    // Pressing the plot reads the month under it; the keys step through.
+    j.find(".chart.line .area").await.click().await.unwrap();
+    j.find(".chart.line .crosshair").await;
+    let area = j.find(".chart.line .area").await;
+    area.send_keys(&char::from(Key::Home).to_string()).await.unwrap();
+    assert_eq!(period().await, "2024-01");
+    area.send_keys(&char::from(Key::Right).to_string()).await.unwrap();
+    assert_eq!(period().await, "2024-02");
+
+    // Pressing a month of 收支 breaks that month down below.
+    j.find(".chart.column a.band").await.click().await.unwrap();
+    covers("2024 年 1 月").await;
+    assert!(j.browser.current_url().await.unwrap().as_str().contains("period=2024-01-01"));
+    // A year's chip covers the year; back returns to the month, unbroken.
+    j.browser.find(Locator::LinkText("2024")).await.unwrap().click().await.unwrap();
+    covers("2024 年").await;
+    j.browser.back().await.unwrap();
+    covers("2024 年 1 月").await;
+    j.browser.back().await.unwrap();
+    covers("2024 年 3 月").await;
+    assert!(!j.text().await.contains("讀取失敗"));
+    // The keys pick a month of 收支 too: Home, then Enter.
+    j.browser
+        .execute("document.querySelector('.chart.column .area').focus()", vec![])
+        .await
+        .unwrap();
+    let column = j.find(".chart.column .area").await;
+    column.send_keys(&char::from(Key::Home).to_string()).await.unwrap();
+    column.send_keys(&char::from(Key::Enter).to_string()).await.unwrap();
+    covers("2024 年 1 月").await;
+    j.browser.back().await.unwrap();
+    covers("2024 年 3 月").await;
+    // 全部 and back, to a page that asked for nothing at all.
+    j.browser.find(Locator::LinkText("全部")).await.unwrap().click().await.unwrap();
+    covers("全部期間").await;
+    j.browser.back().await.unwrap();
+    covers("2024 年 3 月").await;
+    assert!(!j.text().await.contains("讀取失敗"));
+
+    // A phone's width scrolls the page down, never sideways.
+    j.browser.set_window_size(375, 812).await.unwrap();
+    let wide = j
+        .browser
+        .execute(
+            "return document.documentElement.scrollWidth > document.documentElement.clientWidth",
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert_eq!(wide, json!(false));
+    journey.close().await;
 }
