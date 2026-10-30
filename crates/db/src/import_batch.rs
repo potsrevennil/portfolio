@@ -34,7 +34,10 @@ pub async fn create(
 /// One posting already on an account.
 #[derive(Clone, Debug)]
 pub struct LedgerPosting {
+    pub id: i64,
     pub date: NaiveDate,
+    /// The day a statement counted it, where that is not `date`.
+    pub posted: Option<NaiveDate>,
     pub amount: Decimal,
     /// Its transaction's ref, then any further ones it stands for.
     pub refs: Vec<String>,
@@ -56,7 +59,9 @@ fn split(concatenated: Option<&str>) -> Vec<String> {
 
 #[derive(sqlx::FromRow)]
 struct Row {
+    id: i64,
     date: String,
+    posted_date: Option<String>,
     amount: String,
     external_ref: Option<String>,
     aliases: Option<String>,
@@ -71,7 +76,9 @@ impl TryFrom<Row> for LedgerPosting {
 
     fn try_from(r: Row) -> Result<Self> {
         Ok(LedgerPosting {
+            id: r.id,
             date: r.date.parse().with_context(|| format!("transaction date {:?}", r.date))?,
+            posted: r.posted_date.as_deref().map(str::parse).transpose().context("posted date")?,
             amount: r.amount.parse().with_context(|| format!("posting amount {:?}", r.amount))?,
             refs: r.external_ref.into_iter().chain(split(r.aliases.as_deref())).collect(),
             other_accounts: split(r.others.as_deref()),
@@ -82,15 +89,16 @@ impl TryFrom<Row> for LedgerPosting {
     }
 }
 
-/// Every posting on exactly `path` in `currency`, oldest first — the subtree
-/// is not included, since only this account's own lines chain to a statement.
+/// Every posting on exactly `path` in `currency`, in the order a statement
+/// counts them — the subtree is not included, since only this account's own
+/// lines chain to a statement.
 pub async fn postings(
     db: &mut SqliteConnection,
     path: &str,
     currency: Currency,
 ) -> Result<Vec<LedgerPosting>> {
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT t.date, p.amount, t.external_ref, t.id AS transaction_id,
+        "SELECT p.id, t.date, p.posted_date, p.amount, t.external_ref, t.id AS transaction_id,
                 (SELECT group_concat(r.external_ref, char(31)) FROM transaction_refs r
                  WHERE r.transaction_id = t.id) AS aliases,
                 (SELECT group_concat(b.path, char(31)) FROM postings q
@@ -103,7 +111,7 @@ pub async fn postings(
          JOIN accounts a ON a.id = p.account_id
          JOIN transactions t ON t.id = p.transaction_id
          WHERE a.path = ? AND p.currency = ?
-         ORDER BY t.date, t.id",
+         ORDER BY coalesce(p.posted_date, t.date), t.id",
     )
     .bind(OPENING_EQUITY)
     .bind(UNVERIFIED_TAG)

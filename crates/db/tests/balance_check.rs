@@ -236,3 +236,27 @@ async fn an_assertion_older_than_the_newest_posting_does_not_vouch_for_it() {
     assert_eq!((stale.vouched_through, stale.posted_through), (Some(d(2024, 4, 1)), d(2024, 5, 1)));
     assert!(report.to_string().contains("vouched through 2024-04-01"), "{report}");
 }
+
+/// A statement closes on what has posted: a purchase on its last day that
+/// posts after it is not in its closing, though the books date it earlier.
+#[tokio::test]
+async fn a_figure_counts_a_leg_on_the_day_it_posted() {
+    let (_dir, pool) = ledger().await;
+    let conn = &mut *pool.acquire().await.unwrap();
+    let late = common::post(conn, "2024-03-31", "Assets:Bank", "-50", "TWD", None).await;
+    common::posted_on(conn, late, "Assets:Bank", "2024-04-02").await;
+    let closing = |date: NaiveDate, closing| BalanceAssertion {
+        period_start: None,
+        opening: None,
+        period_end: date,
+        ..statement(dec!(0), closing)
+    };
+
+    assertions::insert(conn, &closing(d(2024, 3, 31), dec!(1200))).await.unwrap();
+    assertions::insert(conn, &closing(d(2024, 4, 2), dec!(850))).await.unwrap();
+    let report = check::check(conn).await.unwrap();
+
+    assert!(report.ok(), "{report}");
+    let data = query::LedgerData::load_from(conn).await.unwrap();
+    assert_eq!(data.subtree_balance("Assets:Bank", Currency::TWD, d(2024, 3, 31)), dec!(1150));
+}

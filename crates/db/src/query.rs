@@ -218,8 +218,15 @@ pub(crate) struct AccountMeta {
 pub(crate) struct PostingEntry {
     pub(crate) account_id: i64,
     pub(crate) date: NaiveDate,
+    /// The day a statement counts it, where that is not `date`.
+    pub(crate) posted: Option<NaiveDate>,
     pub(crate) currency: Currency,
     pub(crate) amount: Decimal,
+}
+
+impl PostingEntry {
+    /// When a statement's balance moves by it.
+    pub(crate) fn statement_date(&self) -> NaiveDate { self.posted.unwrap_or(self.date) }
 }
 
 /// The whole ledger, read once and reported over many times in memory. A
@@ -246,6 +253,7 @@ struct AccountRow {
 struct PostingRow {
     account_id: i64,
     date: String,
+    posted_date: Option<String>,
     currency: String,
     amount: String,
 }
@@ -281,6 +289,7 @@ impl TryFrom<PostingRow> for PostingEntry {
         Ok(Self {
             account_id: r.account_id,
             date: field("date", &r.date)?,
+            posted: r.posted_date.as_deref().map(|d| field("posted_date", d)).transpose()?,
             currency: field("currency", &r.currency)?,
             amount: field("amount", &r.amount)?,
         })
@@ -308,8 +317,9 @@ impl LedgerData {
             .collect::<Result<BTreeMap<_, _>>>()?;
 
         let posting_rows: Vec<PostingRow> = sqlx::query_as(
-            "SELECT p.account_id AS account_id, t.date AS date, p.currency AS currency, p.amount \
-             AS amount FROM postings p JOIN transactions t ON t.id = p.transaction_id",
+            "SELECT p.account_id AS account_id, t.date AS date, p.posted_date AS posted_date, \
+             p.currency AS currency, p.amount AS amount FROM postings p JOIN transactions t ON \
+             t.id = p.transaction_id",
         )
         .fetch_all(&mut *conn)
         .await
@@ -331,12 +341,14 @@ impl LedgerData {
         self.accounts.values().map(|a| (a.path.as_str(), a.label.as_str())).collect()
     }
 
-    /// The newest posting on each account and currency.
+    /// The newest posting on each account and currency, by when a statement
+    /// counts it.
     pub fn last_posting_dates(&self) -> BTreeMap<(i64, Currency), NaiveDate> {
         let mut latest: BTreeMap<(i64, Currency), NaiveDate> = BTreeMap::new();
         for p in &self.postings {
-            let entry = latest.entry((p.account_id, p.currency)).or_insert(p.date);
-            *entry = (*entry).max(p.date);
+            let day = p.statement_date();
+            let entry = latest.entry((p.account_id, p.currency)).or_insert(day);
+            *entry = (*entry).max(day);
         }
         latest
     }

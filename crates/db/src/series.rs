@@ -154,6 +154,20 @@ impl LedgerData {
             .sum()
     }
 
+    /// [`Self::subtree_balance`] as a statement counts it: a leg moves the
+    /// balance when it posted, not on its transaction's date.
+    pub fn statement_balance(&self, root: &str, currency: Currency, as_of: NaiveDate) -> Decimal {
+        self.postings
+            .iter()
+            .filter(|p| {
+                p.currency == currency
+                    && p.statement_date() <= as_of
+                    && in_subtree(&self.accounts[&p.account_id].path, root)
+            })
+            .map(|p| p.amount)
+            .sum()
+    }
+
     /// The same ledger held to `root`'s subtree: every report over it is
     /// that subtree's, and costs a pass over its postings only.
     pub fn subtree(&self, root: &str) -> LedgerData {
