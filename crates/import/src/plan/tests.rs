@@ -32,6 +32,7 @@ fn statement(lines: &[(u32, Decimal, Decimal)]) -> BankStatement {
         lines: lines
             .iter()
             .map(|&(d, delta, balance)| StatementLine {
+                purchased: None,
                 book_date: day(d),
                 description: String::new(),
                 withdrawal: -delta.min(Decimal::ZERO),

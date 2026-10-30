@@ -1,11 +1,16 @@
 //! What every bank import does once its statements are parsed: plan against
 //! the ledger, insert, record the statements' figures, and gate.
 
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    path::PathBuf,
+};
 
 use anyhow::{bail, Context, Result};
 use db::{
-    assertions, check,
+    assertions::{self, AssertionSource},
+    check,
     import::{ensure_account, insert_deduped, InsertOutcome, Transaction},
     import_batch, pairing, SqliteConnection, SqlitePool,
 };
@@ -14,7 +19,10 @@ use ledger::{
     labels::Labels,
     model::{Source, OPENING_EQUITY},
     names::statement_account,
-    statements::bank::{Bank, Merged},
+    statements::{
+        bank::{Bank, Merged},
+        card,
+    },
 };
 
 use super::plan::{self, Candidate, Plan};
@@ -138,8 +146,14 @@ pub async fn import(
         statements.push(plan::Statement { account, statement, files, existing, chosen });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
-    let Plan { transactions, mut counts, openings, verified, deferred } =
+    let Plan { transactions, mut counts, openings, verified, deferred, stamps, leg_splits } =
         plan::plan(chart, &statements, &known, candidates)?;
+    for s in &stamps {
+        import_batch::stamp(db, s).await?;
+    }
+    for s in &leg_splits {
+        import_batch::split_leg(db, s).await?;
+    }
     for v in &verified {
         import_batch::verify(db, v).await?;
     }
@@ -207,6 +221,16 @@ pub async fn import(
     // a later download states a wider period for that day, which is the same
     // claim, and the balance chain above has already compared every day.
     let recorded = assertions::load(db).await?;
+    // Its own statements now vouch for what the app's closing summed, and in
+    // posting dates, which that closing never was.
+    if bank.vouches_for_records() {
+        let vouched: BTreeSet<&str> = statements.iter().map(|s| s.account.as_str()).collect();
+        for a in &recorded {
+            if a.source == AssertionSource::Tiantian && vouched.contains(a.account.as_str()) {
+                assertions::supersede(db, a).await?;
+            }
+        }
+    }
     let mut figures = Vec::new();
     for (s, opening) in statements.iter().zip(openings) {
         figures.extend(s.statement.assertions(&s.account, opening));
@@ -215,7 +239,12 @@ pub async fn import(
         let account = statement_account(chart, &m.statement.account_no)?;
         figures.extend(m.statement.assertions(account, m.statement.opening_date()));
     }
-    for assertion in figures {
+    for mut assertion in figures {
+        if bank.is_card() {
+            if let Some(start) = card::started_after(&assertion, &recorded) {
+                assertion.period_start = Some(start);
+            }
+        }
         let same_day = recorded.iter().find(|r| {
             (&r.account, r.currency, r.source, r.period_end)
                 == (&assertion.account, assertion.currency, assertion.source, assertion.period_end)

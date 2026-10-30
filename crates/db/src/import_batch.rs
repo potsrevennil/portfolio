@@ -14,7 +14,10 @@ use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
-use crate::import::{ensure_account, Posting};
+use crate::{
+    events::{self, Change, EventKind},
+    import::{ensure_account, Posting},
+};
 
 pub async fn create(
     db: &mut SqliteConnection,
@@ -188,6 +191,106 @@ pub async fn verify(db: &mut SqliteConnection, v: &Verification) -> Result<()> {
         format!("clearing the unverified tag of transaction {}", v.transaction_id)
     })?;
     Ok(())
+}
+
+/// What a statement says of a leg already on the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp {
+    pub posting_id: i64,
+    pub transaction_id: i64,
+    /// The day the statement counts it.
+    pub posted: NaiveDate,
+    pub amount: Decimal,
+    pub vouched: Vouched,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Vouched {
+    /// A line shows it. The line's ref goes on the first record it stands for.
+    ByLine(Option<String>),
+    /// No line yet: it is still to post, after the statement, and waits
+    /// tagged [`UNVERIFIED_TAG`] for the next one.
+    NotYet,
+}
+
+/// Records what a statement said of one leg. Only that leg: the transaction
+/// stays on its own date, and any other leg stays for its own statement.
+pub async fn stamp(db: &mut SqliteConnection, s: &Stamp) -> Result<()> {
+    let tags = match s.vouched {
+        Vouched::ByLine(_) => {
+            "nullif(trim(replace(',' || coalesce(tags, '') || ',', ',' || ?1 || ',', ','), ','), \
+             '')"
+        }
+        Vouched::NotYet => {
+            "CASE WHEN instr(',' || coalesce(tags, '') || ',', ',' || ?1 || ',') > 0 THEN tags \
+             WHEN tags IS NULL THEN ?1 ELSE tags || ',' || ?1 END"
+        }
+    };
+    sqlx::query(&format!("UPDATE postings SET posted_date = ?2, tags = {tags} WHERE id = ?3"))
+        .bind(UNVERIFIED_TAG)
+        .bind(s.posted.to_string())
+        .bind(s.posting_id)
+        .execute(&mut *db)
+        .await
+        .with_context(|| format!("stamping posting {}", s.posting_id))?;
+    if let Vouched::ByLine(Some(line)) = &s.vouched {
+        add_ref(db, s.transaction_id, line).await?;
+    }
+    Ok(())
+}
+
+/// One record's leg, and the statement lines that add up to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegSplit {
+    pub posting_id: i64,
+    pub transaction_id: i64,
+    pub parts: Vec<LegPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegPart {
+    pub amount: Decimal,
+    pub posted: NaiveDate,
+    /// The line's ref.
+    pub line: String,
+}
+
+/// Divides a leg between the lines that add up to it, each on the day it
+/// posted: a leg has one day, and they posted apart. The transaction keeps
+/// its id, date and category, and the change goes in its event log.
+pub async fn split_leg(db: &mut SqliteConnection, s: &LegSplit) -> Result<()> {
+    let before = events::snapshot(db, s.transaction_id).await?;
+    let (first, rest) = s.parts.split_first().context("a leg split into nothing")?;
+    sqlx::query(
+        "UPDATE postings SET amount = ?, posted_date = ?, tags = nullif(trim(replace(',' || \
+         coalesce(tags, '') || ',', ',' || ? || ',', ','), ','), '') WHERE id = ?",
+    )
+    .bind(first.amount.to_string())
+    .bind(first.posted.to_string())
+    .bind(UNVERIFIED_TAG)
+    .bind(s.posting_id)
+    .execute(&mut *db)
+    .await
+    .with_context(|| format!("splitting posting {}", s.posting_id))?;
+    for part in rest {
+        sqlx::query(
+            "INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin, \
+             posted_date) SELECT transaction_id, account_id, ?, currency, tags, origin, ? FROM \
+             postings WHERE id = ?",
+        )
+        .bind(part.amount.to_string())
+        .bind(part.posted.to_string())
+        .bind(s.posting_id)
+        .execute(&mut *db)
+        .await
+        .with_context(|| format!("splitting posting {}", s.posting_id))?;
+    }
+    for part in &s.parts {
+        add_ref(db, s.transaction_id, &part.line).await?;
+    }
+    let after = events::snapshot(db, s.transaction_id).await?;
+    let change = Change { before: Some(before), after };
+    events::record(db, s.transaction_id, EventKind::Split, &change).await
 }
 
 pub async fn redate(db: &mut SqliteConnection, transaction_id: i64, date: NaiveDate) -> Result<()> {

@@ -144,6 +144,7 @@ fn chain(rows: Vec<Row>, closing: Decimal) -> Result<(Decimal, Vec<StatementLine
         };
         lines.push(StatementLine {
             book_date: row.date,
+            purchased: None,
             description: row.description,
             withdrawal,
             deposit,
