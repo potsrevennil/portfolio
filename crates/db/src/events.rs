@@ -48,6 +48,9 @@ pub struct SnapshotLeg {
     pub currency: Currency,
     pub tags: Option<String>,
     pub origin: Option<Origin>,
+    /// The day a statement counted it, where that is not the transaction's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posted: Option<NaiveDate>,
 }
 
 /// The payload of every kind but [`EventKind::Paired`].
@@ -88,6 +91,7 @@ struct LegRow {
     currency: String,
     tags: Option<String>,
     origin: Option<String>,
+    posted_date: Option<String>,
 }
 
 impl TryFrom<LegRow> for SnapshotLeg {
@@ -98,6 +102,7 @@ impl TryFrom<LegRow> for SnapshotLeg {
             amount: r.amount.parse().with_context(|| format!("posting amount {:?}", r.amount))?,
             currency: r.currency.parse().with_context(|| format!("currency {:?}", r.currency))?,
             origin: r.origin.map(|o| o.parse()).transpose().context("posting origin")?,
+            posted: r.posted_date.as_deref().map(str::parse).transpose().context("posted date")?,
             account: r.path,
             tags: r.tags,
         })
@@ -114,7 +119,7 @@ pub async fn snapshot(db: &mut SqliteConnection, id: i64) -> Result<Snapshot> {
     .await?
     .with_context(|| format!("查無交易 {id}"))?;
     let legs: Vec<LegRow> = sqlx::query_as(
-        "SELECT a.path, p.amount, p.currency, p.tags, p.origin FROM postings p
+        "SELECT a.path, p.amount, p.currency, p.tags, p.origin, p.posted_date FROM postings p
          JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
     )
     .bind(id)

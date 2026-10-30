@@ -772,6 +772,48 @@ async fn an_edit_moves_the_unverified_mark_with_the_account() {
     assert_eq!(posting_tags(&pool, id).await[0].1, unverified(true));
 }
 
+/// A leg keeps the day a statement counted it through an edit on its account,
+/// and a part added there takes it too. On another account the day means
+/// nothing. The event says which day, to put a deleted record back by.
+#[tokio::test]
+async fn a_posting_date_stays_with_its_account_through_an_edit() {
+    let (_dir, pool) = ledger().await;
+    let coffee = id_of(&pool, COFFEE).await;
+    let ids: Vec<i64> = legs(&pool, coffee).await.into_iter().map(|(p, ..)| p).collect();
+    sqlx::query("UPDATE postings SET posted_date = '2024-03-20' WHERE id = ?")
+        .bind(ids[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let posted = || async {
+        let days: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT posted_date FROM postings WHERE transaction_id = ? ORDER BY id",
+        )
+        .bind(coffee)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        days
+    };
+    let day = || Some("2024-03-20".to_string());
+
+    let divided = vec![
+        leg(Some(ids[0]), "Expenses:Food", "150"),
+        leg(Some(ids[1]), "Assets:Bank:Savings", "-100"),
+        leg(None, "Assets:Bank:Savings", "-50"),
+    ];
+    save(&pool, coffee, "", divided, false).await.unwrap();
+    assert_eq!(posted().await, [None, day(), day()]);
+    let (_, event) = events(&pool, coffee).await.pop().unwrap();
+    assert_eq!(event["after"]["legs"][1]["posted"], "2024-03-20");
+    assert!(event["after"]["legs"][0].get("posted").is_none());
+
+    let moved =
+        vec![leg(Some(ids[0]), "Expenses:Food", "150"), leg(Some(ids[1]), "Assets:Cash", "-150")];
+    save(&pool, coffee, "", moved, false).await.unwrap();
+    assert_eq!(posted().await, [None, None]);
+}
+
 /// A 天天記帳 record on a bank whose first statement hasn't come: the
 /// importer marked it 未對帳, and an edit keeps it so on any account a
 /// statement will post to, or that first statement would book its line a
