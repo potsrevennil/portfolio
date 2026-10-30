@@ -253,7 +253,7 @@ struct PostingRow {
 /// Parse a text column through its standard `FromStr`, naming the field so a
 /// bad value fails loudly. One helper covers every column type: `Currency` and
 /// `AccountType` (strum), `Decimal` (rust_decimal), `NaiveDate` (chrono).
-fn field<T>(name: &str, s: &str) -> Result<T>
+pub(crate) fn field<T>(name: &str, s: &str) -> Result<T>
 where
     T: FromStr,
     T::Err: std::error::Error + Send + Sync + 'static,

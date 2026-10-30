@@ -92,6 +92,10 @@ INSERT INTO transaction_events (transaction_id, kind, payload) VALUES (1, 'edite
 INSERT INTO verification_choice (account_id, currency, statement_ref, date, amount, description, candidates, transaction_id, chosen_at) VALUES (1, 'TWD', 'check:2', '2020-01-01', '0', 'check', '[1]', 1, '2020-01-01');
 INSERT INTO holding_assertion (account_id, as_of, kind, commodity, quantity, source) VALUES (1, '2020-01-01', 'cash', 'USD', '1', 'statement');
 INSERT INTO statement_schedule (account_id, cadence, grace) VALUES (1, 'never', 10);
+INSERT INTO person (name) VALUES ('check');
+INSERT INTO person_account (account_id, person_id) VALUES (1, 1);
+INSERT INTO split (title, kind, account_id) VALUES ('check', 'netted', 1);
+INSERT INTO share (split_id, posting_id, role, person_id, amount) VALUES (1, 1, 'share', 1, '0');
 SQL
 
 fk="$(sqlite3 "$db" 'PRAGMA foreign_key_check;')"

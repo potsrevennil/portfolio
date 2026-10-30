@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 
 use super::accounts::Chart;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Labels {
     explicit: BTreeMap<String, String>,
     /// Every category mapped to an account.
