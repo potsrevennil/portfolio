@@ -7,7 +7,7 @@ use leptos::prelude::*;
 
 use super::{
     forms::{Confirm, Editing, Panel, Settings},
-    model::{AccountRow, CadenceName, Instalment, SplitOpen, Tail},
+    model::{AccountRow, CadenceName, GapSpan, Instalment, SplitOpen, Tail},
 };
 use crate::model::{account_href, Money};
 
@@ -62,6 +62,8 @@ fn instalment_parts(i: &Instalment) -> Parts {
     }
 }
 
+fn gap_text(g: &GapSpan) -> String { format!("{} 到 {} 無數單", g.from.date, g.to.date) }
+
 fn plain_parts(row: &AccountRow, span: Signal<f64>) -> Parts {
     let first = row.first.as_ref().map(|m| m.ago);
     let checked = row.checked.as_ref().map(|m| m.ago);
@@ -80,6 +82,21 @@ fn plain_parts(row: &AccountRow, span: Signal<f64>) -> Parts {
     // Records past the last figure, or every checkable one when none checked it.
     let hatched =
         from.zip(recorded).filter(|_| ran_past).map(|(f, r)| move || stretch(f, r, span.get()));
+
+    // What no statement covers stays visible over the green around it.
+    let gaps = row
+        .gaps
+        .iter()
+        .map(|g| {
+            let (from, to) = (g.from.ago, g.to.ago);
+            let title = gap_text(g);
+            view! { <i class="gap" title=title style=move || stretch(from, to, span.get())></i> }
+        })
+        .collect_view();
+    let gap_notes = (!row.gaps.is_empty()).then(|| {
+        let text = row.gaps.iter().map(gap_text).collect::<Vec<_>>().join(" · ");
+        view! { <small class="gaps">{text}</small> }
+    });
 
     // The days written on the bar: where a split account opened; checked
     // through, under the green's end; recorded through, after it, where
@@ -112,12 +129,13 @@ fn plain_parts(row: &AccountRow, span: Signal<f64>) -> Parts {
         bar: view! {
             {before.map(|style| view! { <i class="before" style=style></i> })}
             {green.map(|style| view! { <i class="checked" style=style></i> })}
+            {gaps}
             {missing.map(|style| view! { <i class="missing" style=style></i> })}
             {hatched.map(|style| view! { <i class="recorded" style=style></i> })}
         }
         .into_any(),
         dates: tags.into_any(),
-        state: view! { {status} {per_commodity} {unchecked} }.into_any(),
+        state: view! { {status} {per_commodity} {gap_notes} {unchecked} }.into_any(),
     }
 }
 

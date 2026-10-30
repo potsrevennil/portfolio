@@ -10,14 +10,16 @@ use common::{
     page::{position, visible, Context, Site},
 };
 use ledger_types::{
+    assertion::{AssertionSource, BalanceAssertion},
     cadence::{Cadence, CadenceKind, Standing},
     currency::Currency,
 };
 use leptos::prelude::*;
+use rust_decimal_macros::dec;
 use web::{
     coverage::{
         build, confirm_balance, coverage_due, load_coverage, save_schedule, AccountRow,
-        CadenceName, Coverage, CoverageActions, CoverageView, Mark,
+        CadenceName, Coverage, CoverageActions, CoverageView, GapSpan, Mark,
     },
     error::said,
     model::account_href,
@@ -49,6 +51,40 @@ fn account<'a>(c: &'a Coverage, path: &str) -> &'a AccountRow {
 }
 
 fn mark(date: &str, ago: i64) -> Option<Mark> { Some(Mark { date: date.into(), ago }) }
+
+/// Savings' two statements sit nine days apart on one balance, so nothing moved
+/// unseen. A third opening on another balance has money between it and the
+/// last.
+#[tokio::test]
+async fn days_no_statement_covers_show_where_the_balance_moved() {
+    let l = ledger().await;
+    let c = read(&l).await;
+    assert_eq!(account(&c, "Assets:Bank:Savings").gaps, []);
+
+    let conn = &mut *l.pool.acquire().await.unwrap();
+    let later = BalanceAssertion {
+        source: AssertionSource::Statement,
+        account: "Assets:Bank:Savings".into(),
+        currency: Currency::TWD,
+        period_start: Some("2024-03-05".parse().unwrap()),
+        opening: Some(dec!(10000)),
+        period_end: "2024-03-10".parse().unwrap(),
+        closing: dec!(10000),
+    };
+    db::assertions::insert(conn, &later).await.unwrap();
+
+    let c = read(&l).await;
+    let row = account(&c, "Assets:Bank:Savings");
+    let (from, to) = ("2024-03-01", "2024-03-04");
+    let ago = |d: &str| (today() - d.parse::<NaiveDate>().unwrap()).num_days();
+    assert_eq!(row.gaps, [GapSpan {
+        from: Mark { date: from.into(), ago: ago(from) },
+        to: Mark { date: to.into(), ago: ago(to) },
+    }]);
+    let page = render(c);
+    assert!(page.contains("2024-03-01 到 2024-03-04 無數單"), "{page}");
+    assert!(page.contains(r#"class="gap""#), "{page}");
+}
 
 #[tokio::test]
 async fn accounts_are_grouped_by_kind_and_name_their_bank() {

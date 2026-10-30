@@ -82,6 +82,35 @@ pub async fn figures(conn: &mut SqliteConnection) -> Result<Vec<Figure>> {
     rows.into_iter().map(Figure::try_from).collect()
 }
 
+/// Days no statement covers, across which the balance moved: the next one opens
+/// on something other than the last closed on, so money went by unseen. Where
+/// it opens on the same balance, nothing did, as between two downloads that
+/// each start at their first line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gap {
+    pub account: String,
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+}
+
+/// The gaps in figures as [`assertions::load`] orders them.
+pub fn gaps(figures: &[BalanceAssertion]) -> Vec<Gap> {
+    let statements: Vec<&BalanceAssertion> =
+        figures.iter().filter(|a| a.source == AssertionSource::Statement).collect();
+    statements
+        .windows(2)
+        .filter(|pair| {
+            (&pair[0].account, pair[0].currency) == (&pair[1].account, pair[1].currency)
+                && pair[1].opening.is_some_and(|opening| opening != pair[0].closing)
+        })
+        .filter_map(|pair| {
+            let from = pair[0].period_end.succ_opt()?;
+            let to = pair[1].period_start?.pred_opt()?;
+            (from <= to).then(|| Gap { account: pair[0].account.clone(), from, to })
+        })
+        .collect()
+}
+
 /// One record on an account, per commodity it moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {

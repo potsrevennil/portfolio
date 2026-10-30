@@ -64,6 +64,8 @@ pub struct AccountRow {
     pub first: Option<Mark>,
     /// Records no figure has checked yet.
     pub tail: Option<Tail>,
+    /// Days no statement covers, across which the balance moved.
+    pub gaps: Vec<GapSpan>,
     /// Before it the bank keeps no history, so nothing there can be checked.
     pub since: Option<Mark>,
     /// What it holds now, per currency: what a manual check confirms.
@@ -130,6 +132,13 @@ pub struct Holding {
     pub currency: Currency,
     /// Exact, as the ledger sums it.
     pub amount: String,
+}
+
+/// A stretch of the bar no statement covers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GapSpan {
+    pub from: Mark,
+    pub to: Mark,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

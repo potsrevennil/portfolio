@@ -143,6 +143,7 @@ pub fn CoverageView(coverage: Coverage) -> impl IntoView {
             </div>
             <div class="legend">
                 <span><i class="swatch checked"></i>"對過數單"</span>
+                <span><i class="swatch gap"></i>"中央無數單"</span>
                 <span><i class="swatch recorded"></i>"有記錄，猶未對"</span>
                 <span><i class="swatch none"></i>"無記錄"</span>
                 <span><i class="swatch missing"></i>"數單猶未匯入"</span>

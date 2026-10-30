@@ -2,9 +2,13 @@
 //! per-bank rules (ref namespace, how a line names an account, what undoes a
 //! debit, how far a statement vouches) are [`Bank`]'s.
 
-use std::{fmt, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    path::{Path, PathBuf},
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use ledger_types::{
     assertion::{AssertionSource, BalanceAssertion},
@@ -12,7 +16,7 @@ use ledger_types::{
 };
 use rust_decimal::Decimal;
 
-use super::{cathay, cathay_card, line_bank, taishin_card};
+use super::{cathay, cathay_card, line_bank, taishin_bank, taishin_card};
 use crate::matching::DateRange;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +25,7 @@ pub enum Bank {
     LineBank,
     CathayCard,
     TaishinCard,
+    Taishin,
 }
 
 impl fmt::Display for Bank {
@@ -30,12 +35,14 @@ impl fmt::Display for Bank {
             Bank::LineBank => "LINE Bank",
             Bank::CathayCard => "Cathay card",
             Bank::TaishinCard => "Taishin card",
+            Bank::Taishin => "Taishin bank",
         })
     }
 }
 
 impl Bank {
-    pub const ALL: [Bank; 4] = [Bank::Cathay, Bank::LineBank, Bank::CathayCard, Bank::TaishinCard];
+    pub const ALL: [Bank; 5] =
+        [Bank::Cathay, Bank::LineBank, Bank::CathayCard, Bank::TaishinCard, Bank::Taishin];
 
     /// Namespaces the bank's `external_ref`s: every importer shares one dedup
     /// scope (`transactions.source = 'import'`).
@@ -45,6 +52,7 @@ impl Bank {
             Bank::LineBank => "line-bank:",
             Bank::CathayCard => "cathay-card:",
             Bank::TaishinCard => "taishin-card:",
+            Bank::Taishin => "taishin-bank:",
         }
     }
 
@@ -55,6 +63,7 @@ impl Bank {
             Bank::LineBank => "line-bank",
             Bank::CathayCard => "cathay-card",
             Bank::TaishinCard => "taishin-card",
+            Bank::Taishin => "taishin-bank",
         }
     }
 
@@ -66,6 +75,7 @@ impl Bank {
             Bank::LineBank => line_bank::load_merged(paths),
             Bank::CathayCard => cathay_card::load_merged(paths),
             Bank::TaishinCard => taishin_card::load_merged(paths),
+            Bank::Taishin => taishin_bank::load_merged(paths),
         }
     }
 
@@ -74,7 +84,7 @@ impl Bank {
     pub fn vouches_for_records(self) -> bool {
         match self {
             Bank::Cathay | Bank::LineBank => false,
-            Bank::CathayCard | Bank::TaishinCard => true,
+            Bank::CathayCard | Bank::TaishinCard | Bank::Taishin => true,
         }
     }
 
@@ -85,7 +95,7 @@ impl Bank {
     /// having posted yet. A card's foreign fees take weeks to post.
     pub fn posts_within_days(self) -> i64 {
         match self {
-            Bank::Cathay | Bank::LineBank => 7,
+            Bank::Cathay | Bank::LineBank | Bank::Taishin => 7,
             Bank::CathayCard | Bank::TaishinCard => 31,
         }
     }
@@ -96,7 +106,9 @@ impl Bank {
             Bank::Cathay => cathay::info_names_account(text, account_no),
             Bank::LineBank => line_bank::remark_names_account(text, account_no),
             // Its lines name merchants; a payment does not say from where.
-            Bank::CathayCard | Bank::TaishinCard => false,
+            // A card's lines name merchants, and a payment does not say from where;
+            // 台新's records are 天天記帳's, so a transfer has no line to pair with.
+            Bank::CathayCard | Bank::TaishinCard | Bank::Taishin => false,
         }
     }
 
@@ -118,7 +130,7 @@ impl Bank {
                     && debit.delta() == -line.delta()
             }
             // A refund is a real line of its own, and rarely the same day.
-            Bank::CathayCard | Bank::TaishinCard => false,
+            Bank::CathayCard | Bank::TaishinCard | Bank::Taishin => false,
         }
     }
 }
@@ -304,7 +316,7 @@ impl BankStatement {
         match self.bank {
             // A download may have been made partway through its range's end.
             Bank::Cathay => self.period_end,
-            Bank::LineBank | Bank::CathayCard | Bank::TaishinCard => {
+            Bank::LineBank | Bank::CathayCard | Bank::TaishinCard | Bank::Taishin => {
                 self.period_end.and_then(|end| end.succ_opt())
             }
         }
@@ -394,6 +406,48 @@ impl BankStatement {
             closing,
         })
     }
+}
+
+/// `<kind>-<account>`, a statement's folder, where it doesn't print its number
+/// in full.
+pub fn folder_account(path: &Path) -> Result<(String, String)> {
+    let folder = path.parent().and_then(Path::file_name).and_then(|f| f.to_str());
+    let (kind, account) = folder
+        .and_then(|f| f.rsplit_once('-'))
+        .with_context(|| format!("{} is not in a <kind>-<account> folder", path.display()))?;
+    Ok((kind.to_string(), account.to_string()))
+}
+
+/// Joins each account and currency's statements in date order. `check` sees
+/// each statement after the one before it, naming the account and file, and may
+/// correct the later period.
+pub fn join_periods(
+    statements: Vec<(BankStatement, PathBuf)>,
+    check: impl Fn(&str, &Path, &Period, &mut Period) -> Result<()>,
+) -> Result<Vec<Merged>> {
+    let mut groups: BTreeMap<(String, Currency), Vec<(BankStatement, PathBuf)>> = BTreeMap::new();
+    for (s, path) in statements {
+        groups.entry((s.account_no.clone(), s.currency)).or_default().push((s, path));
+    }
+    let mut merged = Vec::new();
+    for ((account_no, _), mut parts) in groups {
+        parts.sort_by_key(|(s, _)| s.periods[0].end);
+        let mut parts = parts.into_iter();
+        let (mut statement, first) = parts.next().expect("a group has a member");
+        let mut spans = vec![statement.lines.len()];
+        let mut paths = vec![first];
+        for (mut next, path) in parts {
+            let before = statement.periods.last().expect("issued");
+            check(&account_no, &path, before, &mut next.periods[0])?;
+            spans.push(next.lines.len());
+            paths.push(path);
+            statement.period_end = next.period_end;
+            statement.periods.extend(next.periods);
+            statement.lines.extend(next.lines);
+        }
+        merged.push(Merged { statement, paths, spans });
+    }
+    Ok(merged)
 }
 
 /// One account's statements in one currency, joined.
