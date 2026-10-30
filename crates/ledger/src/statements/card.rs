@@ -10,8 +10,11 @@ use std::{
 };
 
 use anyhow::{ensure, Context, Result};
-use chrono::{Datelike, NaiveDate};
-use ledger_types::{assertion::BalanceAssertion, currency::Currency};
+use chrono::NaiveDate;
+use ledger_types::{
+    assertion::{AssertionSource, BalanceAssertion},
+    currency::Currency,
+};
 use rust_decimal::Decimal;
 
 use super::bank::{Bank, BankStatement, Merged, Period, StatementLine};
@@ -51,8 +54,9 @@ pub fn is_instalment(description: &str) -> bool {
     })
 }
 
-/// A statement's month count, for telling whether two are consecutive.
-fn month(date: NaiveDate) -> i32 { date.year() * 12 + date.month0() as i32 }
+/// The most days from one closing to the next: a month, give or take the days
+/// a closing date shifts by, and well short of two.
+const LONGEST_PERIOD: i64 = 45;
 
 impl Bill {
     /// The statement in the ledger's terms: a liability's balance is negative,
@@ -128,26 +132,31 @@ pub fn folder_card(path: &Path) -> Result<&str> {
         .with_context(|| format!("{} is not in a card's folder", path.display()))
 }
 
-/// Did `closing` on `closed` lead straight into a statement ending `end` that
-/// opens at `opening`? Then its period began the day after: months apart, and
-/// a statement is missing between them.
+/// Did a statement closing at `closing` on `closed` lead straight into one
+/// ending `end` that opens at `opening`? Then the later one began the day
+/// after. Otherwise a statement is missing between them.
 pub fn follows(closed: NaiveDate, closing: Decimal, end: NaiveDate, opening: Decimal) -> bool {
-    month(end) - month(closed) == 1 && closing == opening
+    (1..=LONGEST_PERIOD).contains(&(end - closed).num_days()) && closing == opening
 }
 
-/// [`follows`] for a figure and those already recorded: the day its period
-/// began, when the latest before it is the statement it follows.
-pub fn started_after(a: &BalanceAssertion, recorded: &[BalanceAssertion]) -> Option<NaiveDate> {
-    let last = recorded
-        .iter()
-        .filter(|r| {
-            (&r.account, r.currency, r.source) == (&a.account, a.currency, a.source)
-                && r.period_end < a.period_end
+/// The figures in `recorded` that follow the one before but don't yet start the
+/// day after it, with the day they do. A statement doesn't print its start, and
+/// the one before it may arrive later.
+pub fn late_starts(recorded: &[BalanceAssertion]) -> Vec<(&BalanceAssertion, NaiveDate)> {
+    let statements: Vec<&BalanceAssertion> =
+        recorded.iter().filter(|a| a.source == AssertionSource::Statement).collect();
+    statements
+        .windows(2)
+        .filter_map(|pair| {
+            let [before, after] = pair else { return None };
+            let start = before.period_end.succ_opt().expect("a day after a statement");
+            let same_books = (&before.account, before.currency) == (&after.account, after.currency);
+            (same_books
+                && after.period_start != Some(start)
+                && follows(before.period_end, before.closing, after.period_end, after.opening?))
+            .then_some((*after, start))
         })
-        .max_by_key(|r| r.period_end)?;
-    let opening = a.opening?;
-    follows(last.period_end, last.closing, a.period_end, opening)
-        .then(|| last.period_end.succ_opt().expect("a day after a statement"))
+        .collect()
 }
 
 /// Joins each card's statements. Consecutive months must carry the balance
@@ -174,10 +183,10 @@ pub fn merge(statements: Vec<(BankStatement, PathBuf)>) -> Result<Vec<Merged>> {
                 path.display(),
                 after.end
             );
-            if month(after.end) - month(before.end) == 1 {
+            if (after.end - before.end).num_days() <= LONGEST_PERIOD {
                 ensure!(
                     follows(before.end, before.closing, after.end, after.opening),
-                    "{card}: {} opens at {}, but the month before closed at {}",
+                    "{card}: {} opens at {}, but the statement before closed at {}",
                     path.display(),
                     after.opening,
                     before.closing
@@ -190,6 +199,11 @@ pub fn merge(statements: Vec<(BankStatement, PathBuf)>) -> Result<Vec<Merged>> {
             statement.periods.extend(next.periods);
             statement.lines.extend(next.lines);
         }
+        ensure!(
+            !statement.lines.is_empty(),
+            "{card}: no line in {}, so nothing to check against the ledger",
+            paths[0].display()
+        );
         merged.push(Merged { statement, paths, spans });
     }
     Ok(merged)

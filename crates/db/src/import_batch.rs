@@ -193,6 +193,10 @@ pub async fn verify(db: &mut SqliteConnection, v: &Verification) -> Result<()> {
     Ok(())
 }
 
+/// A leg's tags without [`UNVERIFIED_TAG`], which binds as `?1`.
+const VERIFIED_TAGS: &str =
+    "nullif(trim(replace(',' || coalesce(tags, '') || ',', ',' || ?1 || ',', ','), ','), '')";
+
 /// What a statement says of a leg already on the ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stamp {
@@ -217,10 +221,7 @@ pub enum Vouched {
 /// stays on its own date, and any other leg stays for its own statement.
 pub async fn stamp(db: &mut SqliteConnection, s: &Stamp) -> Result<()> {
     let tags = match s.vouched {
-        Vouched::ByLine(_) => {
-            "nullif(trim(replace(',' || coalesce(tags, '') || ',', ',' || ?1 || ',', ','), ','), \
-             '')"
-        }
+        Vouched::ByLine(_) => VERIFIED_TAGS,
         Vouched::NotYet => {
             "CASE WHEN instr(',' || coalesce(tags, '') || ',', ',' || ?1 || ',') > 0 THEN tags \
              WHEN tags IS NULL THEN ?1 ELSE tags || ',' || ?1 END"
@@ -261,13 +262,12 @@ pub struct LegPart {
 pub async fn split_leg(db: &mut SqliteConnection, s: &LegSplit) -> Result<()> {
     let before = events::snapshot(db, s.transaction_id).await?;
     let (first, rest) = s.parts.split_first().context("a leg split into nothing")?;
-    sqlx::query(
-        "UPDATE postings SET amount = ?, posted_date = ?, tags = nullif(trim(replace(',' || \
-         coalesce(tags, '') || ',', ',' || ? || ',', ','), ','), '') WHERE id = ?",
-    )
+    sqlx::query(&format!(
+        "UPDATE postings SET amount = ?2, posted_date = ?3, tags = {VERIFIED_TAGS} WHERE id = ?4"
+    ))
+    .bind(UNVERIFIED_TAG)
     .bind(first.amount.to_string())
     .bind(first.posted.to_string())
-    .bind(UNVERIFIED_TAG)
     .bind(s.posting_id)
     .execute(&mut *db)
     .await

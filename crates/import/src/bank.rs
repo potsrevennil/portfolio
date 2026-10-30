@@ -221,10 +221,10 @@ pub async fn import(
     // a later download states a wider period for that day, which is the same
     // claim, and the balance chain above has already compared every day.
     let recorded = assertions::load(db).await?;
+    let vouched: BTreeSet<&str> = statements.iter().map(|s| s.account.as_str()).collect();
     // Its own statements now vouch for what the app's closing summed, and in
     // posting dates, which that closing never was.
     if bank.vouches_for_records() {
-        let vouched: BTreeSet<&str> = statements.iter().map(|s| s.account.as_str()).collect();
         for a in &recorded {
             if a.source == AssertionSource::Tiantian && vouched.contains(a.account.as_str()) {
                 assertions::supersede(db, a).await?;
@@ -239,12 +239,7 @@ pub async fn import(
         let account = statement_account(chart, &m.statement.account_no)?;
         figures.extend(m.statement.assertions(account, m.statement.opening_date()));
     }
-    for mut assertion in figures {
-        if bank.is_card() {
-            if let Some(start) = card::started_after(&assertion, &recorded) {
-                assertion.period_start = Some(start);
-            }
-        }
+    for assertion in figures {
         let same_day = recorded.iter().find(|r| {
             (&r.account, r.currency, r.source, r.period_end)
                 == (&assertion.account, assertion.currency, assertion.source, assertion.period_end)
@@ -263,6 +258,13 @@ pub async fn import(
                 ensure_account(db, &labels, &assertion.account).await?;
                 assertions::insert(db, &assertion).await?
             }
+        }
+    }
+    if bank.is_card() {
+        let mut held = assertions::load(db).await?;
+        held.retain(|a| vouched.contains(a.account.as_str()));
+        for (a, start) in card::late_starts(&held) {
+            assertions::set_start(db, a, start).await?;
         }
     }
     let check = check::gate(db).await?;

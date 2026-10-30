@@ -54,12 +54,46 @@ fn instalment_lines_are_told_by_their_part() {
 }
 
 #[test]
-fn only_the_next_month_on_the_same_balance_follows() {
+fn only_the_next_closing_on_the_same_balance_follows() {
     let (closed, end) = (day("2026-01-18"), day("2026-02-22"));
     assert!(follows(closed, dec!(5), end, dec!(5)));
     assert!(!follows(closed, dec!(5), end, dec!(6)));
     assert!(!follows(closed, dec!(5), day("2026-03-17"), dec!(5)));
     assert!(follows(day("2025-12-17"), dec!(5), day("2026-01-18"), dec!(5)));
+    // A closing date that shifts across a month's end misses no statement.
+    assert!(follows(day("2026-01-31"), dec!(5), day("2026-03-02"), dec!(5)));
+    assert!(follows(day("2026-01-01"), dec!(5), day("2026-01-31"), dec!(5)));
+}
+
+fn figure(
+    account: &str,
+    start: &str,
+    end: &str,
+    opening: Decimal,
+    closing: Decimal,
+) -> BalanceAssertion {
+    BalanceAssertion {
+        source: AssertionSource::Statement,
+        account: account.to_string(),
+        currency: Currency::TWD,
+        period_start: Some(day(start)),
+        opening: Some(opening),
+        period_end: day(end),
+        closing,
+    }
+}
+
+#[test]
+fn a_figure_starts_late_only_after_the_statement_it_follows() {
+    let recorded = [
+        figure("A", "2026-01-01", "2026-01-20", dec!(0), dec!(10)),
+        figure("A", "2026-01-21", "2026-02-20", dec!(10), dec!(20)),
+        figure("A", "2026-03-08", "2026-03-20", dec!(20), dec!(30)),
+        figure("A", "2026-05-08", "2026-05-20", dec!(30), dec!(40)),
+        figure("B", "2026-06-08", "2026-06-20", dec!(40), dec!(50)),
+    ];
+    let late: Vec<_> = late_starts(&recorded).into_iter().map(|(a, d)| (a.period_end, d)).collect();
+    assert_eq!(late, [(day("2026-03-20"), day("2026-02-21"))]);
 }
 
 fn statement(closes: &str, opening: Decimal, closing: Decimal) -> (BankStatement, PathBuf) {
@@ -83,6 +117,19 @@ fn a_statement_repeated_is_refused() {
         statement("2026-01-20", dec!(0), dec!(10)),
     ]);
     assert!(twice.is_err());
+}
+
+/// Beside another statement it is a figure with nothing to add; by itself it
+/// gives the ledger no line to check against.
+#[test]
+fn a_statement_with_no_line_needs_a_sibling() -> Result<()> {
+    let empty = |closes: &str, balance| {
+        let s = bill(closes, balance, balance, vec![]);
+        (s.into_statement(Bank::CathayCard, "c").unwrap(), PathBuf::from(closes))
+    };
+    assert!(merge(vec![empty("2026-02-20", dec!(10))]).is_err());
+    merge(vec![statement("2026-01-20", dec!(0), dec!(10)), empty("2026-02-20", dec!(10))])?;
+    Ok(())
 }
 
 #[test]

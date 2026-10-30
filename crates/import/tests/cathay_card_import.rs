@@ -218,8 +218,8 @@ async fn instalment_parts_and_interest_do_not_break_the_check() -> Result<()> {
     Ok(())
 }
 
-/// A statement states no period start: it runs from the one it follows, whether
-/// that came in this run or an earlier one, and a missing month stays a gap.
+/// A statement states no period start: it runs from the one it follows, in
+/// this run or an earlier one. A missing month stays a gap until it comes.
 #[tokio::test]
 async fn a_statement_starts_after_the_one_it_follows() -> Result<()> {
     let f = Fixture::frozen(&records(&[
@@ -249,6 +249,21 @@ async fn a_statement_starts_after_the_one_it_follows() -> Result<()> {
     let starts: Vec<String> =
         figures.iter().map(|a| a.period_start.expect("states a period").to_string()).collect();
     assert_eq!(starts, ["2026-01-08", "2026-01-21", "2026-04-08"]);
+    assert!(f.gate_passes().await?);
+
+    let march = f.write(
+        "2026-03.csv",
+        &statement("2026/03/20", 120, 120, &[
+            ("03/08", "便當", "10", "03/08"),
+            ("03/09", "退款", "-10", "03/09"),
+        ]),
+    )?;
+    f.import(Bank::CathayCard, &[march]).await?;
+
+    let figures = f.figures().await?;
+    let starts: Vec<String> =
+        figures.iter().map(|a| a.period_start.expect("states a period").to_string()).collect();
+    assert_eq!(starts, ["2026-01-08", "2026-01-21", "2026-02-21", "2026-03-21"]);
     assert!(f.gate_passes().await?);
     Ok(())
 }
