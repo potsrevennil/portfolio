@@ -95,11 +95,17 @@ pub fn match_subsets(
                 })
                 .map(|(ei, _)| ei)
                 .collect();
-            // Among records on time, the one nearest the purchase: repeats of
-            // one amount then pair up in order, not crosswise.
+            // An exact amount first: the cap must not cut it for a sum of
+            // others, and a card line's range can hold more than the cap. Then
+            // the one nearest the purchase: repeats of one amount pair up in
+            // order, not crosswise.
             pool.sort_by_key(|ei| {
-                let edates = events[*ei].0;
-                (dates.distance(edates), (edates.from - dates.from).num_days().abs())
+                let (edates, edelta) = events[*ei];
+                (
+                    edelta != *delta,
+                    dates.distance(edates),
+                    (edates.from - dates.from).num_days().abs(),
+                )
             });
             pool.truncate(POOL_CAP);
 
@@ -156,6 +162,20 @@ mod tests {
         let lines = [(day("2026-02-03").into(), dec!(-50))];
         let events = [(day("2026-01-20").into(), dec!(-50)), (day("2026-02-01").into(), dec!(-50))];
         assert_eq!(match_subsets(&lines, &events), vec![Some(vec![1])]);
+    }
+
+    /// More records in a line's range than the pool holds, and three of the
+    /// nearest sum to it: the exact one, furthest from the purchase, still
+    /// wins.
+    #[test]
+    fn an_exact_amount_is_not_lost_to_the_pool_cap() {
+        let lines = [(range("2026-01-01", "2026-01-20"), dec!(-100))];
+        let mut events: Vec<(DateRange, Decimal)> =
+            vec![(day("2026-01-01").into(), dec!(-60)), (day("2026-01-01").into(), dec!(-40))];
+        events.extend((0..POOL_CAP).map(|_| (day("2026-01-02").into(), dec!(-7))));
+        events.push((day("2026-01-20").into(), dec!(-100)));
+        let exact = events.len() - 1;
+        assert_eq!(match_subsets(&lines, &events), vec![Some(vec![exact])]);
     }
 
     /// By posting date alone the first line sits nearer the second record and
