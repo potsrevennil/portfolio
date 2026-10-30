@@ -105,7 +105,6 @@ impl Bank {
         match self {
             Bank::Cathay => cathay::info_names_account(text, account_no),
             Bank::LineBank => line_bank::remark_names_account(text, account_no),
-            // Its lines name merchants; a payment does not say from where.
             // A card's lines name merchants, and a payment does not say from where;
             // 台新's records are 天天記帳's, so a transfer has no line to pair with.
             Bank::CathayCard | Bank::TaishinCard | Bank::Taishin => false,
@@ -419,7 +418,7 @@ pub fn folder_account(path: &Path) -> Result<(String, String)> {
 }
 
 /// Joins each account and currency's statements in date order. `check` sees
-/// each statement after the one before it, naming the account and file, and may
+/// each statement after the one before it, naming the books and file, and may
 /// correct the later period.
 pub fn join_periods(
     statements: Vec<(BankStatement, PathBuf)>,
@@ -430,7 +429,8 @@ pub fn join_periods(
         groups.entry((s.account_no.clone(), s.currency)).or_default().push((s, path));
     }
     let mut merged = Vec::new();
-    for ((account_no, _), mut parts) in groups {
+    for ((account_no, currency), mut parts) in groups {
+        let books = format!("{account_no} {currency}");
         parts.sort_by_key(|(s, _)| s.periods[0].end);
         let mut parts = parts.into_iter();
         let (mut statement, first) = parts.next().expect("a group has a member");
@@ -438,7 +438,7 @@ pub fn join_periods(
         let mut paths = vec![first];
         for (mut next, path) in parts {
             let before = statement.periods.last().expect("issued");
-            check(&account_no, &path, before, &mut next.periods[0])?;
+            check(&books, &path, before, &mut next.periods[0])?;
             spans.push(next.lines.len());
             paths.push(path);
             statement.period_end = next.period_end;

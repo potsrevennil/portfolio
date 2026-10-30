@@ -98,6 +98,39 @@ fn the_day_it_was_made_is_left_to_the_next_query() -> Result<()> {
     Ok(())
 }
 
+/// Rows run by 交易日, so a row left out may sit before one that stays.
+#[test]
+fn a_row_left_out_is_not_in_the_closing_of_those_after_it() -> Result<()> {
+    let q = Query {
+        made: day("2025-01-31"),
+        ..query(vec![row("2025-01-31", dec!(-5), dec!(95)), row("2025-01-30", dec!(-10), dec!(85))])
+    };
+    let s = q.into_statement(ACCOUNT, "活存")?;
+    assert_eq!((s.periods[0].end, s.periods[0].closing), (day("2025-01-30"), dec!(90)));
+    Ok(())
+}
+
+#[test]
+fn a_query_of_only_the_day_it_was_made_is_refused() {
+    let q = Query {
+        from: day("2025-01-31"),
+        made: day("2025-01-31"),
+        ..query(vec![row("2025-01-31", dec!(-5), dec!(95))])
+    };
+    let error = q.into_statement(ACCOUNT, "活存").unwrap_err();
+    assert!(error.to_string().contains("settled"), "{error}");
+}
+
+#[test]
+fn a_row_that_moves_nothing_is_no_line() -> Result<()> {
+    let s =
+        query(vec![row("2025-01-05", dec!(0), dec!(100)), row("2025-01-06", dec!(-1), dec!(99))])
+            .into_statement(ACCOUNT, "活存")?;
+    assert_eq!(s.lines.len(), 1);
+    assert_eq!(s.periods[0].opening, dec!(100));
+    Ok(())
+}
+
 /// Queries go by 交易日: one on a range's last evening books in the next.
 #[test]
 fn a_row_booked_past_the_range_extends_its_period() -> Result<()> {

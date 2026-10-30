@@ -11,7 +11,7 @@ use common::{
     card::{records_on, Fixture, BANK, BANK_FOLDER},
     pdf::fake_pdftotext,
 };
-use db::{assertions, coverage};
+use db::coverage;
 use ledger::statements::bank::Bank;
 use rust_decimal_macros::dec;
 
@@ -67,9 +67,7 @@ async fn a_gap_between_queries_stays_a_gap_with_the_gate_holding() -> Result<()>
 
     assert_eq!((report.inserted, report.counts.verified), (0, 2));
     assert!(f.gate_passes().await?);
-    let mut conn = f.pool.acquire().await?;
-    let mut figures = assertions::load(&mut conn).await?;
-    figures.retain(|a| a.account == BANK);
+    let figures = f.figures_of(BANK).await?;
     let closings: Vec<_> = figures.iter().map(|a| (a.period_end.to_string(), a.closing)).collect();
     assert_eq!(closings, [
         ("2026-02-01".to_string(), dec!(100)),
@@ -81,7 +79,6 @@ async fn a_gap_between_queries_stays_a_gap_with_the_gate_holding() -> Result<()>
         (gap.from.to_string(), gap.to.to_string()),
         ("2026-02-02".to_string(), "2026-02-17".to_string())
     );
-    drop(conn);
 
     let again = f.import(Bank::Taishin, &paths).await?;
     assert_eq!((again.inserted, again.counts.known), (0, 2));

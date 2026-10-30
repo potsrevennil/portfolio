@@ -83,12 +83,13 @@ fn plain_parts(row: &AccountRow, span: Signal<f64>) -> Parts {
     let hatched =
         from.zip(recorded).filter(|_| ran_past).map(|(f, r)| move || stretch(f, r, span.get()));
 
-    // What no statement covers stays visible over the green around it.
+    // What no statement covers stays visible over the green around it, through
+    // the end of its last day.
     let gaps = row
         .gaps
         .iter()
         .map(|g| {
-            let (from, to) = (g.from.ago, g.to.ago);
+            let (from, to) = (g.from.ago, g.to.ago - 1);
             let title = gap_text(g);
             view! { <i class="gap" title=title style=move || stretch(from, to, span.get())></i> }
         })

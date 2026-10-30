@@ -25,14 +25,6 @@ use super::{
 
 fn date(s: &str) -> Option<NaiveDate> { NaiveDate::parse_from_str(s, "%Y/%m/%d").ok() }
 
-/// `1,234`.
-fn money(s: &str) -> Option<Decimal> {
-    let digits = s.strip_prefix('-').unwrap_or(s);
-    let plain = digits.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '.')
-        && digits.starts_with(|c: char| c.is_ascii_digit());
-    plain.then(|| s.replace(',', "").parse().ok()).flatten()
-}
-
 #[derive(Debug, PartialEq)]
 struct Row {
     /// 帳務日, the day the balance moved.
@@ -72,9 +64,9 @@ impl FromStr for Row {
         let book = date(book).with_context(|| format!("帳務日 in {words:?}"))?;
         let amounts = rest
             .windows(3)
-            .position(|w| w.iter().all(|cell| money(cell).is_some()))
+            .position(|w| w.iter().all(|cell| pdf::money(cell).is_some()))
             .with_context(|| format!("no amounts in {words:?}"))?;
-        let cell = |i: usize| money(rest[i]).expect("found above");
+        let cell = |i: usize| pdf::money(rest[i]).expect("found above");
         Ok(Row {
             book,
             description: rest[..amounts].concat(),
@@ -142,10 +134,18 @@ impl Query {
             self.from
         );
         let settled = self.made.pred_opt().context("a day before the query")?;
-        let held: Vec<Row> = self.rows.into_iter().filter(|r| r.book <= settled).collect();
+        let held: Vec<Row> =
+            self.rows.into_iter().filter(|r| r.book <= settled && !r.delta.is_zero()).collect();
         let end = held.iter().map(|r| r.book).chain([self.to.min(settled)]).max();
         let end = end.context("a period has an end")?;
-        let closing = held.last().map_or(opening, |r| r.balance);
+        ensure!(
+            self.from <= end,
+            "made on {}, so nothing from {} has settled yet",
+            self.made,
+            self.from
+        );
+        // Rows run by 交易日, so the last one kept may not be the last to book.
+        let closing = opening + held.iter().map(|r| r.delta).sum::<Decimal>();
         let lines = held
             .into_iter()
             .map(|r| {

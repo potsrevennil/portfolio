@@ -147,10 +147,12 @@ impl Fixture {
         .await?)
     }
 
-    pub async fn figures(&self) -> Result<Vec<BalanceAssertion>> {
+    pub async fn figures(&self) -> Result<Vec<BalanceAssertion>> { self.figures_of(CARD).await }
+
+    pub async fn figures_of(&self, account: &str) -> Result<Vec<BalanceAssertion>> {
         let mut conn = self.pool.acquire().await?;
         let mut figures = db::assertions::load(&mut conn).await?;
-        figures.retain(|a| a.account == CARD);
+        figures.retain(|a| a.account == account);
         Ok(figures)
     }
 
