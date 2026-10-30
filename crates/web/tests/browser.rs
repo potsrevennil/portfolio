@@ -184,6 +184,15 @@ impl Journey {
     async fn text(&self) -> String { self.find("main").await.text().await.unwrap() }
 
     /// Waits until the page says `needle`.
+    /// Waits for the tab's name, which the client sets once it has the page.
+    async fn until_title(&self, title: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.browser.title().await.unwrap() != title {
+            assert!(Instant::now() < deadline, "{}", self.browser.title().await.unwrap());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn until_text(&self, needle: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -253,6 +262,7 @@ async fn journeys() {
     enter_cash_by_hand().await;
     show_the_accounts_at_zero().await;
     explore_the_charts().await;
+    open_an_account().await;
 }
 
 async fn confirm_from_the_queue() {
@@ -403,7 +413,7 @@ async fn show_the_accounts_at_zero() {
     j.open("/balance-sheet").await;
     j.find(".tools button").await.click().await.unwrap();
     // The emptied wallet is left out until it is asked for.
-    let wallet = r#".row:has(a[href="/journal?account=Assets%3AOld-Wallet"])"#;
+    let wallet = r#".row:has(a[href="/account?account=Assets%3AOld-Wallet"])"#;
     assert!(!j.find(wallet).await.is_displayed().await.unwrap());
     j.find(".tools input[type=checkbox]").await.click().await.unwrap();
     assert!(j.find(wallet).await.is_displayed().await.unwrap());
@@ -480,4 +490,31 @@ async fn explore_the_charts() {
         .unwrap();
     assert_eq!(wide, json!(false));
     journey.close().await;
+}
+
+async fn open_an_account() {
+    let j = Journey::start().await;
+    j.open("/balance-sheet").await;
+    j.find(".tools button").await.click().await.unwrap();
+    j.browser.find(Locator::LinkText("活存")).await.unwrap().click().await.unwrap();
+    j.until_text("餘額走勢").await;
+    j.hydrated().await;
+    assert_eq!(j.find(".account-head h1").await.text().await.unwrap(), "活存");
+    j.until_title("活存 · 帳簿").await;
+    j.until_text("對帳").await;
+    // The trail leads up to the account above, and Back returns.
+    j.find(r#".trail a[href="/account?account=Assets%3ABank"]"#).await.click().await.unwrap();
+    j.until_title("銀行 · 帳簿").await;
+    assert_eq!(j.find(".account-head h1").await.text().await.unwrap(), "銀行");
+    j.browser.back().await.unwrap();
+    j.until_title("活存 · 帳簿").await;
+    // Its journal is one link away, filtered to it.
+    j.browser.find(Locator::LinkText("去日記帳篩選")).await.unwrap().click().await.unwrap();
+    j.hydrated().await;
+    j.until_text("共 ").await;
+    let url = j.browser.current_url().await.unwrap();
+    assert_eq!(url.path(), "/journal");
+    let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    assert_eq!(query, [("account".to_string(), "Assets:Bank:Savings".to_string())]);
+    j.close().await;
 }

@@ -881,7 +881,11 @@ fn statement_accounts_come_from_the_chart() {
     .unwrap();
     let expected: StatementAccounts =
         ["Assets:Bank:Savings", "Assets:Bank:Main", "Assets:Bank:Settlement"].into_iter().collect();
-    assert_eq!(server::Config::load(&mapping).unwrap().statements, expected);
+    let config = server::Config::load(&mapping).unwrap();
+    assert_eq!(config.statements, expected);
+    // The clearing account holds transfers between their legs: no picker
+    // offers it.
+    assert!(config.unlisted.contains("Assets:Bank:Clearing"));
 }
 
 /// An entry made by mistake can be deleted: it leaves every list and every

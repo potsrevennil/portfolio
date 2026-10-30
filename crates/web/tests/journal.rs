@@ -209,6 +209,18 @@ async fn load(pool: &SqlitePool, query: JournalQuery) -> Result<Page, ServerFnEr
     Context::from(pool).call(|| load_journal(query)).await
 }
 
+#[tokio::test]
+async fn an_unlisted_account_is_offered_nowhere_but_its_legs_still_show() {
+    let (_dir, pool) = ledger().await;
+    let context = || Context::from(&pool).unlisted(["Assets:Cash"].into_iter().collect());
+    let page = context().call(|| load_journal(JournalQuery::default())).await.unwrap();
+    assert!(page.accounts.iter().all(|a| a.path != "Assets:Cash"), "{:?}", page.accounts);
+    assert!(page.entries.iter().flat_map(|e| &e.legs).any(|l| l.path == "Assets:Cash"));
+    // Nor does 記一筆.
+    let form = context().call(web::manual::load_manual).await.unwrap();
+    assert!(form.accounts.iter().all(|a| a.path != "Assets:Cash"), "{:?}", form.accounts);
+}
+
 async fn journal_page(pool: &SqlitePool, query: JournalQuery) -> Page {
     load(pool, query).await.unwrap()
 }
@@ -789,8 +801,8 @@ async fn the_journal_route_renders_with_its_filter() {
 }
 
 #[tokio::test]
-async fn balance_sheet_accounts_open_their_journal() {
+async fn balance_sheet_accounts_open_their_page() {
     let html = site().await.page("/balance-sheet").await;
-    assert!(html.contains(r#"href="/journal?account=Assets%3ABank%3ASavings""#), "{html}");
-    assert!(html.contains(r#"href="/journal?account=Assets%3ASplit%3AAlpha%3ATab""#), "{html}");
+    assert!(html.contains(r#"href="/account?account=Assets%3ABank%3ASavings""#), "{html}");
+    assert!(html.contains(r#"href="/account?account=Assets%3ASplit%3AAlpha%3ATab""#), "{html}");
 }

@@ -16,7 +16,7 @@ use leptos::{
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 use tower::ServiceExt;
-use web::{model::Series, server};
+use web::{entries::Unlisted, model::Series, server};
 
 /// The text a reader sees: markup and scripts removed.
 pub fn visible(html: &str) -> String {
@@ -56,11 +56,17 @@ pub struct Context {
     pool: SqlitePool,
     market: Option<Market>,
     statements: StatementAccounts,
+    unlisted: Unlisted,
 }
 
 impl From<&SqlitePool> for Context {
     fn from(pool: &SqlitePool) -> Self {
-        Context { pool: pool.clone(), market: None, statements: StatementAccounts::default() }
+        Context {
+            pool: pool.clone(),
+            market: None,
+            statements: StatementAccounts::default(),
+            unlisted: Unlisted::default(),
+        }
     }
 }
 
@@ -73,6 +79,8 @@ impl Context {
         Context { statements, ..self }
     }
 
+    pub fn unlisted(self, unlisted: Unlisted) -> Self { Context { unlisted, ..self } }
+
     /// Calls a server function as the router would.
     pub async fn call<F: Future>(self, function: impl FnOnce() -> F) -> F::Output {
         let owner = Owner::new();
@@ -84,10 +92,18 @@ impl Context {
             provide_context(AtCost::default());
             provide_context(Investments::default());
             provide_context(self.statements);
+            provide_context(self.unlisted);
             ScopedFuture::new(function())
         });
         call.await
     }
+}
+
+/// The `nth` table body's rows, each as a reader sees it.
+pub fn table(html: &str, nth: usize) -> Vec<String> {
+    let body = html.split("<tbody>").nth(nth + 1).expect("the table");
+    let body = &body[..body.find("</tbody>").unwrap()];
+    body.split("<tr").skip(1).map(|row| visible(&format!("<tr{row}"))).collect()
 }
 
 /// Each figure of a series as a page prints it.

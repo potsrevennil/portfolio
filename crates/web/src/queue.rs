@@ -14,7 +14,7 @@ use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
 use crate::{
-    entries::{self, Chart},
+    entries::{self, Chart, Unlisted},
     model::{
         Change, ChartAccount, Choice, Editing, JournalQuery, LegInput, ManualInput, Money, Queue,
         Review,
@@ -27,9 +27,15 @@ pub async fn count(pool: &SqlitePool) -> Result<u64> {
 }
 
 /// The journal held to unreviewed records, whatever the query asks.
-pub async fn load(pool: &SqlitePool, query: &JournalQuery, base: Currency) -> Result<Queue> {
-    let journal = entries::load(pool, &query.with_review(Review::Unreviewed), base).await?;
-    let chart = Chart::load(pool).await?;
+pub async fn load(
+    pool: &SqlitePool,
+    unlisted: &Unlisted,
+    query: &JournalQuery,
+    base: Currency,
+) -> Result<Queue> {
+    let journal =
+        entries::load(pool, unlisted, &query.with_review(Review::Unreviewed), base).await?;
+    let chart = Chart::load(pool, unlisted).await?;
     let mut choices = Vec::new();
     for c in pairing::open(pool).await? {
         let a = c.ambiguity;
@@ -52,8 +58,13 @@ fn postable(chart: &Chart, keep: &[&str]) -> Vec<ChartAccount> {
     chart.accounts_for(keep).into_iter().filter(|a| a.depth > 0).collect()
 }
 
-pub async fn editing(pool: &SqlitePool, id: i64, base: Currency) -> Result<Editing> {
-    let chart = Chart::load(pool).await?;
+pub async fn editing(
+    pool: &SqlitePool,
+    unlisted: &Unlisted,
+    id: i64,
+    base: Currency,
+) -> Result<Editing> {
+    let chart = Chart::load(pool, unlisted).await?;
     let found =
         journal::by_ids(pool, &[id]).await?.pop().with_context(|| format!("查無交易 {id}"))?;
     let entry = chart.entry(found, base, &[]);
@@ -68,8 +79,8 @@ pub async fn editing(pool: &SqlitePool, id: i64, base: Currency) -> Result<Editi
 }
 
 /// The accounts 記一筆 offers.
-pub async fn manual_accounts(pool: &SqlitePool) -> Result<Vec<ChartAccount>> {
-    Ok(postable(&Chart::load(pool).await?, &[]))
+pub async fn manual_accounts(pool: &SqlitePool, unlisted: &Unlisted) -> Result<Vec<ChartAccount>> {
+    Ok(postable(&Chart::load(pool, unlisted).await?, &[]))
 }
 
 /// Grouping commas and spaces are only how the amount was typed.

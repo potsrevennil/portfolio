@@ -8,7 +8,10 @@ use leptos::prelude::*;
 use rust_decimal::Decimal;
 
 use super::axis::plotted;
-use crate::{balance_sheet::TotalText, model::Pie};
+use crate::{
+    balance_sheet::TotalText,
+    model::{account_href, Pie},
+};
 
 /// Parts drawn in a colour of their own; a donut of more is hard to read.
 const COLOURED: usize = 5;
@@ -55,7 +58,9 @@ pub fn PieChart(pie: Pie) -> AnyView {
             view! {
                 <li>
                     <span class=swatch.unwrap_or_else(|| "swatch none".into()) aria-hidden="true"></span>
-                    <span class="name">{s.label}</span>
+                    <a class="name" href=account_href(&s.path)>
+                        {s.label}
+                    </a>
                     <span class="value"><TotalText total=s.total /></span>
                     <span class="part">{s.part.map(percent)}</span>
                 </li>

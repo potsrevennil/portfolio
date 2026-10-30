@@ -8,7 +8,7 @@ use leptos_meta::Title;
 
 use crate::{
     error::LoadFailed,
-    model::{BalanceSheet, Converted, JournalQuery, Money, Node, Section, Unpriced},
+    model::{account_href, BalanceSheet, Converted, Money, Node, Section, Unpriced},
 };
 
 /// Where the open groups are remembered across visits, per browser.
@@ -138,7 +138,7 @@ fn node(n: Node, depth: usize, open: RwSignal<BTreeSet<String>>) -> AnyView {
     let row = || {
         view! {
             <span class="marker" aria-hidden="true"></span>
-            <a class="name" href=format!("/journal{}", JournalQuery::account(&n.path))>
+            <a class="name" href=account_href(&n.path)>
                 {n.label.clone()}
             </a>
             <Figures total=n.total.clone() native=n.native.clone() />

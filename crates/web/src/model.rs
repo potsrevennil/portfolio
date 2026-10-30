@@ -3,7 +3,7 @@
 
 use std::{fmt, str::FromStr};
 
-use ledger_types::Currency;
+use ledger_types::{assertion::AssertionSource, Currency};
 use leptos_router::params::ParamsMap;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,11 @@ impl fmt::Display for Unpriced {
 pub struct Converted {
     pub money: Money,
     pub unpriced: Unpriced,
+}
+
+/// A sum with nothing left unconverted.
+impl From<Money> for Converted {
+    fn from(money: Money) -> Self { Converted { money, unpriced: Unpriced::default() } }
 }
 
 impl Converted {
@@ -635,6 +640,65 @@ pub struct Charts {
     /// What holdings carried at cost stand at today, outside net worth;
     /// none when there are none.
     pub at_cost: Option<Converted>,
+}
+
+/// Who vouches for a balance check's figure, as the page names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Voucher(pub AssertionSource);
+
+impl fmt::Display for Voucher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            AssertionSource::Statement => "對帳單",
+            AssertionSource::Tiantian => "天天記帳",
+            AssertionSource::Counted => "盤點",
+        })
+    }
+}
+
+/// Where an account's own page is.
+pub fn account_href(path: &str) -> String { format!("/account{}", JournalQuery::account(path)) }
+
+/// One step of an account's place in the chart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Crumb {
+    pub path: String,
+    pub label: String,
+}
+
+/// One figure an outside source states for the account, against the books.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BalanceCheck {
+    pub date: String,
+    pub voucher: Voucher,
+    /// The sub-account the figure is for, when not the page's own.
+    pub account: Option<String>,
+    pub expected: Money,
+    pub computed: Money,
+    /// The books less the figure, unrounded.
+    pub difference: Money,
+    /// Decided on the exact figures: rounding for display could hide a
+    /// difference of cents.
+    pub ok: bool,
+}
+
+/// One account's page: where it stands, how it got there, and what vouches
+/// for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountPage {
+    pub path: String,
+    pub label: String,
+    /// Its place in the chart, from the root down to itself.
+    pub trail: Vec<Crumb>,
+    /// The balance now, per currency, as its statements show it.
+    pub balance: Vec<Money>,
+    pub total: Converted,
+    /// Income and expense show what moved each month; the rest, the balance.
+    pub flow: bool,
+    /// One per currency: amounts in different currencies share no axis.
+    pub trends: Vec<Trend>,
+    /// Newest first.
+    pub checks: Vec<BalanceCheck>,
 }
 
 #[cfg(test)]

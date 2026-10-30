@@ -1,7 +1,7 @@
 //! Figures a month at a time, for charts: net worth's two arms at the end of
-//! each month, and each income and expense account's flow within it. Each
-//! walks the postings once in date order, so a long history costs one pass,
-//! not one per point.
+//! each month, each income and expense account's flow within it, and one
+//! subtree's own balance. Each walks the postings once in date order, so a
+//! long history costs one pass, not one per point.
 //!
 //! Unlike [`net_worth_over_time`](crate::query::net_worth_over_time), a
 //! currency with no rate does not fail the report: its amount is kept apart in
@@ -19,8 +19,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::query::{
-    counts, generate_periods, period_start_of, rate, AccountType, Grain, LedgerData, PostingEntry,
-    PriceTable,
+    counts, generate_periods, in_subtree, period_start_of, rate, AccountType, Grain, LedgerData,
+    PostingEntry, PriceTable,
 };
 
 /// A sum in a base currency, with the amounts that had no rate kept apart
@@ -141,6 +141,33 @@ impl LedgerData {
     /// The first posting's date, where a history starts.
     pub fn first_date(&self) -> Option<NaiveDate> { self.postings.iter().map(|p| p.date).min() }
 
+    /// `root` and its subtree's balance in `currency` at the end of `as_of`.
+    pub fn subtree_balance(&self, root: &str, currency: Currency, as_of: NaiveDate) -> Decimal {
+        self.postings
+            .iter()
+            .filter(|p| {
+                p.currency == currency
+                    && p.date <= as_of
+                    && in_subtree(&self.accounts[&p.account_id].path, root)
+            })
+            .map(|p| p.amount)
+            .sum()
+    }
+
+    /// The same ledger held to `root`'s subtree: every report over it is
+    /// that subtree's, and costs a pass over its postings only.
+    pub fn subtree(&self, root: &str) -> LedgerData {
+        LedgerData {
+            accounts: self.accounts.clone(),
+            postings: self
+                .postings
+                .iter()
+                .filter(|p| in_subtree(&self.accounts[&p.account_id].path, root))
+                .cloned()
+                .collect(),
+        }
+    }
+
     /// Assets and liabilities at the end of each month over `[start, end]`
     /// (the last point on `end` itself), net worth's as
     /// [`in_net_worth`](crate::query::in_net_worth) counts it and what it
@@ -227,6 +254,25 @@ impl LedgerData {
                     .collect(),
             })
             .collect()
+    }
+
+    /// `root` and its subtree's balance per currency at the end of each
+    /// month over `[start, end]`, unconverted: the figures its statements
+    /// show.
+    pub fn subtree_over_time(
+        &self,
+        root: &str,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Vec<(NaiveDate, BTreeMap<Currency, Decimal>)> {
+        let under = |p: &PostingEntry| in_subtree(&self.accounts[&p.account_id].path, root);
+        self.at_period_ends(start, end, under, |date, sums| {
+            let mut own: BTreeMap<Currency, Decimal> = BTreeMap::new();
+            for (&(_, currency), &amount) in sums {
+                *own.entry(currency).or_default() += amount;
+            }
+            (date, own)
+        })
     }
 
     /// Calls `at` with the running per-(account, currency) sums of the kept
