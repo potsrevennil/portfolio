@@ -541,7 +541,7 @@ async fn dates_bound_the_range_inclusively() {
 
     let bad = JournalQuery { from: Some("2024-13-01".into()), ..Default::default() };
     let error = load(&pool, bad).await.unwrap_err().to_string();
-    assert!(error.contains("日期不對：2024-13-01"), "{error}");
+    assert!(error.contains("日期毋著：2024-13-01"), "{error}");
 }
 
 #[tokio::test]

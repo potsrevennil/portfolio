@@ -4809,6 +4809,7 @@ dependencies = [
  "leptos_axum",
  "leptos_meta",
  "leptos_router",
+ "portfolio",
  "prices",
  "rust_decimal",
  "rust_decimal_macros",

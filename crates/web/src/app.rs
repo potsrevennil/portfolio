@@ -11,6 +11,7 @@ use crate::{
     account::AccountRoute,
     balance_sheet::BalanceSheetPage,
     charts::ChartsPage,
+    coverage::{CoverageActions, CoverageCount, CoveragePage},
     journal::JournalPage,
     manual::ManualPage,
     review::{Actions, EditPage, ReviewCount, ReviewPage},
@@ -40,6 +41,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     provide_meta_context();
     provide_context(Actions::new());
+    provide_context(CoverageActions::new());
     // Effects run only in the browser, once the page is live: what a browser
     // test waits for before it clicks.
     Effect::new(|| {
@@ -57,6 +59,7 @@ pub fn App() -> impl IntoView {
                     <A href="/journal">"日記帳"</A>
                     <A href="/review">"待確認" <ReviewCount /></A>
                     <A href="/entry">"記一筆"</A>
+                    <A href="/coverage">"對帳進度" <CoverageCount /></A>
                 </nav>
             </header>
             <main>
@@ -68,6 +71,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/review") view=ReviewPage />
                     <Route path=path!("/review/:id") view=EditPage />
                     <Route path=path!("/entry") view=ManualPage />
+                    <Route path=path!("/coverage") view=CoveragePage />
                 </Routes>
             </main>
         </Router>

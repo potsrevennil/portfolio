@@ -8,6 +8,7 @@ pub mod broker;
 pub mod chart;
 pub mod check;
 pub mod connect;
+pub mod coverage;
 pub mod events;
 pub mod hledger;
 pub mod holdings;

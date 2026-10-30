@@ -8,7 +8,6 @@ use std::future::Future;
 use axum::{body::Body, http::Request};
 use db::{market::Market, review::StatementAccounts};
 use http_body_util::BodyExt;
-use ledger::{investments::Investments, valuation::AtCost};
 use leptos::{
     prelude::{provide_context, LeptosOptions, Owner},
     reactive::computed::ScopedFuture,
@@ -55,18 +54,12 @@ impl Built for (TempDir, SqlitePool, Market) {
 pub struct Context {
     pool: SqlitePool,
     market: Option<Market>,
-    statements: StatementAccounts,
-    unlisted: Unlisted,
+    config: server::Config,
 }
 
 impl From<&SqlitePool> for Context {
     fn from(pool: &SqlitePool) -> Self {
-        Context {
-            pool: pool.clone(),
-            market: None,
-            statements: StatementAccounts::default(),
-            unlisted: Unlisted::default(),
-        }
+        Context { pool: pool.clone(), market: None, config: server::Config::default() }
     }
 }
 
@@ -76,10 +69,14 @@ impl Context {
     }
 
     pub fn statements(self, statements: StatementAccounts) -> Self {
-        Context { statements, ..self }
+        Context { config: server::Config { statements, ..self.config }, ..self }
     }
 
-    pub fn unlisted(self, unlisted: Unlisted) -> Self { Context { unlisted, ..self } }
+    pub fn unlisted(self, unlisted: Unlisted) -> Self {
+        Context { config: server::Config { unlisted, ..self.config }, ..self }
+    }
+
+    pub fn config(self, config: server::Config) -> Self { Context { config, ..self } }
 
     /// Calls a server function as the router would.
     pub async fn call<F: Future>(self, function: impl FnOnce() -> F) -> F::Output {
@@ -89,10 +86,7 @@ impl Context {
             if let Some(market) = self.market {
                 provide_context(market);
             }
-            provide_context(AtCost::default());
-            provide_context(Investments::default());
-            provide_context(self.statements);
-            provide_context(self.unlisted);
+            self.config.provide();
             ScopedFuture::new(function())
         });
         call.await

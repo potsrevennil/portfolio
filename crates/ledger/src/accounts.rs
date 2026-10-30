@@ -222,11 +222,18 @@ pub struct Fallback {
 /// per person or group, and the sign says who owes whom (positive, they owe
 /// you; negative, you owe them). Negative is therefore an ordinary state here,
 /// a payable, not a sign of a missing opening balance.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct SplitAccounts {
     /// Every account at or under one of these is a split account.
     #[serde(default)]
     pub roots: Vec<Account>,
+}
+
+impl SplitAccounts {
+    /// True for an account at or under a root.
+    pub fn covers(&self, account: &str) -> bool {
+        self.roots.iter().any(|root| in_subtree(account, root.as_ref()))
+    }
 }
 
 /// Accounts no institution reports on (cash, prepaid passes): only a balance
@@ -425,13 +432,7 @@ impl Chart {
 
     /// True for an account at or under a split-account root, where a negative
     /// balance means you owe them rather than a missing opening balance.
-    pub fn is_split_account(&self, account: &str) -> bool {
-        self.split_accounts.roots.iter().any(|root| {
-            account
-                .strip_prefix(root.as_ref())
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
-        })
-    }
+    pub fn is_split_account(&self, account: &str) -> bool { self.split_accounts.covers(account) }
 
     /// Corrections that named a record the exports do not contain.
     pub fn stale_overrides(&self, used: &BTreeSet<String>) -> BTreeSet<String> {

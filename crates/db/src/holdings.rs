@@ -122,30 +122,3 @@ pub async fn load(conn: &mut SqliteConnection) -> Result<Vec<HoldingAssertion>> 
     .context("loading holding assertions")?;
     rows.into_iter().map(HoldingAssertion::try_from).collect()
 }
-
-/// One row of the `assertion_coverage` view: a figure some outside party
-/// vouches for, from either assertion table.
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-pub struct Coverage {
-    pub account: String,
-    pub commodity: String,
-    pub as_of: String,
-    pub source: String,
-    /// `balance` (held to postings), `cash` or `position` (held to broker
-    /// records).
-    pub kind: String,
-}
-
-/// The newest vouched day per account, commodity and kind — what a coverage
-/// report shows as 已對帳至.
-pub async fn coverage(conn: &mut SqliteConnection) -> Result<Vec<Coverage>> {
-    sqlx::query_as(
-        "SELECT a.path AS account, c.commodity, max(c.as_of) AS as_of, c.source, c.kind
-         FROM assertion_coverage c JOIN accounts a ON a.id = c.account_id
-         GROUP BY a.path, c.commodity, c.source, c.kind
-         ORDER BY a.path, c.kind, c.commodity",
-    )
-    .fetch_all(conn)
-    .await
-    .context("loading assertion coverage")
-}

@@ -1,6 +1,8 @@
 //! The invariant gate (`db::check`) and the `balance_assertion` table, over
 //! small hand-built ledgers. All figures are invented.
 
+mod common;
+
 use chrono::NaiveDate;
 use db::{
     assertions::{self, AssertionSource, BalanceAssertion},
@@ -10,7 +12,7 @@ use db::{
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqlitePool;
 use tempfile::TempDir;
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, day).unwrap() }
@@ -36,35 +38,11 @@ async fn ledger() -> (TempDir, SqlitePool) {
             .unwrap();
     }
     let conn = &mut *pool.acquire().await.unwrap();
-    post(conn, "2024-03-01", "Assets:Bank", "1000", "TWD").await;
-    post(conn, "2024-03-15", "Assets:Bank:Pocket", "200", "TWD").await;
-    post(conn, "2024-04-01", "Assets:Bank", "-300", "TWD").await;
-    post(conn, "2024-04-01", "Assets:Bank", "5", "USD").await;
+    common::post(conn, "2024-03-01", "Assets:Bank", "1000", "TWD", None).await;
+    common::post(conn, "2024-03-15", "Assets:Bank:Pocket", "200", "TWD", None).await;
+    common::post(conn, "2024-04-01", "Assets:Bank", "-300", "TWD", None).await;
+    common::post(conn, "2024-04-01", "Assets:Bank", "5", "USD", None).await;
     (dir, pool)
-}
-
-/// A two-leg transaction between `account` and Income:Salary.
-async fn post(conn: &mut SqliteConnection, date: &str, account: &str, amount: &str, ccy: &str) {
-    let txn = sqlx::query("INSERT INTO transactions (date, source) VALUES (?, 'manual')")
-        .bind(date)
-        .execute(&mut *conn)
-        .await
-        .unwrap()
-        .last_insert_rowid();
-    let negated = format!("{}", -amount.parse::<Decimal>().unwrap());
-    for (path, amount) in [(account, amount), ("Income:Salary", negated.as_str())] {
-        sqlx::query(
-            "INSERT INTO postings (transaction_id, account_id, amount, currency) SELECT ?, id, ?, \
-             ? FROM accounts WHERE path = ?",
-        )
-        .bind(txn)
-        .bind(amount)
-        .bind(ccy)
-        .bind(path)
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    }
 }
 
 fn statement(opening: Decimal, closing: Decimal) -> BalanceAssertion {
@@ -202,7 +180,7 @@ async fn the_gate_sees_uncommitted_writes_and_nothing_commits() {
         .unwrap();
 
     let mut tx = pool.begin().await.unwrap();
-    post(&mut tx, "2024-03-20", "Assets:Bank", "1", "TWD").await;
+    common::post(&mut tx, "2024-03-20", "Assets:Bank", "1", "TWD", None).await;
     let err = check::gate(&mut tx).await.expect_err("a duplicated line must fail the gate");
     assert!(format!("{err:#}").contains("MISMATCH Assets:Bank TWD"), "{err:#}");
     tx.rollback().await.unwrap();
@@ -236,7 +214,15 @@ async fn inserting_an_assertion_is_idempotent_but_rejects_a_conflict() {
 #[tokio::test]
 async fn an_assertion_older_than_the_newest_posting_does_not_vouch_for_it() {
     let (_dir, pool) = ledger().await;
-    post(&mut *pool.acquire().await.unwrap(), "2024-05-01", "Assets:Bank", "50", "TWD").await;
+    common::post(
+        &mut *pool.acquire().await.unwrap(),
+        "2024-05-01",
+        "Assets:Bank",
+        "50",
+        "TWD",
+        None,
+    )
+    .await;
     let report = check_with(&pool, &[statement(dec!(1000), dec!(900))]).await;
 
     // The figures still match: they describe a period the posting is outside of.

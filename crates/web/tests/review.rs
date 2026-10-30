@@ -373,7 +373,7 @@ async fn an_edit_is_refused_by_name() {
          TWD。2024-02-29 以前的帳已經對過了：這筆可能已經記過，或者日期該在 2024-02-29 之後。"
     );
     let amount = refused(vec![leg(Some(rows[0].0), "Assets:Bank:Savings", "五百")]).await;
-    assert!(amount.contains("金額不對：五百"), "{amount}");
+    assert!(amount.contains("金額毋著：五百"), "{amount}");
     let stranger = refused(vec![
         leg(Some(rows[0].0), "Assets:Bank:Savings", "-500"),
         leg(Some(1), "Expenses:Food", "500"),

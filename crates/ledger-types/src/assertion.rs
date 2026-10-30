@@ -26,6 +26,12 @@ pub enum AssertionSource {
     Counted,
 }
 
+impl AssertionSource {
+    /// An institution or a count vouches for the figure; 天天記帳's closing
+    /// is that app's own sum of its records, so it checks nothing outside.
+    pub fn is_outside(self) -> bool { !matches!(self, AssertionSource::Tiantian) }
+}
+
 /// One assertion. Dates are inclusive: `opening` is the balance before
 /// `period_start`, `closing` the balance at the end of `period_end`. Both cover
 /// `account` and its subtree in `currency`.
@@ -51,6 +57,19 @@ impl fmt::Display for BalanceAssertion {
 }
 
 impl BalanceAssertion {
+    /// A balance the user counted at the end of `date`.
+    pub fn counted(account: &str, currency: Currency, date: NaiveDate, closing: Decimal) -> Self {
+        BalanceAssertion {
+            source: AssertionSource::Counted,
+            account: account.to_string(),
+            currency,
+            period_start: None,
+            opening: None,
+            period_end: date,
+            closing,
+        }
+    }
+
     /// The (day, balance at the end of it) pairs this states: the opening, if
     /// any, then the closing.
     pub fn points(&self) -> impl Iterator<Item = (NaiveDate, Decimal)> {

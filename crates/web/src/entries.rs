@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use db::{
     chart::standalone_labels,
     import::Origin as DbOrigin,
@@ -223,9 +223,7 @@ impl Chart {
     /// knows which account answers to it — so no caller can end up with a
     /// filter whose account quietly went missing.
     pub fn filter(&self, q: &JournalQuery) -> Result<Filter> {
-        let date = |d: &Option<String>| {
-            d.as_deref().map(|d| d.parse().with_context(|| format!("日期不對：{d}"))).transpose()
-        };
+        let date = |d: &Option<String>| d.as_deref().map(crate::typed::date).transpose();
         Ok(Filter {
             accounts: q
                 .account

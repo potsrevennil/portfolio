@@ -1314,3 +1314,265 @@ table.checks thead th {
   color: var(--negative);
   font-weight: 600;
 }
+
+/* 對帳進度: a bar per account from its first record to today. Green is what
+   the bank's own statements checked; hatched amber is recorded but not yet
+   checked, so it never reads as part of the green. */
+.coverage {
+  padding: 0 1rem;
+}
+
+.coverage .as-of {
+  color: var(--muted);
+}
+
+/* Above the bar's own grid display, which would otherwise win. */
+.coverage .account.hidden {
+  display: none;
+}
+
+.coverage .tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.6rem;
+  align-items: center;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.coverage .tools .spacer {
+  flex: 1;
+}
+
+.coverage .tools label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* The filter chips are buttons here, not links. */
+.tools button.chip {
+  padding: 0.15rem 0.65rem;
+  font-size: 0.9rem;
+}
+
+.coverage .legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+}
+
+.coverage .swatch {
+  display: inline-block;
+  width: 1.4rem;
+  height: 0.7rem;
+  margin-right: 0.25rem;
+  vertical-align: middle;
+  border-radius: 2px;
+}
+
+.coverage .axis,
+.coverage .account {
+  display: grid;
+  grid-template-columns: 9rem 1fr 13rem;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.coverage .axis {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.coverage .ticks {
+  position: relative;
+  height: 1rem;
+}
+
+.coverage .ticks span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.coverage .ticks .today {
+  transform: translateX(-100%);
+  color: var(--accent);
+}
+
+.coverage .kind h3 {
+  margin: 1rem 0 0.1rem;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.coverage .account {
+  grid-template-areas: "name bar state" "name dates state";
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.coverage .name {
+  grid-area: name;
+  font-weight: 600;
+}
+
+.coverage .name a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.coverage .name a:hover {
+  text-decoration: underline;
+}
+
+.coverage .name small,
+.coverage .state small {
+  display: block;
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.coverage .bar {
+  grid-area: bar;
+  position: relative;
+  height: 1rem;
+  border-radius: 3px;
+  background: var(--hover);
+  border-right: 2px solid var(--accent);
+}
+
+.coverage .bar i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.coverage .bar .checked,
+.coverage .swatch.checked {
+  background: var(--good);
+  opacity: 0.55;
+}
+
+.coverage .bar .recorded,
+.coverage .swatch.recorded {
+  background: repeating-linear-gradient(45deg, var(--pending) 0 4px, transparent 4px 7px);
+}
+
+.coverage .bar .missing,
+.coverage .swatch.missing {
+  background: repeating-linear-gradient(-45deg, var(--negative) 0 2px, transparent 2px 7px);
+  opacity: 0.6;
+}
+
+.coverage .bar .before,
+.coverage .swatch.before {
+  background: repeating-linear-gradient(45deg, var(--line) 0 4px, transparent 4px 7px);
+}
+
+.coverage .swatch.none {
+  background: var(--hover);
+}
+
+.coverage .state {
+  grid-area: state;
+  font-size: 0.85rem;
+}
+
+.coverage .dates {
+  grid-area: dates;
+  position: relative;
+  height: 1rem;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.coverage .dates span {
+  position: absolute;
+  white-space: nowrap;
+}
+
+.coverage .dates .checked {
+  color: var(--good);
+}
+
+.coverage .dates .recorded {
+  color: var(--pending);
+}
+
+.coverage .dates .open {
+  color: var(--muted);
+}
+
+.coverage .current .status,
+.coverage .unscheduled .status {
+  color: var(--good);
+}
+
+.coverage .due .status {
+  color: var(--pending);
+}
+
+.coverage .overdue .status {
+  color: var(--negative);
+  font-weight: 600;
+}
+
+.coverage .link {
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.75rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.coverage .actions {
+  display: flex;
+  gap: 0.8rem;
+}
+
+.coverage a.tail {
+  display: block;
+  color: var(--accent);
+  font-size: 0.75rem;
+}
+
+.coverage .settings {
+  grid-column: 1 / -1;
+  background: var(--hover);
+  border-radius: 0.4rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+.coverage .settings form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: center;
+}
+
+.coverage .settings input[type="number"] {
+  width: 4rem;
+}
+
+.count-badge.due {
+  background: var(--negative);
+}
+
+@media (max-width: 40rem) {
+  .coverage .axis {
+    display: none;
+  }
+
+  .coverage .account {
+    grid-template-columns: 1fr;
+    grid-template-areas: "name" "bar" "dates" "state";
+    gap: 0.25rem;
+  }
+}
