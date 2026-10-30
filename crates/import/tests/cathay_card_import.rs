@@ -146,6 +146,34 @@ async fn a_purchase_still_to_post_waits_for_the_next_statement() -> Result<()> {
     Ok(())
 }
 
+/// A purchase on a statement's last days that the next one in hand doesn't show
+/// may have posted on the one missing between them: it waits past the first,
+/// unverified, whichever is imported.
+#[tokio::test]
+async fn a_purchase_before_a_missing_month_waits_past_its_statement() -> Result<()> {
+    let f = Fixture::frozen(&records(&[
+        ("2026-01-05", "expense", 100, "飲食"),
+        ("2026-01-19", "expense", 40, "飲食"),
+        ("2026-03-05", "expense", 30, "飲食"),
+    ]))
+    .await?;
+    let january = f.write(
+        "2026-01.csv",
+        &statement("2026/01/20", 0, 100, &[("01/05", "咖啡", "100", "01/08")]),
+    )?;
+    let march = f.write(
+        "2026-03.csv",
+        &statement("2026/03/20", 140, 170, &[("03/05", "便當", "30", "03/08")]),
+    )?;
+
+    f.import(Bank::CathayCard, &[january, march]).await?;
+
+    assert_eq!(f.unverified().await?, 1);
+    assert!(f.legs().await?.contains(&leg("2026-01-19", Some("2026-01-21"), "-40")));
+    assert!(f.gate_passes().await?);
+    Ok(())
+}
+
 /// A record no statement shows, too old to be still posting, is left to the
 /// chain: nothing is written.
 #[tokio::test]

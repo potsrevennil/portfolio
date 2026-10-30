@@ -637,8 +637,9 @@ pub fn plan(
 /// records it stands for through the matcher, and its leg takes the line's
 /// date. Several lines one record covers (a purchase and its foreign fee,
 /// posted apart) split its leg. Lines it finds none for stay new. A record no
-/// line shows that could still be to post waits for the next statement; an
-/// older one is left where it is, and the balance chain refuses it.
+/// line shows that could still be to post waits for the next statement, or the
+/// one missing after its period; an older one is left where it is, and the
+/// balance chain refuses it.
 fn vouch(
     st: &BankStatement,
     existing: &[LedgerPosting],
@@ -713,16 +714,24 @@ fn vouch(
         leg_splits.push(LegSplit { posting_id: p.id, transaction_id: p.transaction_id, parts });
     }
 
-    let settled = st.settled_through();
-    let after = settled.succ_opt().expect("a day after a statement");
+    // The days a line could still have come after: this import's last, and the
+    // last before any statement missing between its periods.
+    let breaks: Vec<NaiveDate> = st
+        .periods
+        .windows(2)
+        .filter(|pair| pair[0].end.succ_opt() != Some(pair[1].start))
+        .map(|pair| pair[0].end)
+        .chain([st.settled_through()])
+        .collect();
     for p in records.iter().filter(|p| !shown.contains(&p.id)) {
-        let to_post =
-            p.date <= settled && (settled - p.date).num_days() < st.bank.posts_within_days();
-        if to_post {
+        let waits_past = breaks
+            .iter()
+            .find(|&&end| p.date <= end && (end - p.date).num_days() < st.bank.posts_within_days());
+        if let Some(end) = waits_past {
             stamps.push(Stamp {
                 posting_id: p.id,
                 transaction_id: p.transaction_id,
-                posted: after,
+                posted: end.succ_opt().expect("a day after a statement"),
                 amount: p.amount,
                 vouched: Vouched::NotYet,
             });
