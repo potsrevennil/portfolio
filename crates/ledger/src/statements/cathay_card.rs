@@ -107,8 +107,7 @@ impl TryFrom<&[csv::StringRecord]> for Bill {
 }
 
 /// One statement, of the card its folder names.
-pub fn load(path: impl AsRef<Path>) -> Result<BankStatement> {
-    let path = path.as_ref();
+pub fn load(path: &Path) -> Result<BankStatement> {
     let read = || -> Result<BankStatement> {
         let bytes = std::fs::read(path)?;
         let text = String::from_utf8(bytes).context("not UTF-8")?;
@@ -123,9 +122,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<BankStatement> {
     read().with_context(|| format!("reading {}", path.display()))
 }
 
-pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
-    card::load_merged(paths, |path| load(path))
-}
+pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> { card::load_merged(paths, load) }
 
 #[cfg(test)]
 mod tests;

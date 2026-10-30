@@ -21,7 +21,7 @@ use super::{
 };
 
 const TABLE_HEADER: &str = "消費日 入帳起息日消費明細";
-const TABLE_ENDS: [&str; 4] = ["台端依契約", "【", "貼 心", "貼心"];
+const TABLE_ENDS: [&str; 2] = ["台端依契約", "【Richart"];
 
 /// `115/08/09`, in 民國 years.
 fn roc_date(s: &str) -> Option<NaiveDate> {
@@ -55,7 +55,6 @@ fn figure(text: &str, label: &str) -> Result<Decimal> {
 }
 
 /// The end of a row: its amount, then the country, then a foreign amount.
-#[derive(Debug, PartialEq)]
 struct Tail {
     /// What came before it on the line.
     description: String,
@@ -119,7 +118,7 @@ fn row(purchased: NaiveDate, posted: NaiveDate, lines: &[&str]) -> Result<Line> 
         posted,
         description,
         amount: tail.amount,
-        // Abroad is the news: most rows are at home.
+        // Only a row abroad has anything to add.
         detail: tail.detail.strip_prefix("TW").unwrap_or(&tail.detail).trim().to_string(),
     })
 }
@@ -174,8 +173,7 @@ impl FromStr for Bill {
 }
 
 /// One statement, of the card its folder names.
-pub fn load(path: impl AsRef<Path>) -> Result<BankStatement> {
-    let path = path.as_ref();
+pub fn load(path: &Path) -> Result<BankStatement> {
     let read = || -> Result<BankStatement> {
         let bill: Bill = pdf::text(path)?.parse()?;
         bill.into_statement(Bank::TaishinCard, card::folder_card(path)?)
@@ -183,9 +181,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<BankStatement> {
     read().with_context(|| format!("reading {}", path.display()))
 }
 
-pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
-    card::load_merged(paths, |path| load(path))
-}
+pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> { card::load_merged(paths, load) }
 
 #[cfg(test)]
 mod tests;

@@ -1,6 +1,8 @@
 //! Card statements on the user's own records, which are gitignored and live in
 //! the main checkout (or `$LEDGER_RECORDS_DIR`). Skipped where they are absent,
 //! as on CI. Reads them only: the journal and databases are scratch files.
+//! Needs `pdftotext` (the nix devShell has it). Once the mapping names a card,
+//! a disagreement between its records and its statements fails here.
 
 use anyhow::Result;
 use import::bank::import;
