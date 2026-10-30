@@ -15,7 +15,7 @@ use super::{
     args::Args,
     corrected, daily,
     emit::{contra_posting, emit_daily_accounts, narration_for, record_on, resolve},
-    matching,
+    matching::{self, DateRange},
     model::{self, Directive},
     names::{fallback_account, statement_account},
     statements::{
@@ -393,15 +393,15 @@ pub fn assemble(opts: &Args) -> Result<(model::Model, Summary)> {
                         && !reserved.get(pool).is_some_and(|r| r.contains(ei))
                 })
                 .collect();
-            let keys: Vec<(NaiveDate, Decimal)> = to_match
+            let keys: Vec<(DateRange, Decimal)> = to_match
                 .iter()
                 .map(|(si, li)| {
                     let l = &statements[*si].lines[*li];
-                    (l.book_date, l.delta())
+                    (l.book_date.into(), l.delta())
                 })
                 .collect();
-            let projected: Vec<(NaiveDate, Decimal)> =
-                candidates.iter().map(|&ei| (events[ei].date, events[ei].delta)).collect();
+            let projected: Vec<(DateRange, Decimal)> =
+                candidates.iter().map(|&ei| (events[ei].date.into(), events[ei].delta)).collect();
             for (i, m) in matching::match_subsets(&keys, &projected).into_iter().enumerate() {
                 if let Some(subset) = m {
                     assignment.insert(to_match[i], subset.iter().map(|&k| candidates[k]).collect());

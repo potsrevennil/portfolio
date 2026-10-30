@@ -432,7 +432,7 @@ pub fn plan(
         .enumerate()
         .map(|(i, &at)| Record {
             ref_id: i as i64,
-            date: line(at).book_date,
+            dates: line(at).book_date.into(),
             amount: line(at).delta(),
             currency: statements[at.0].statement.currency.to_string(),
         })
@@ -442,7 +442,7 @@ pub fn plan(
         .enumerate()
         .map(|(i, c)| Record {
             ref_id: i as i64,
-            date: c.date,
+            dates: c.date.into(),
             amount: c.amount,
             currency: c.currency.to_string(),
         })
