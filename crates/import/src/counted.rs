@@ -7,7 +7,7 @@ use std::{fmt, path::PathBuf};
 use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use db::{
-    assertions::{self, AssertionSource, BalanceAssertion},
+    assertions::{self, BalanceAssertion},
     check,
     import::ensure_account,
     import_batch, SqliteConnection,
@@ -87,15 +87,7 @@ pub async fn record(
         (None, []) => bail!("{account} holds nothing yet; name the --currency"),
         (None, many) => bail!("{account} holds {many:?}; name the --currency"),
     };
-    let assertion = BalanceAssertion {
-        source: AssertionSource::Counted,
-        account: account.to_string(),
-        currency,
-        period_start: None,
-        opening: None,
-        period_end: date,
-        closing: amount,
-    };
+    let assertion = BalanceAssertion::counted(account, currency, date, amount);
     ensure_account(db, &Labels::from(chart), account).await?;
     assertions::insert(db, &assertion).await?;
     let check = check::gate_with_counts(db, chart)

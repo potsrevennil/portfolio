@@ -233,12 +233,16 @@ async fn coverage_reads_both_assertion_tables() -> Result<()> {
     let f = Fixture::new()?;
     let pool = f.db().await?;
     f.import(&pool, &[f.file("full.csv", &full_year())?]).await?;
-    let coverage = db::holdings::coverage(&mut *pool.acquire().await?).await?;
-    let rows: Vec<(&str, &str, &str, &str)> = coverage
+    let figures = db::coverage::figures(&mut *pool.acquire().await?).await?;
+    let rows: Vec<(&str, bool, &str, String)> = figures
         .iter()
-        .map(|c| (c.account.as_str(), c.kind.as_str(), c.commodity.as_str(), c.as_of.as_str()))
+        .map(|f| (f.account.as_str(), f.held_to_broker, f.commodity.as_str(), f.as_of.to_string()))
         .collect();
-    assert_eq!(rows, [(IB, "cash", "USD", "2025-12-31"), (IB, "position", "ZZA", "2025-12-31")]);
+    assert_eq!(rows, [
+        (IB, true, "USD", "2024-12-31".into()),
+        (IB, true, "USD", "2025-12-31".into()),
+        (IB, true, "ZZA", "2025-12-31".into()),
+    ]);
     Ok(())
 }
 

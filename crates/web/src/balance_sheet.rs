@@ -49,20 +49,7 @@ pub fn SheetView(sheet: BalanceSheet) -> impl IntoView {
     let sections: BTreeSet<String> =
         sheet.sections.iter().chain(&sheet.at_cost).map(|s| s.path.clone()).collect();
     let open = RwSignal::new(sections.clone());
-    // Client only: restore the open groups once, then save every change. The
-    // `open` attribute is rendered on the server, and hydration adopts the
-    // markup as it stands, so a restore has to land after it — the next frame.
-    Effect::new(move |restored: Option<()>| {
-        match restored {
-            None => request_animation_frame(move || {
-                if let Some(saved) = load_open() {
-                    open.set(saved);
-                }
-            }),
-            Some(()) => save_open(&open.read()),
-        }
-        open.track();
-    });
+    crate::stored::remember(OPEN_KEY, open);
 
     let mut groups = sections.clone();
     for s in &sheet.sections {
@@ -223,18 +210,4 @@ pub fn MoneyText(money: Money) -> impl IntoView {
 #[component]
 pub fn UnpricedNote(unpriced: Unpriced) -> impl IntoView {
     view! { <span class="unpriced">{unpriced.to_string()}</span> }
-}
-
-fn storage() -> Option<leptos::web_sys::Storage> { window().local_storage().ok().flatten() }
-
-fn load_open() -> Option<BTreeSet<String>> {
-    let json = storage()?.get_item(OPEN_KEY).ok()??;
-    serde_json::from_str(&json).ok()
-}
-
-fn save_open(open: &BTreeSet<String>) {
-    if let (Some(storage), Ok(json)) = (storage(), serde_json::to_string(open)) {
-        // Private windows may refuse; the fold state is a convenience.
-        let _ = storage.set_item(OPEN_KEY, &json);
-    }
 }

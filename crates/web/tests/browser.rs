@@ -14,10 +14,7 @@
 //! WEB_BROWSER_TESTS=1 cargo test -p web --test browser
 //! ```
 
-#[path = "../../db/tests/common/market.rs"]
-mod market;
-#[path = "common/queue.rs"]
-mod queue;
+mod common;
 
 use std::{
     net::SocketAddr,
@@ -26,12 +23,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+use common::{
+    coverage,
+    queue::{ledger, COFFEE, LUNCH, TAXI},
+};
 use db::pairing::{self, Ambiguity};
 use fantoccini::{elements::Element, key::Key, Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
 use ledger_types::currency::Currency;
 use leptos::prelude::LeptosOptions;
-use queue::{ledger, COFFEE, LUNCH, TAXI};
 use rust_decimal_macros::dec;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -110,14 +110,18 @@ struct Journey {
 impl Journey {
     async fn start() -> Self {
         let (dir, pool) = ledger().await;
+        Self::serve(dir, pool, Default::default()).await
+    }
+
+    async fn serve(dir: TempDir, pool: SqlitePool, config: server::Config) -> Self {
         let site = site();
         let options = LeptosOptions::builder()
             .output_name("web")
             .site_root(site.path().to_string_lossy().to_string())
             .site_pkg_dir("pkg")
             .build();
-        let market = market::beside(dir.path()).await;
-        let router = server::router(options, pool.clone(), market, Default::default());
+        let market = common::market::beside(dir.path()).await;
+        let router = server::router(options, pool.clone(), market, config);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr: SocketAddr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router.into_make_service()).await });
@@ -222,6 +226,19 @@ impl Journey {
         }
     }
 
+    /// The 對帳進度 bar whose account is labelled `label`.
+    async fn account(&self, label: &str) -> Element {
+        for row in self.all(".account").await {
+            // textContent, not the text shown: a hidden bar has none.
+            let name = row.find(Locator::Css(".name")).await.unwrap();
+            let name = name.prop("textContent").await.unwrap().unwrap_or_default();
+            if name.starts_with(label) {
+                return row;
+            }
+        }
+        panic!("no account {label:?}:\n{}", self.text().await);
+    }
+
     /// The queue row whose text holds `needle`.
     async fn row(&self, needle: &str) -> Element {
         for row in self.all("li.entry").await {
@@ -263,6 +280,7 @@ async fn journeys() {
     show_the_accounts_at_zero().await;
     explore_the_charts().await;
     open_an_account().await;
+    set_a_statement_day_and_follow_the_unchecked().await;
 }
 
 async fn confirm_from_the_queue() {
@@ -516,5 +534,43 @@ async fn open_an_account() {
     assert_eq!(url.path(), "/journal");
     let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
     assert_eq!(query, [("account".to_string(), "Assets:Bank:Savings".to_string())]);
+    j.close().await;
+}
+
+/// From the nav to 對帳進度: give an account a statement day, then follow a
+/// bar's unchecked records to the journal showing exactly those.
+async fn set_a_statement_day_and_follow_the_unchecked() {
+    let l = coverage::ledger().await;
+    let j = Journey::serve(l.dir, l.pool, Default::default()).await;
+    j.open("/").await;
+    j.find(r#"header a[href="/coverage"]"#).await.click().await.unwrap();
+    j.until_text("對過數單").await;
+    // The emptied wallet stays out of sight until asked for.
+    let wallet = j.account("舊錢包").await;
+    assert!(!wallet.is_displayed().await.unwrap());
+    j.find(".coverage .tools input[type=checkbox]").await.click().await.unwrap();
+    assert!(wallet.is_displayed().await.unwrap());
+
+    let fx = j.account("外幣").await;
+    assert!(fx.text().await.unwrap().contains("無固定數單"));
+    fx.find(Locator::XPath(".//button[text()='設定']")).await.unwrap().click().await.unwrap();
+    let form = j.find(".settings form").await;
+    form.find(Locator::Css("select[name=kind]"))
+        .await
+        .unwrap()
+        .select_by_value("yearly")
+        .await
+        .unwrap();
+    // Month and day appear for a yearly statement, at the year's end.
+    j.find(".settings select[name=month]").await;
+    form.find(Locator::Css("button[type=submit]")).await.unwrap().click().await.unwrap();
+    j.until_text("逐年數單").await;
+
+    let savings = j.account("活存").await;
+    savings.find(Locator::Css("a.tail")).await.unwrap().click().await.unwrap();
+    j.until_count("li.entry", 1).await;
+    let url = j.browser.current_url().await.unwrap();
+    assert!(url.as_str().contains("unverified=1"), "{url}");
+    assert!(j.find("li.entry").await.text().await.unwrap().contains("2024-03-05"));
     j.close().await;
 }

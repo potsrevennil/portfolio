@@ -5,11 +5,16 @@ use std::path::Path;
 use anyhow::Result;
 use axum::Router;
 use db::{
+    coverage::Corrections,
     market::{Market, Rates},
     review::StatementAccounts,
     SqlitePool,
 };
-use ledger::{accounts::Chart, investments::Investments, valuation::AtCost};
+use ledger::{
+    accounts::{Chart, SplitAccounts},
+    investments::Investments,
+    valuation::AtCost,
+};
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
 
@@ -33,13 +38,16 @@ pub struct Config {
     pub investments: Investments,
     pub statements: StatementAccounts,
     pub unlisted: Unlisted,
+    pub corrections: Corrections,
+    pub splits: SplitAccounts,
 }
 
 impl Config {
     /// A ledger with no mapping has no rules: nothing carried at cost, no
-    /// investment results apart, and only accounts with a statement imported
-    /// count as statement accounts. A mapping that does not parse must stop
-    /// the server, or its rules would be dropped silently.
+    /// investment results apart, only accounts with a statement imported
+    /// count as statement accounts, and no split accounts. A mapping that
+    /// does not parse must stop the server, or its rules would be dropped
+    /// silently.
     pub fn load(mapping: &Path) -> Result<Self> {
         match mapping.exists() {
             true => {
@@ -49,6 +57,8 @@ impl Config {
                     investments: Investments::load(mapping)?,
                     statements: StatementAccounts::from(&chart),
                     unlisted: Unlisted::from(&chart),
+                    corrections: Corrections::from(&chart),
+                    splits: chart.split_accounts,
                 })
             }
             false => {
@@ -57,6 +67,16 @@ impl Config {
             }
         }
     }
+
+    /// Puts each setting in the context a server function reads.
+    pub fn provide(&self) {
+        provide_context(self.at_cost.clone());
+        provide_context(self.investments.clone());
+        provide_context(self.statements.clone());
+        provide_context(self.unlisted.clone());
+        provide_context(self.corrections.clone());
+        provide_context(self.splits.clone());
+    }
 }
 
 pub fn router(options: LeptosOptions, pool: SqlitePool, market: Market, config: Config) -> Router {
@@ -64,10 +84,7 @@ pub fn router(options: LeptosOptions, pool: SqlitePool, market: Market, config: 
     let context = move || {
         provide_context(pool.clone());
         provide_context(market.clone());
-        provide_context(config.at_cost.clone());
-        provide_context(config.investments.clone());
-        provide_context(config.statements.clone());
-        provide_context(config.unlisted.clone());
+        config.provide();
     };
     Router::new()
         .leptos_routes_with_context(&options, routes, context, {

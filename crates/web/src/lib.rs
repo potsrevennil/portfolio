@@ -6,6 +6,7 @@ pub mod account;
 pub mod app;
 pub mod balance_sheet;
 pub mod charts;
+pub mod coverage;
 #[cfg(feature = "ssr")]
 pub mod detail;
 #[cfg(feature = "ssr")]
@@ -24,5 +25,8 @@ pub mod review;
 pub mod server;
 #[cfg(feature = "ssr")]
 pub mod sheet;
+pub mod stored;
 #[cfg(feature = "ssr")]
 pub mod trends;
+#[cfg(feature = "ssr")]
+pub mod typed;

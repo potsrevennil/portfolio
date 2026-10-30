@@ -11,7 +11,6 @@ use db::{
     SqlitePool,
 };
 use ledger_types::currency::Currency;
-use rust_decimal::Decimal;
 
 use crate::{
     entries::{self, Chart, Unlisted},
@@ -19,6 +18,7 @@ use crate::{
         Change, ChartAccount, Choice, Editing, JournalQuery, LegInput, ManualInput, Money, Queue,
         Review,
     },
+    typed::{amount, currency, date},
 };
 
 /// How many transactions wait for review.
@@ -83,16 +83,6 @@ pub async fn manual_accounts(pool: &SqlitePool, unlisted: &Unlisted) -> Result<V
     Ok(postable(&Chart::load(pool, unlisted).await?, &[]))
 }
 
-/// Grouping commas and spaces are only how the amount was typed.
-fn amount(text: &str) -> Result<Decimal> {
-    let clean: String = text.chars().filter(|c| *c != ',' && !c.is_whitespace()).collect();
-    clean.parse().with_context(|| format!("金額不對：{text}"))
-}
-
-fn currency(text: &str) -> Result<Currency> {
-    text.trim().parse().with_context(|| format!("幣別不對：{text}"))
-}
-
 impl TryFrom<&LegInput> for LegEdit {
     type Error = anyhow::Error;
 
@@ -132,7 +122,7 @@ impl TryFrom<&ManualInput> for Manual {
             bail!("請選帳戶");
         }
         Ok(Manual {
-            date: m.date.trim().parse().with_context(|| format!("日期不對：{}", m.date))?,
+            date: date(&m.date)?,
             amount: amount(&m.amount)?,
             currency: currency(&m.currency)?,
             account: account.to_string(),

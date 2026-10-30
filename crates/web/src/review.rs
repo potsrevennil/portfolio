@@ -138,10 +138,19 @@ impl Default for Actions {
 pub fn ReviewCount() -> impl IntoView {
     let actions = expect_context::<Actions>();
     let count = Resource::new(move || actions.version(), |_| review_count());
+    view! { <CountBadge count class="count-badge" /> }
+}
+
+/// A count beside a nav link, absent while there is nothing to count.
+#[component]
+pub fn CountBadge(
+    count: Resource<Result<u64, ServerFnError>>,
+    class: &'static str,
+) -> impl IntoView {
     view! {
         <Transition>
             {move || Suspend::new(async move {
-                count.await.ok().filter(|n| *n > 0).map(|n| view! { <span class="count-badge">{n}</span> })
+                count.await.ok().filter(|n| *n > 0).map(|n| view! { <span class=class>{n}</span> })
             })}
         </Transition>
     }

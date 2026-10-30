@@ -2,6 +2,7 @@
 //! SQLite, the network or the filesystem: this crate compiles to wasm.
 
 pub mod assertion;
+pub mod cadence;
 pub mod currency;
 
 pub use currency::Currency;
