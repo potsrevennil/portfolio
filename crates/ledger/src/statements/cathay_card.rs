@@ -124,9 +124,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<BankStatement> {
 }
 
 pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
-    let statements =
-        paths.iter().map(|path| Ok((load(path)?, path.clone()))).collect::<Result<Vec<_>>>()?;
-    card::merge(statements)
+    card::load_merged(paths, |path| load(path))
 }
 
 #[cfg(test)]

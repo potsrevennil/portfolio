@@ -209,5 +209,15 @@ pub fn merge(statements: Vec<(BankStatement, PathBuf)>) -> Result<Vec<Merged>> {
     Ok(merged)
 }
 
+/// Each card's statements in `paths`, read by a bank's `load`.
+pub fn load_merged(
+    paths: &[PathBuf],
+    load: impl Fn(&Path) -> Result<BankStatement>,
+) -> Result<Vec<Merged>> {
+    let statements =
+        paths.iter().map(|path| Ok((load(path)?, path.clone()))).collect::<Result<Vec<_>>>()?;
+    merge(statements)
+}
+
 #[cfg(test)]
 mod tests;

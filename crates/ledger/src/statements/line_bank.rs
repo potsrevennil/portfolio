@@ -10,7 +10,6 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    process::Command,
     str::FromStr,
 };
 
@@ -19,7 +18,10 @@ use chrono::NaiveDate;
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
-use super::bank::{Bank, BankStatement, Merged, Period, StatementLine};
+use super::{
+    bank::{Bank, BankStatement, Merged, Period, StatementLine},
+    pdf,
+};
 
 /// The 交易說明 of a transfer the bank called back.
 const CANCEL: &str = "取消轉帳";
@@ -266,22 +268,6 @@ impl FromStr for Document {
     }
 }
 
-fn pdf_text(path: &Path) -> Result<String> {
-    let out = Command::new("pdftotext")
-        .args(["-raw", "-enc", "UTF-8"])
-        .arg(path)
-        .arg("-")
-        .output()
-        .context("running pdftotext (poppler); it ships in the nix devShell")?;
-    ensure!(
-        out.status.success(),
-        "pdftotext {}: {}",
-        path.display(),
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    String::from_utf8(out.stdout).context("pdftotext output is not UTF-8")
-}
-
 /// `<kind>-<account>`, the statement's folder.
 fn folder_account(path: &Path) -> Result<(String, String)> {
     let folder = path.parent().and_then(Path::file_name).and_then(|f| f.to_str());
@@ -295,7 +281,7 @@ fn folder_account(path: &Path) -> Result<(String, String)> {
 pub fn load(path: impl AsRef<Path>) -> Result<Vec<BankStatement>> {
     let path = path.as_ref();
     let doc: Document =
-        pdf_text(path)?.parse().with_context(|| format!("reading {}", path.display()))?;
+        pdf::text(path)?.parse().with_context(|| format!("reading {}", path.display()))?;
     let (kind, account_no) = folder_account(path)?;
     ensure!(
         mask_fits(&doc.account_mask, &account_no),
