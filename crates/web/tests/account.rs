@@ -56,6 +56,11 @@ async fn a_bank_account_shows_its_balance_month_by_month_and_its_checks() {
     let html = render(page);
     let text = visible(&html);
     assert!(text.starts_with("資產 › 銀行 › 活存 活存 23,500 TWD 去日記帳篩選 餘額走勢"), "{text}");
+    // Each step above leads to its own page; the account itself is no link.
+    for above in ["Assets", "Assets%3ABank"] {
+        assert!(html.contains(&format!(r#"href="/account?account={above}""#)), "{html}");
+    }
+    assert!(!html.contains(r#"href="/account?account=Assets%3ABank%3ASavings""#), "{html}");
     // One currency: one chart, which needs no name of its own.
     assert!(!html.contains("<h3>"), "{html}");
     // Newest first; the opening is checked on the day before the period.

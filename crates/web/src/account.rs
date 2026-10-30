@@ -10,7 +10,7 @@ use crate::{
     balance_sheet::{MoneyText, TotalText},
     error::LoadFailed,
     journal::{load_journal, JournalList},
-    model::{AccountPage, BalanceCheck, Journal, JournalQuery},
+    model::{account_href, AccountPage, BalanceCheck, Crumb, Journal, JournalQuery},
     plot::{ColumnChart, LineChart},
 };
 
@@ -80,6 +80,19 @@ pub fn AccountView(page: AccountPage) -> AnyView {
         let text = balance.iter().map(ToString::to_string).collect::<Vec<_>>().join(" · ");
         view! { <span class="native">{text}</span> }
     });
+    // Every step above leads to its own page; the last is this one.
+    let trail = trail
+        .into_iter()
+        .enumerate()
+        .map(|(i, Crumb { path: step, label })| {
+            let here = step == path;
+            let name = match here {
+                true => view! { <span aria-current="page">{label}</span> }.into_any(),
+                false => view! { <a href=account_href(&step)>{label}</a> }.into_any(),
+            };
+            view! { {(i > 0).then_some(" › ")} {name} }
+        })
+        .collect_view();
     let several = trends.len() > 1;
     let charts = trends
         .into_iter()

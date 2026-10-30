@@ -65,7 +65,7 @@ pub async fn load(
 
     Ok(AccountPage {
         label: chart.label(path),
-        trail: chart.offer(path),
+        trail: chart.crumbs(path),
         balance: standing(&now, sign, base),
         total: converted(&(total * sign), base),
         trends: trends(&points, flow, sign, base),

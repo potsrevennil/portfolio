@@ -15,7 +15,7 @@ use ledger::model::Source as DbSource;
 use ledger_types::currency::Currency;
 
 use crate::model::{
-    offered_for, AccountChoice, AccountKind, AccountNode, ChartAccount, Entry, Journal,
+    offered_for, AccountChoice, AccountKind, AccountNode, ChartAccount, Crumb, Entry, Journal,
     JournalQuery, Leg, Money, Origin, Review, Source,
 };
 
@@ -187,6 +187,15 @@ impl Chart {
     /// it under.
     pub fn offer(&self, path: &str) -> String {
         self.full.get(path).cloned().unwrap_or_else(|| path.to_string())
+    }
+
+    /// `path`'s place in the chart, each step from the root down named as the
+    /// picker names it.
+    pub fn crumbs(&self, path: &str) -> Vec<Crumb> {
+        prefixes(path)
+            .zip(self.offer(path).split(" › "))
+            .map(|(path, label)| Crumb { path: path.to_string(), label: label.to_string() })
+            .collect()
     }
 
     /// The offered accounts as a tree to browse one level at a time, opened

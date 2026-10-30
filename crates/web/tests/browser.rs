@@ -184,6 +184,15 @@ impl Journey {
     async fn text(&self) -> String { self.find("main").await.text().await.unwrap() }
 
     /// Waits until the page says `needle`.
+    /// Waits for the tab's name, which the client sets once it has the page.
+    async fn until_title(&self, title: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.browser.title().await.unwrap() != title {
+            assert!(Instant::now() < deadline, "{}", self.browser.title().await.unwrap());
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn until_text(&self, needle: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -491,13 +500,14 @@ async fn open_an_account() {
     j.until_text("餘額走勢").await;
     j.hydrated().await;
     assert_eq!(j.find(".account-head h1").await.text().await.unwrap(), "活存");
-    // The tab is named once the client has the account.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while j.browser.title().await.unwrap() != "活存 · 帳簿" {
-        assert!(Instant::now() < deadline, "{}", j.browser.title().await.unwrap());
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    j.until_title("活存 · 帳簿").await;
     j.until_text("對帳").await;
+    // The trail leads up to the account above, and Back returns.
+    j.find(r#".trail a[href="/account?account=Assets%3ABank"]"#).await.click().await.unwrap();
+    j.until_title("銀行 · 帳簿").await;
+    assert_eq!(j.find(".account-head h1").await.text().await.unwrap(), "銀行");
+    j.browser.back().await.unwrap();
+    j.until_title("活存 · 帳簿").await;
     // Its journal is one link away, filtered to it.
     j.browser.find(Locator::LinkText("去日記帳篩選")).await.unwrap().click().await.unwrap();
     j.hydrated().await;

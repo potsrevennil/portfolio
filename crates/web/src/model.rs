@@ -659,6 +659,13 @@ impl fmt::Display for Voucher {
 /// Where an account's own page is.
 pub fn account_href(path: &str) -> String { format!("/account{}", JournalQuery::account(path)) }
 
+/// One step of an account's place in the chart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Crumb {
+    pub path: String,
+    pub label: String,
+}
+
 /// One figure an outside source states for the account, against the books.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceCheck {
@@ -681,8 +688,8 @@ pub struct BalanceCheck {
 pub struct AccountPage {
     pub path: String,
     pub label: String,
-    /// Its place in the chart, from the root down.
-    pub trail: String,
+    /// Its place in the chart, from the root down to itself.
+    pub trail: Vec<Crumb>,
     /// The balance now, per currency, as its statements show it.
     pub balance: Vec<Money>,
     pub total: Converted,
