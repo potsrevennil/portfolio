@@ -103,6 +103,14 @@ impl Fixture {
         Ok(path)
     }
 
+    /// Writes a PDF's text into `folder`, and gives the PDF's path.
+    pub fn pdf(&self, folder: &str, name: &str, text: &str) -> Result<PathBuf> {
+        super::pdf::fake_pdftotext();
+        let folder = self.dir.path().join(folder);
+        std::fs::write(folder.join(format!("{name}.txt")), text)?;
+        Ok(folder.join(format!("{name}.pdf")))
+    }
+
     pub async fn import(&self, bank: Bank, paths: &[PathBuf]) -> Result<Report> {
         let merged = bank.load_merged(paths)?;
         let mut tx = self.pool.begin().await?;
