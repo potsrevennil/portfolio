@@ -35,21 +35,13 @@ fn roc_date(s: &str) -> Option<NaiveDate> {
     }
 }
 
-/// `1,234` or `-30`.
-fn money(s: &str) -> Option<Decimal> {
-    let digits = s.strip_prefix('-').unwrap_or(s);
-    let plain = digits.chars().all(|c| c.is_ascii_digit() || c == ',')
-        && digits.starts_with(|c: char| c.is_ascii_digit());
-    plain.then(|| s.replace(',', "").parse().ok()).flatten()
-}
-
 /// The figure after `label` at a line's start, whatever sign prefixes the
 /// label.
 fn figure(text: &str, label: &str) -> Result<Decimal> {
     text.lines()
         .find_map(|line| {
             let rest = line.trim_start_matches(['+', '-', '=']).strip_prefix(label)?;
-            money(rest.trim())
+            pdf::money(rest.trim())
         })
         .with_context(|| format!("no {label}"))
 }
@@ -89,7 +81,7 @@ impl FromStr for Tail {
         let at = end - usize::from(placed);
         let amount = at
             .checked_sub(1)
-            .and_then(|i| money(words[i]))
+            .and_then(|i| pdf::money(words[i]))
             .with_context(|| format!("no amount in {line:?}"))?;
         Ok(Tail {
             description: words[..at - 1].join(" "),

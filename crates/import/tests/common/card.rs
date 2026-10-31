@@ -13,6 +13,9 @@ use sqlx::SqlitePool;
 use tempfile::TempDir;
 
 pub const CARD: &str = "Liabilities:Card:Test";
+pub const BANK: &str = "Assets:Bank:Second";
+/// The folder its statements are in.
+pub const BANK_FOLDER: &str = "活存-222222222222";
 
 const MAPPING: &str = r#"
 [institution]
@@ -25,6 +28,7 @@ clearing               = "Assets:Bank:Clearing"
 [institution.accounts]
 "111111111111" = "Assets:Bank:Main"
 "testcard"     = "Liabilities:Card:Test"
+"222222222222" = "Assets:Bank:Second"
 
 [fallback]
 income  = "Income:Uncategorized"
@@ -40,6 +44,7 @@ expense = "Expenses:Uncategorized"
 [accounts]
 "銀行" = "Assets:Bank:Main"
 "測試卡" = "Liabilities:Card:Test"
+"二銀" = "Assets:Bank:Second"
 "券商" = "Assets:Broker"
 "起鼓" = "Equity:Opening-Balances"
 "#;
@@ -56,13 +61,17 @@ const HEADER: &str = "id,status,date,posted_date,kind,amount,currency,account,co
                       counter_amount,counter_currency,category,major_category,member,tags,note,\
                       source_party,source_file,source_id,origin,correction_note,updated_at\n";
 
-/// `date, kind, amount, 測試卡 or its counter account`, one record each.
-pub fn records(rows: &[(&str, &str, u32, &str)]) -> String {
+/// `date, kind, amount, category`, one record each on the card.
+pub fn records(rows: &[(&str, &str, u32, &str)]) -> String { records_on("測試卡", rows) }
+
+/// One record each on the app account `account`.
+pub fn records_on(account: &str, rows: &[(&str, &str, u32, &str)]) -> String {
     let mut csv = HEADER.to_string();
     csv.push_str("s:1,active,2025-12-01,,income,1000,TWD,銀行,,,,回饋,,,,,app,x,S1,raw,,\n");
     for (n, (date, kind, amount, category)) in rows.iter().enumerate() {
         csv.push_str(&format!(
-            "r:{n},active,{date},,{kind},{amount},TWD,測試卡,,,,{category},,,,,app,x,U{n},raw,,\n"
+            "r:{n},active,{date},,{kind},{amount},TWD,{account},,,,{category},,,,,app,x,U{n},raw,,\
+             \n"
         ));
     }
     csv
@@ -82,6 +91,7 @@ impl Fixture {
         std::fs::write(dir.path().join("transactions.csv"), records)?;
         std::fs::write(dir.path().join("savings.csv"), SAVINGS)?;
         std::fs::create_dir(dir.path().join("testcard"))?;
+        std::fs::create_dir(dir.path().join(BANK_FOLDER))?;
         let pool = super::records::freeze_and_load(dir.path(), BuildArgs {
             cathay_statements: vec![dir.path().join("savings.csv")],
             line_bank_statements: vec![],
@@ -132,10 +142,12 @@ impl Fixture {
         .await?)
     }
 
-    pub async fn figures(&self) -> Result<Vec<BalanceAssertion>> {
+    pub async fn figures(&self) -> Result<Vec<BalanceAssertion>> { self.figures_of(CARD).await }
+
+    pub async fn figures_of(&self, account: &str) -> Result<Vec<BalanceAssertion>> {
         let mut conn = self.pool.acquire().await?;
         let mut figures = db::assertions::load(&mut conn).await?;
-        figures.retain(|a| a.account == CARD);
+        figures.retain(|a| a.account == account);
         Ok(figures)
     }
 

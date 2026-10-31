@@ -4,10 +4,7 @@
 //! a purchase still to post is on the next one, and only the parts an
 //! instalment plan has billed are in it.
 
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context, Result};
 use chrono::NaiveDate;
@@ -17,7 +14,7 @@ use ledger_types::{
 };
 use rust_decimal::Decimal;
 
-use super::bank::{Bank, BankStatement, Merged, Period, StatementLine};
+use super::bank::{join_periods, load_all, Bank, BankStatement, Merged, Period, StatementLine};
 
 /// One line as a card statement prints it.
 #[derive(Debug, PartialEq)]
@@ -164,48 +161,32 @@ pub fn late_starts(recorded: &[BalanceAssertion]) -> Vec<(&BalanceAssertion, Nai
 /// over; a missing month is allowed and stays a gap between periods, for
 /// 對帳進度 to show.
 pub fn merge(statements: Vec<(BankStatement, PathBuf)>) -> Result<Vec<Merged>> {
-    let mut groups: BTreeMap<String, Vec<(BankStatement, PathBuf)>> = BTreeMap::new();
-    for (s, path) in statements {
-        groups.entry(s.account_no.clone()).or_default().push((s, path));
-    }
-    let mut merged = Vec::new();
-    for (card, mut parts) in groups {
-        parts.sort_by_key(|(s, _)| s.periods[0].end);
-        let mut parts = parts.into_iter();
-        let (mut statement, first) = parts.next().expect("a group has a member");
-        let mut spans = vec![statement.lines.len()];
-        let mut paths = vec![first];
-        for (mut next, path) in parts {
-            let before = statement.periods.last().expect("issued");
-            let after = &mut next.periods[0];
-            ensure!(
-                before.end != after.end,
-                "{card}: {} repeats the statement closing {}",
-                path.display(),
-                after.end
-            );
-            if (after.end - before.end).num_days() <= LONGEST_PERIOD {
-                ensure!(
-                    follows(before.end, before.closing, after.end, after.opening),
-                    "{card}: {} opens at {}, but the statement before closed at {}",
-                    path.display(),
-                    after.opening,
-                    before.closing
-                );
-                after.start = before.end.succ_opt().expect("a day after a statement");
-            }
-            spans.push(next.lines.len());
-            paths.push(path);
-            statement.period_end = next.period_end;
-            statement.periods.extend(next.periods);
-            statement.lines.extend(next.lines);
-        }
+    let merged = join_periods(statements, |card, path, before, after| {
         ensure!(
-            !statement.lines.is_empty(),
-            "{card}: no line in {}, so nothing to check against the ledger",
-            paths[0].display()
+            before.end != after.end,
+            "{card}: {} repeats the statement closing {}",
+            path.display(),
+            after.end
         );
-        merged.push(Merged { statement, paths, spans });
+        if (after.end - before.end).num_days() <= LONGEST_PERIOD {
+            ensure!(
+                follows(before.end, before.closing, after.end, after.opening),
+                "{card}: {} opens at {}, but the statement before closed at {}",
+                path.display(),
+                after.opening,
+                before.closing
+            );
+            after.start = before.end.succ_opt().expect("a day after a statement");
+        }
+        Ok(())
+    })?;
+    for m in &merged {
+        ensure!(
+            !m.statement.lines.is_empty(),
+            "{}: no line in {}, so nothing to check against the ledger",
+            m.statement.account_no,
+            m.paths[0].display()
+        );
     }
     Ok(merged)
 }
@@ -215,9 +196,7 @@ pub fn load_merged(
     paths: &[PathBuf],
     load: impl Fn(&Path) -> Result<BankStatement>,
 ) -> Result<Vec<Merged>> {
-    let statements =
-        paths.iter().map(|path| Ok((load(path)?, path.clone()))).collect::<Result<Vec<_>>>()?;
-    merge(statements)
+    merge(load_all(paths, load)?)
 }
 
 #[cfg(test)]

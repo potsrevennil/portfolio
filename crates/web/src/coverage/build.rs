@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::Result;
 use chrono::{Datelike, Days, Months, NaiveDate};
 use db::{
-    coverage::{self, Figure, Position, Record, Schedule},
+    assertions,
+    coverage::{self, Figure, Gap, Position, Record, Schedule},
     SqliteConnection, SqlitePool,
 };
 use ledger::accounts::{in_subtree, SplitAccounts};
@@ -18,7 +19,7 @@ use ledger_types::{
 use rust_decimal::{prelude::ToPrimitive, Decimal};
 
 use super::model::{
-    oldest, AccountRow, Coverage, Holding, Instalment, Mark, SplitOpen, Tail, Tick,
+    oldest, AccountRow, Coverage, GapSpan, Holding, Instalment, Mark, SplitOpen, Tail, Tick,
 };
 use crate::{
     entries::{Chart, Unlisted},
@@ -35,6 +36,7 @@ pub async fn load(
     let chart = Chart::load(pool, &Unlisted::default()).await?;
     let mut conn = pool.acquire().await?;
     let books = Books::read(&mut conn).await?;
+    let gaps = coverage::gaps(&assertions::load(&mut conn).await?);
     let ledger = by_account(coverage::ledger_records(&mut conn).await?, |r| &r.account);
     let broker = by_account(coverage::broker_records(&mut conn).await?, |r| &r.account);
     let mut rows: Vec<AccountRow> = books
@@ -46,7 +48,7 @@ pub async fn load(
                 false => &broker,
             };
             let records = records.get(held.account).map(Vec::as_slice).unwrap_or_default();
-            row(held, records, &chart.crumbs(held.account), splits, base, today)
+            row(held, records, &gaps, &chart.crumbs(held.account), splits, base, today)
         })
         .collect();
     // Instalments need no statement of their own, so they come last: the
@@ -221,6 +223,7 @@ fn through(vouched: &BTreeMap<&str, Vouched>) -> Option<NaiveDate> {
 fn row(
     held: &Held<'_>,
     records: &[Record],
+    gaps: &[Gap],
     crumbs: &[Crumb],
     splits: &SplitAccounts,
     base: Currency,
@@ -282,6 +285,11 @@ fn row(
         recorded: records.iter().map(|r| r.date).max().map(mark),
         first: first.map(mark),
         tail: tail(&unchecked, held.journal.then_some(*account)),
+        gaps: gaps
+            .iter()
+            .filter(|g| in_subtree(account, &g.account))
+            .map(|g| GapSpan { from: g.from.to_string(), to: g.to.to_string() })
+            .collect(),
         since: since.map(mark),
         balances: held.balances(),
         instalment: (cadence == Cadence::Instalment).then(|| instalment(records)).flatten(),

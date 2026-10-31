@@ -7,7 +7,7 @@ use leptos::prelude::*;
 
 use super::{
     forms::{Confirm, Editing, Panel, Settings},
-    model::{AccountRow, CadenceName, Instalment, SplitOpen, Tail},
+    model::{AccountRow, CadenceName, GapSpan, Instalment, SplitOpen, Tail},
 };
 use crate::model::{account_href, Money};
 
@@ -62,6 +62,8 @@ fn instalment_parts(i: &Instalment) -> Parts {
     }
 }
 
+fn gap_text(g: &GapSpan) -> String { format!("{} 到 {} 無數單", g.from, g.to) }
+
 fn plain_parts(row: &AccountRow, span: Signal<f64>) -> Parts {
     let first = row.first.as_ref().map(|m| m.ago);
     let checked = row.checked.as_ref().map(|m| m.ago);
@@ -80,6 +82,11 @@ fn plain_parts(row: &AccountRow, span: Signal<f64>) -> Parts {
     // Records past the last figure, or every checkable one when none checked it.
     let hatched =
         from.zip(recorded).filter(|_| ran_past).map(|(f, r)| move || stretch(f, r, span.get()));
+
+    let gap_notes = (!row.gaps.is_empty()).then(|| {
+        let text = row.gaps.iter().map(gap_text).collect::<Vec<_>>().join(" · ");
+        view! { <small class="gaps">{text}</small> }
+    });
 
     // The days written on the bar: where a split account opened; checked
     // through, under the green's end; recorded through, after it, where
@@ -117,7 +124,7 @@ fn plain_parts(row: &AccountRow, span: Signal<f64>) -> Parts {
         }
         .into_any(),
         dates: tags.into_any(),
-        state: view! { {status} {per_commodity} {unchecked} }.into_any(),
+        state: view! { {status} {per_commodity} {gap_notes} {unchecked} }.into_any(),
     }
 }
 
