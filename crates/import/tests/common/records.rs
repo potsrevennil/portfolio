@@ -54,27 +54,32 @@ pub async fn frozen(
     line_bank_statements: Vec<PathBuf>,
 ) -> Result<(SqlitePool, TempDir)> {
     let scratch = TempDir::new()?;
-    let journal = scratch.path().join("journal.csv");
-    let frozen = freeze::run(&freeze::FreezeArgs {
-        journal: journal.clone(),
-        build: BuildArgs {
-            cathay_statements,
-            line_bank_statements,
-            daily_income_expense: None,
-            daily_transfers: None,
-            transactions: Some(records.join("corrected/transactions.csv")),
-            backfill: false,
-            ledger_dir: records.join("ledger"),
-        },
-    })?;
+    let pool = freeze_and_load(scratch.path(), BuildArgs {
+        cathay_statements,
+        line_bank_statements,
+        daily_income_expense: None,
+        daily_transfers: None,
+        transactions: Some(records.join("corrected/transactions.csv")),
+        backfill: false,
+        ledger_dir: records.join("ledger"),
+    })
+    .await?;
+    Ok((pool, scratch))
+}
+
+/// Freezes `build`, then loads the journal into a database in `scratch`.
+pub async fn freeze_and_load(scratch: &Path, build: BuildArgs) -> Result<SqlitePool> {
+    let journal = scratch.join("journal.csv");
+    let mapping = build.ledger_dir.join("mapping.toml");
+    let frozen = freeze::run(&freeze::FreezeArgs { journal: journal.clone(), build })?;
     anyhow::ensure!(frozen.ok(), "freeze failed:\n{frozen}");
-    let url = format!("sqlite:{}", scratch.path().join("frozen.db").display());
+    let url = format!("sqlite:{}", scratch.join("frozen.db").display());
     load::run(&load::Args {
         journal,
         database_url: url.clone(),
         market_url: format!("{url}.market"),
-        mapping: records.join("ledger/mapping.toml"),
+        mapping,
     })
     .await?;
-    Ok((db::init_db(&url).await?, scratch))
+    db::init_db(&url).await
 }

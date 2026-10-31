@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{ensure, Context, Result};
 use chrono::NaiveDate;
 use ledger_types::{
-    assertion::{AssertionSource, BalanceAssertion},
+    assertion::{successions, BalanceAssertion},
     currency::Currency,
 };
 use rust_decimal::Decimal;
@@ -87,10 +87,7 @@ impl Bill {
             .into_iter()
             .map(|l| {
                 balance -= l.amount;
-                let (withdrawal, deposit) = match l.amount.is_sign_negative() {
-                    true => (Decimal::ZERO, -l.amount),
-                    false => (l.amount, Decimal::ZERO),
-                };
+                let (withdrawal, deposit) = StatementLine::sides(-l.amount);
                 StatementLine {
                     book_date: l.posted,
                     purchased: l.purchased,
@@ -136,22 +133,26 @@ pub fn follows(closed: NaiveDate, closing: Decimal, end: NaiveDate, opening: Dec
     (1..=LONGEST_PERIOD).contains(&(end - closed).num_days()) && closing == opening
 }
 
+/// One statement, of the card its folder names.
+pub fn load(
+    path: &Path,
+    bank: Bank,
+    bill: impl FnOnce(&Path) -> Result<Bill>,
+) -> Result<BankStatement> {
+    let read = || bill(path)?.into_statement(bank, folder_card(path)?);
+    read().with_context(|| format!("reading {}", path.display()))
+}
+
 /// The figures in `recorded` that follow the one before but don't yet start the
 /// day after it, with the day they do. A statement doesn't print its start, and
 /// the one before it may arrive later.
 pub fn late_starts(recorded: &[BalanceAssertion]) -> Vec<(&BalanceAssertion, NaiveDate)> {
-    let statements: Vec<&BalanceAssertion> =
-        recorded.iter().filter(|a| a.source == AssertionSource::Statement).collect();
-    statements
-        .windows(2)
-        .filter_map(|pair| {
-            let [before, after] = pair else { return None };
+    successions(recorded)
+        .filter_map(|(before, after)| {
             let start = before.period_end.succ_opt().expect("a day after a statement");
-            let same_books = (&before.account, before.currency) == (&after.account, after.currency);
-            (same_books
-                && after.period_start != Some(start)
+            (after.period_start != Some(start)
                 && follows(before.period_end, before.closing, after.period_end, after.opening?))
-            .then_some((*after, start))
+            .then_some((after, start))
         })
         .collect()
 }

@@ -139,10 +139,7 @@ fn chain(rows: Vec<Row>, closing: Decimal) -> Result<(Decimal, Vec<StatementLine
                 row.description
             );
         }
-        let (withdrawal, deposit) = match row.amount.is_sign_negative() {
-            true => (-row.amount, Decimal::ZERO),
-            false => (Decimal::ZERO, row.amount),
-        };
+        let (withdrawal, deposit) = StatementLine::sides(row.amount);
         lines.push(StatementLine {
             book_date: row.date,
             purchased: None,

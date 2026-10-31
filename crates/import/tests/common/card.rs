@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use db::{check, import_batch, load};
+use db::{check, import_batch};
 use import::bank::{import, Report};
-use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, statements::bank::Bank};
+use ledger::{accounts::Chart, args::Args as BuildArgs, statements::bank::Bank};
 use ledger_types::{assertion::BalanceAssertion, currency::Currency};
 use sqlx::SqlitePool;
 use tempfile::TempDir;
@@ -92,29 +92,16 @@ impl Fixture {
         std::fs::write(dir.path().join("savings.csv"), SAVINGS)?;
         std::fs::create_dir(dir.path().join("testcard"))?;
         std::fs::create_dir(dir.path().join(BANK_FOLDER))?;
-        let journal = dir.path().join("journal.csv");
-        let frozen = freeze::run(&freeze::FreezeArgs {
-            journal: journal.clone(),
-            build: BuildArgs {
-                cathay_statements: vec![dir.path().join("savings.csv")],
-                line_bank_statements: vec![],
-                daily_income_expense: None,
-                daily_transfers: None,
-                transactions: Some(dir.path().join("transactions.csv")),
-                backfill: false,
-                ledger_dir: dir.path().to_path_buf(),
-            },
-        })?;
-        anyhow::ensure!(frozen.ok(), "freeze failed:\n{frozen}");
-        let url = format!("sqlite:{}", dir.path().join("frozen.db").display());
-        load::run(&load::Args {
-            journal,
-            database_url: url.clone(),
-            market_url: format!("{url}.market"),
-            mapping: dir.path().join("mapping.toml"),
+        let pool = super::records::freeze_and_load(dir.path(), BuildArgs {
+            cathay_statements: vec![dir.path().join("savings.csv")],
+            line_bank_statements: vec![],
+            daily_income_expense: None,
+            daily_transfers: None,
+            transactions: Some(dir.path().join("transactions.csv")),
+            backfill: false,
+            ledger_dir: dir.path().to_path_buf(),
         })
         .await?;
-        let pool = db::init_db(&url).await?;
         let chart = Chart::load(dir.path().join("mapping.toml"))?;
         Ok(Fixture { dir, chart, pool })
     }
@@ -124,6 +111,14 @@ impl Fixture {
         let path = self.dir.path().join("testcard").join(name);
         std::fs::write(&path, contents)?;
         Ok(path)
+    }
+
+    /// Writes a PDF's text into `folder`, and gives the PDF's path.
+    pub fn pdf(&self, folder: &str, name: &str, text: &str) -> Result<PathBuf> {
+        super::pdf::fake_pdftotext();
+        let folder = self.dir.path().join(folder);
+        std::fs::write(folder.join(format!("{name}.txt")), text)?;
+        Ok(folder.join(format!("{name}.pdf")))
     }
 
     pub async fn import(&self, bank: Bank, paths: &[PathBuf]) -> Result<Report> {

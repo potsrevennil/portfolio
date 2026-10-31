@@ -106,21 +106,20 @@ impl TryFrom<&[csv::StringRecord]> for Bill {
     }
 }
 
-/// One statement, of the card its folder names.
-pub fn load(path: &Path) -> Result<BankStatement> {
-    let read = || -> Result<BankStatement> {
-        let bytes = std::fs::read(path)?;
-        let text = String::from_utf8(bytes).context("not UTF-8")?;
-        let rows = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .flexible(true)
-            .from_reader(text.trim_start_matches('\u{feff}').as_bytes())
-            .records()
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Bill::try_from(rows.as_slice())?.into_statement(Bank::CathayCard, card::folder_card(path)?)
-    };
-    read().with_context(|| format!("reading {}", path.display()))
+fn bill(path: &Path) -> Result<Bill> {
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8(bytes).context("not UTF-8")?;
+    let rows = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(text.trim_start_matches('\u{feff}').as_bytes())
+        .records()
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Bill::try_from(rows.as_slice())
 }
+
+/// One statement, of the card its folder names.
+pub fn load(path: &Path) -> Result<BankStatement> { card::load(path, Bank::CathayCard, bill) }
 
 pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> { card::load_merged(paths, load) }
 

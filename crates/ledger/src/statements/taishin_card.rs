@@ -166,11 +166,7 @@ impl FromStr for Bill {
 
 /// One statement, of the card its folder names.
 pub fn load(path: &Path) -> Result<BankStatement> {
-    let read = || -> Result<BankStatement> {
-        let bill: Bill = pdf::text(path)?.parse()?;
-        bill.into_statement(Bank::TaishinCard, card::folder_card(path)?)
-    };
-    read().with_context(|| format!("reading {}", path.display()))
+    card::load(path, Bank::TaishinCard, |path| pdf::text(path)?.parse())
 }
 
 pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> { card::load_merged(paths, load) }

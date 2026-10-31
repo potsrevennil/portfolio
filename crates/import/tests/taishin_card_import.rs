@@ -4,16 +4,13 @@
 
 mod common;
 
-use std::path::PathBuf;
-
 use anyhow::Result;
-use common::{
-    card::{records, Fixture},
-    pdf::fake_pdftotext,
-};
+use common::card::{records, Fixture};
 use ledger::statements::bank::Bank;
 use ledger_types::assertion::AssertionSource;
 use rust_decimal_macros::dec;
+
+const FOLDER: &str = "testcard";
 
 fn statement(closes: &str, opening: u32, closing: u32, rows: &str) -> String {
     format!(
@@ -23,13 +20,6 @@ fn statement(closes: &str, opening: u32, closing: u32, rows: &str) -> String {
     )
 }
 
-/// Writes the statement's text, and gives the PDF path it stands in for.
-fn pdf(f: &Fixture, name: &str, text: &str) -> Result<PathBuf> {
-    fake_pdftotext();
-    f.write(&format!("{name}.txt"), text)?;
-    Ok(f.dir.path().join("testcard").join(format!("{name}.pdf")))
-}
-
 #[tokio::test]
 async fn a_statement_vouches_for_records_and_its_closing_is_checked() -> Result<()> {
     let f = Fixture::frozen(&records(&[
@@ -37,8 +27,8 @@ async fn a_statement_vouches_for_records_and_its_closing_is_checked() -> Result<
         ("2026-01-08", "expense", 53, "飲食"),
     ]))
     .await?;
-    let january = pdf(
-        &f,
+    let january = f.pdf(
+        FOLDER,
         "2026-01",
         &statement(
             "115/01/20",

@@ -1,3 +1,4 @@
+use ledger_types::assertion::AssertionSource;
 use rust_decimal_macros::dec;
 
 use super::*;
