@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use ledger::{accounts::Chart, journal::UNVERIFIED_TAG, labels::Labels};
 use ledger_types::{
-    assertion::{AssertionSource, BalanceAssertion},
+    assertion::{successions, AssertionSource, BalanceAssertion},
     cadence::{Cadence, CadenceSpec},
     currency::Currency,
 };
@@ -80,6 +80,29 @@ pub async fn figures(conn: &mut SqliteConnection) -> Result<Vec<Figure>> {
     .await
     .context("loading assertion coverage")?;
     rows.into_iter().map(Figure::try_from).collect()
+}
+
+/// Days no statement covers, across which the balance moved: the next one opens
+/// on something other than the last closed on, so money went by unseen. Where
+/// it opens on the same balance, nothing did, as between two downloads that
+/// each start at their first line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gap {
+    pub account: String,
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+}
+
+/// The gaps in figures as [`assertions::load`] orders them.
+pub fn gaps(figures: &[BalanceAssertion]) -> Vec<Gap> {
+    successions(figures)
+        .filter(|(before, after)| after.opening.is_some_and(|opening| opening != before.closing))
+        .filter_map(|(before, after)| {
+            let from = before.period_end.succ_opt()?;
+            let to = after.period_start?.pred_opt()?;
+            (from <= to).then(|| Gap { account: before.account.clone(), from, to })
+        })
+        .collect()
 }
 
 /// One record on an account, per commodity it moves.

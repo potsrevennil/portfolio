@@ -33,7 +33,9 @@ async fn import_all(pool: &SqlitePool, records: &Path, bank: Bank) -> Result<Rep
     let (party, ext) = match bank {
         Bank::Cathay => ("cathay-bank", "csv"),
         Bank::LineBank => ("line-bank", "pdf"),
-        Bank::CathayCard | Bank::TaishinCard => anyhow::bail!("{bank} is not imported here"),
+        Bank::CathayCard | Bank::TaishinCard | Bank::Taishin => {
+            anyhow::bail!("{bank} is not imported here")
+        }
     };
     let merged = bank.load_merged(&common::records::files(records, party, ext)?)?;
     let mut tx = pool.begin().await?;

@@ -51,6 +51,9 @@ enum Command {
     /// Import 台新 card statement PDFs, in `<card>/` folders, into SQLite
     /// (scratch databases until the Cutover)
     ImportTaishinCard(import::bank::Args),
+    /// Import 台新 bank history, PDFs and xlsx in a `<kind>-<account>/` folder,
+    /// into SQLite (scratch databases until the Cutover)
+    ImportTaishinBank(import::bank::Args),
     /// Import broker statements into the broker sub-ledger (scratch databases
     /// until the Cutover)
     ImportBroker(import::broker::Args),
@@ -167,6 +170,10 @@ impl Cli {
             }
             Some(Command::ImportTaishinCard(args)) => {
                 print!("{}", import::bank::run(Bank::TaishinCard, args).await?);
+                Ok(())
+            }
+            Some(Command::ImportTaishinBank(args)) => {
+                print!("{}", import::bank::run(Bank::Taishin, args).await?);
                 Ok(())
             }
             Some(Command::ImportBroker(args)) => {

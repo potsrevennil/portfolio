@@ -10,7 +10,8 @@ edition = "2021"
 
 [workspace.dependencies]
 # One version per dependency, shared by every member.
-anyhow = "1.0"
+anyhow   = "1.0"
+calamine = "0.37"
 # No default features: ledger-types compiles to wasm, which has no clock.
 # Crates that read the time add "clock".
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
