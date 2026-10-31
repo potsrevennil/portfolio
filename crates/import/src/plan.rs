@@ -332,6 +332,11 @@ pub fn plan(
                     plan.suggestions.push((p.transaction_id, Suggestion::SharedDeferral { other }));
                     continue;
                 }
+                // A date a statement confirmed stands: it waits where it is.
+                if from_a_statement(p) {
+                    plan.suggestions.push((p.transaction_id, Suggestion::Waiting));
+                    continue;
+                }
                 plan.deferred.push(Deferred { transaction_id: p.transaction_id, date: after });
                 plan.suggestions.push((p.transaction_id, Suggestion::Waiting));
                 plan.counts.deferred += 1;

@@ -349,6 +349,19 @@ fn a_record_another_bank_already_verified_keeps_its_date() {
     assert_eq!(p.counts.verified, 1);
 }
 
+/// Nor does waiting for the next statement move a date a statement confirmed.
+#[test]
+fn a_record_another_bank_already_verified_waits_on_its_date() {
+    let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
+    let record = LedgerPosting {
+        refs: vec!["tiantian:1".into(), "cathay-bank:20260609:1".into()],
+        ..unverified(9, dec!(-30), 42)
+    };
+    let p = with(&st, vec![held(1, dec!(100), true), record]);
+    assert!(p.deferred.is_empty());
+    assert_eq!(p.suggestions, [(42, Suggestion::Waiting)]);
+}
+
 /// Both banks booked the transfer on one day, and the other bank verified it
 /// first: its ref is on the record, but this leg is still unverified, so the
 /// line verifies it rather than taking it for a posting of its own.
