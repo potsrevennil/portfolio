@@ -1,6 +1,6 @@
 use rust_decimal_macros::dec;
 
-use super::*;
+use super::{super::bank::Bank, *};
 
 fn day(d: &str) -> NaiveDate { d.parse().unwrap() }
 
@@ -82,20 +82,6 @@ fn a_page_break_can_join_rows_and_notices_can_follow_one() -> Result<()> {
     let b = bill("0", "200", rows)?;
     let seen: Vec<&str> = b.lines.iter().map(|l| l.description.as_str()).collect();
     assert_eq!(seen, ["甲店", "乙店", "丙店"]);
-    Ok(())
-}
-
-#[test]
-fn an_instalment_part_has_no_purchase_of_its_own() -> Result<()> {
-    let b = bill("0", "1,630", "114/10/24 115/02/24 範例店 第02/03期 /TW 1,630 TW\n")?;
-    assert_eq!(only(&b).purchased, None);
-    assert_eq!(only(&b).posted, day("2026-02-24"));
-    Ok(())
-}
-
-#[test]
-fn a_waived_fee_at_zero_is_no_line() -> Result<()> {
-    assert_eq!(bill("0", "0", "115/02/10 115/02/12 年費優惠 0\n")?.lines, vec![]);
     Ok(())
 }
 

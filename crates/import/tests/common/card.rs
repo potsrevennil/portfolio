@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use db::{check, import_batch};
-use import::bank::{import, Report};
+use import::bank::{import_all, Report};
 use ledger::{accounts::Chart, args::Args as BuildArgs, statements::bank::Bank};
 use ledger_types::{assertion::BalanceAssertion, currency::Currency};
 use sqlx::SqlitePool;
@@ -122,11 +122,7 @@ impl Fixture {
     }
 
     pub async fn import(&self, bank: Bank, paths: &[PathBuf]) -> Result<Report> {
-        let merged = bank.load_merged(paths)?;
-        let mut tx = self.pool.begin().await?;
-        let report = import(&mut tx, &self.chart, bank, &merged, &[]).await?;
-        tx.commit().await?;
-        Ok(report)
+        import_all(&self.pool, &self.chart, bank, &bank.load_merged(paths)?, &[]).await
     }
 
     /// `(transaction date, posted date, amount)` of the card's legs.

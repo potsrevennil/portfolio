@@ -5,18 +5,14 @@
 //! amount is found by the shape of the line that ends it. Wherever that guess
 //! could go wrong, the lines stop adding up and the statement is refused.
 
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::{path::Path, str::FromStr};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
 use super::{
-    bank::{Bank, BankStatement, Merged},
-    card::{self, is_instalment, Bill, Line},
+    card::{Bill, Line},
     pdf,
 };
 
@@ -106,7 +102,7 @@ fn row(purchased: NaiveDate, posted: NaiveDate, lines: &[&str]) -> Result<Line> 
     let description =
         lines[..at].iter().copied().chain([tail.description.as_str()]).collect::<String>();
     Ok(Line {
-        purchased: Some(purchased).filter(|_| !is_instalment(&description)),
+        purchased: Some(purchased),
         posted,
         description,
         amount: tail.amount,
@@ -154,22 +150,15 @@ impl FromStr for Bill {
                 (None, _) => {}
             }
         }
-        let parsed = rows
+        let lines = rows
             .iter()
             .map(|(purchased, posted, held)| row(*purchased, *posted, held))
             .collect::<Result<Vec<_>>>()?;
-        // A waived fee prints at zero: nothing moved.
-        let lines = parsed.into_iter().filter(|l| !l.amount.is_zero()).collect();
         Ok(Bill { closes, opening, closing, lines })
     }
 }
 
-/// One statement, of the card its folder names.
-pub fn load(path: &Path) -> Result<BankStatement> {
-    card::load(path, Bank::TaishinCard, |path| pdf::text(path)?.parse())
-}
-
-pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> { card::load_merged(paths, load) }
+pub(super) fn bill(path: &Path) -> Result<Bill> { pdf::text(path)?.parse() }
 
 #[cfg(test)]
 mod tests;

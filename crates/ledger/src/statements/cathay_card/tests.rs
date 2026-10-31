@@ -39,20 +39,6 @@ fn a_late_december_purchase_on_a_january_statement_is_last_year() -> Result<()> 
 }
 
 #[test]
-fn a_waived_fee_at_zero_is_no_line() -> Result<()> {
-    let bill = parsed(&[HEAD[0], HEAD[1], HEAD[2], HEAD[3], TABLE, &[
-        "01/01",
-        "年費優惠",
-        "0",
-        "−",
-        "−",
-        "01/01",
-    ]])?;
-    assert_eq!(bill.lines, vec![]);
-    Ok(())
-}
-
-#[test]
 fn a_statement_with_no_table_is_refused() {
     assert!(parsed(&[HEAD[0], HEAD[1], HEAD[2], HEAD[3]]).is_err());
 }

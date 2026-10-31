@@ -43,7 +43,7 @@ fn parse_amount(s: &str, currency: Currency) -> Result<Decimal> {
     }
 }
 
-fn parse_slash_date(s: &str) -> Result<NaiveDate> {
+pub(super) fn parse_slash_date(s: &str) -> Result<NaiveDate> {
     let first = s.trim().lines().next().unwrap_or("").trim();
     NaiveDate::parse_from_str(first, "%Y/%m/%d")
         .with_context(|| format!("unparseable date {:?}", first))

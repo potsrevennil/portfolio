@@ -16,7 +16,7 @@ use ledger_types::{
 };
 use rust_decimal::Decimal;
 
-use super::{cathay, cathay_card, line_bank, taishin_bank, taishin_card};
+use super::{card, cathay, cathay_card, line_bank, taishin_bank, taishin_card};
 use crate::matching::DateRange;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,8 +73,8 @@ impl Bank {
         match self {
             Bank::Cathay => cathay::load_merged(paths),
             Bank::LineBank => line_bank::load_merged(paths),
-            Bank::CathayCard => cathay_card::load_merged(paths),
-            Bank::TaishinCard => taishin_card::load_merged(paths),
+            Bank::CathayCard => card::load_merged(paths, self, cathay_card::bill),
+            Bank::TaishinCard => card::load_merged(paths, self, taishin_card::bill),
             Bank::Taishin => taishin_bank::load_merged(paths),
         }
     }
@@ -415,11 +415,15 @@ impl BankStatement {
     }
 }
 
+/// The name of the folder a statement sits in.
+pub(super) fn folder_name(path: &Path) -> Option<&str> {
+    path.parent().and_then(Path::file_name).and_then(|f| f.to_str())
+}
+
 /// `<kind>-<account>`, a statement's folder, where it doesn't print its number
 /// in full.
 pub fn folder_account(path: &Path) -> Result<(String, String)> {
-    let folder = path.parent().and_then(Path::file_name).and_then(|f| f.to_str());
-    let (kind, account) = folder
+    let (kind, account) = folder_name(path)
         .and_then(|f| f.rsplit_once('-'))
         .with_context(|| format!("{} is not in a <kind>-<account> folder", path.display()))?;
     Ok((kind.to_string(), account.to_string()))

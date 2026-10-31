@@ -47,6 +47,34 @@ fn a_line_posted_after_the_closing_is_refused() {
 }
 
 #[test]
+fn a_waived_fee_at_zero_is_no_line() -> Result<()> {
+    let s = bill("2026-01-20", dec!(0), dec!(30), vec![
+        line("2026-01-05", dec!(0)),
+        line("2026-01-10", dec!(30)),
+    ])
+    .into_statement(Bank::CathayCard, "c")?;
+
+    assert_eq!(s.lines.len(), 1);
+    assert_eq!(s.periods[0].start, day("2026-01-10"));
+    Ok(())
+}
+
+#[test]
+fn an_instalment_part_has_no_purchase_of_its_own() -> Result<()> {
+    let bought = |description: &str| Line {
+        purchased: Some(day("2025-10-24")),
+        description: description.into(),
+        ..line("2026-01-10", dec!(10))
+    };
+    let s = bill("2026-01-20", dec!(0), dec!(20), vec![bought("範例店 第02/03期"), bought("咖啡")])
+        .into_statement(Bank::CathayCard, "c")?;
+
+    assert_eq!(s.lines[0].purchased, None);
+    assert_eq!(s.lines[1].purchased, Some(day("2025-10-24")));
+    Ok(())
+}
+
+#[test]
 fn instalment_lines_are_told_by_their_part() {
     assert!(is_instalment("家電 第04/06期 /TW"));
     assert!(is_instalment("家電第1/3期"));

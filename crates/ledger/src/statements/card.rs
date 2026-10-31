@@ -14,12 +14,14 @@ use ledger_types::{
 };
 use rust_decimal::Decimal;
 
-use super::bank::{join_periods, load_all, Bank, BankStatement, Merged, Period, StatementLine};
+use super::bank::{
+    folder_name, join_periods, load_all, Bank, BankStatement, Merged, Period, StatementLine,
+};
 
 /// One line as a card statement prints it.
 #[derive(Debug, PartialEq)]
 pub struct Line {
-    /// `None` where the statement gives none, or the purchase is a plan's.
+    /// `None` where the statement gives none.
     pub purchased: Option<NaiveDate>,
     pub posted: NaiveDate,
     pub description: String,
@@ -40,7 +42,7 @@ pub struct Bill {
 
 /// A 第 n/m 期 line bills a part of a plan on its posting date; the purchase
 /// it prints is the whole plan's, months back.
-pub fn is_instalment(description: &str) -> bool {
+fn is_instalment(description: &str) -> bool {
     description.split('第').skip(1).any(|rest| {
         rest.split_once('期').is_some_and(|(parts, _)| {
             parts.split_once('/').is_some_and(|(n, m)| {
@@ -78,6 +80,8 @@ impl Bill {
             );
         }
         let mut lines = self.lines;
+        // A waived fee prints at zero: nothing moved.
+        lines.retain(|l| !l.amount.is_zero());
         lines.sort_by_key(|l| l.posted);
         // Unknown until the statement before is seen; the first day it moved
         // is the latest it can be.
@@ -90,7 +94,7 @@ impl Bill {
                 let (withdrawal, deposit) = StatementLine::sides(-l.amount);
                 StatementLine {
                     book_date: l.posted,
-                    purchased: l.purchased,
+                    purchased: l.purchased.filter(|_| !is_instalment(&l.description)),
                     description: l.description,
                     withdrawal,
                     deposit,
@@ -120,10 +124,7 @@ impl Bill {
 /// The card a statement is of: its folder's name, as `[institution.accounts]`
 /// keys it.
 pub fn folder_card(path: &Path) -> Result<&str> {
-    path.parent()
-        .and_then(Path::file_name)
-        .and_then(|f| f.to_str())
-        .with_context(|| format!("{} is not in a card's folder", path.display()))
+    folder_name(path).with_context(|| format!("{} is not in a card's folder", path.display()))
 }
 
 /// Did a statement closing at `closing` on `closed` lead straight into one
@@ -134,11 +135,7 @@ pub fn follows(closed: NaiveDate, closing: Decimal, end: NaiveDate, opening: Dec
 }
 
 /// One statement, of the card its folder names.
-pub fn load(
-    path: &Path,
-    bank: Bank,
-    bill: impl FnOnce(&Path) -> Result<Bill>,
-) -> Result<BankStatement> {
+fn load(path: &Path, bank: Bank, bill: fn(&Path) -> Result<Bill>) -> Result<BankStatement> {
     let read = || bill(path)?.into_statement(bank, folder_card(path)?);
     read().with_context(|| format!("reading {}", path.display()))
 }
@@ -170,7 +167,7 @@ pub fn merge(statements: Vec<(BankStatement, PathBuf)>) -> Result<Vec<Merged>> {
         );
         if (after.end - before.end).num_days() <= LONGEST_PERIOD {
             ensure!(
-                follows(before.end, before.closing, after.end, after.opening),
+                before.closing == after.opening,
                 "{card}: {} opens at {}, but the statement before closed at {}",
                 path.display(),
                 after.opening,
@@ -191,12 +188,13 @@ pub fn merge(statements: Vec<(BankStatement, PathBuf)>) -> Result<Vec<Merged>> {
     Ok(merged)
 }
 
-/// Each card's statements in `paths`, read by a bank's `load`.
+/// Each card's statements in `paths`, read by a bank's `bill`.
 pub fn load_merged(
     paths: &[PathBuf],
-    load: impl Fn(&Path) -> Result<BankStatement>,
+    bank: Bank,
+    bill: fn(&Path) -> Result<Bill>,
 ) -> Result<Vec<Merged>> {
-    merge(load_all(paths, load)?)
+    merge(load_all(paths, |path| load(path, bank, bill))?)
 }
 
 #[cfg(test)]
