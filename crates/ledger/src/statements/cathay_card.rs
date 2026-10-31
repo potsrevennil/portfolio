@@ -119,15 +119,9 @@ fn bill(path: &Path) -> Result<Bill> {
 }
 
 /// One statement, of the card its folder names.
-pub fn load(path: impl AsRef<Path>) -> Result<BankStatement> {
-    card::load(path.as_ref(), Bank::CathayCard, bill)
-}
+pub fn load(path: &Path) -> Result<BankStatement> { card::load(path, Bank::CathayCard, bill) }
 
-pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
-    let statements =
-        paths.iter().map(|path| Ok((load(path)?, path.clone()))).collect::<Result<Vec<_>>>()?;
-    card::merge(statements)
-}
+pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> { card::load_merged(paths, load) }
 
 #[cfg(test)]
 mod tests;
