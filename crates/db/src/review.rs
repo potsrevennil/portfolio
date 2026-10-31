@@ -19,7 +19,8 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::{
     assertions::{self, AssertionSource},
-    check::{self, Figure, Mismatch},
+    bill_split,
+    check::{self, CheckReport, Figure, Mismatch},
     events::{self, Change, EventKind},
     import::Origin,
     query::AccountType,
@@ -74,12 +75,12 @@ struct AccountRow {
     acct_type: String,
 }
 
-struct Account {
+pub(crate) struct Account {
     id: i64,
     account_type: AccountType,
 }
 
-async fn account(db: &mut SqliteConnection, path: &str) -> Result<Account> {
+pub(crate) async fn account(db: &mut SqliteConnection, path: &str) -> Result<Account> {
     let row: AccountRow =
         sqlx::query_as("SELECT id, type AS acct_type FROM accounts WHERE path = ?")
             .bind(path)
@@ -119,20 +120,26 @@ fn balanced(legs: impl IntoIterator<Item = (Decimal, Currency)>) -> Result<()> {
     }
 }
 
-/// The figures the ledger disagrees with before a write: a write is held
-/// only to the ones it breaks, not to one already broken elsewhere.
-async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
-    Ok(check::check(db).await?.mismatches)
+/// What the ledger fails before a write: a write is held only to what it
+/// breaks, not to what is already broken elsewhere.
+pub(crate) async fn baseline(db: &mut SqliteConnection) -> Result<CheckReport> {
+    check::check(db).await
 }
 
-/// Commits `db` unless the write broke a balance a statement or a count
-/// vouches for; then it says which one, and what to do, in the reader's
-/// words. A 天天記帳 closing it contradicts is only that app's sum of what
-/// was logged there, so a record added later supersedes it instead.
-async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>, before: Vec<Mismatch>) -> Result<()> {
+/// Commits `db` unless the write mixed a split group, or broke a balance a
+/// statement or a count vouches for; then it says which one, and what to do, in
+/// the reader's words. A 天天記帳 closing it contradicts is only that app's sum
+/// of what was logged there, so a record added later supersedes it instead.
+pub(crate) async fn gated(
+    mut db: sqlx::Transaction<'_, sqlx::Sqlite>,
+    before: CheckReport,
+) -> Result<()> {
     let after = check::check(&mut db).await?;
+    if let Some(mixed) = after.mixed.iter().find(|m| !before.mixed.contains(m)) {
+        return Err(mixed.clone().into());
+    }
     let (tiantian, broken): (Vec<&Mismatch>, Vec<&Mismatch>) =
-        after.mismatches.iter().filter(|m| !before.contains(m)).partition(
+        after.mismatches.iter().filter(|m| !before.mismatches.contains(m)).partition(
             |m| matches!(&m.figure, Figure::Balance(a) if a.source == AssertionSource::Tiantian),
         );
     if let Some(broken) = broken.first() {
@@ -187,8 +194,21 @@ pub async fn edit(
 ) -> Result<()> {
     let mut db = pool.begin().await?;
     let before_check = baseline(&mut db).await?;
-    live(&mut db, id).await?;
-    let before = events::snapshot(&mut db, id).await?;
+    edit_in(&mut db, statements, id, edit, Origin::Manual).await?;
+    gated(db, before_check).await
+}
+
+/// [`edit`] inside the caller's transaction, ungated; `origin` marks the legs
+/// it changes. Refuses to move, resize or remove a leg a split holds.
+pub(crate) async fn edit_in(
+    db: &mut SqliteConnection,
+    statements: &StatementAccounts,
+    id: i64,
+    edit: &Edit,
+    origin: Origin,
+) -> Result<()> {
+    live(db, id).await?;
+    let before = events::snapshot(db, id).await?;
     let rows: Vec<PostingRow> = sqlx::query_as(
         "SELECT p.id, a.path, p.amount, p.currency FROM postings p
          JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
@@ -208,21 +228,30 @@ pub async fn edit(
         }
     }
 
+    let unchanged = |leg: &LegEdit| {
+        leg.posting_id.and_then(|pid| held.get(&pid)).is_some_and(|r| {
+            r.path == leg.account
+                && r.amount.parse::<Decimal>().ok() == Some(leg.amount)
+                && r.currency == leg.currency.to_string()
+        })
+    };
+    for link in bill_split::held(db, id).await? {
+        let leg = edit.legs.iter().find(|l| l.posting_id == Some(link.posting_id));
+        if !leg.is_some_and(unchanged) {
+            bail!("這筆在分帳「{}」裡，先退出分帳才能改這一腳", link.title);
+        }
+    }
+
     // Legs now on another account, with the account each left (`None` for
     // one the edit adds).
     let mut moved: HashMap<i64, Option<&str>> = HashMap::new();
     for leg in &edit.legs {
-        let unchanged = leg.posting_id.and_then(|pid| held.get(&pid)).is_some_and(|r| {
-            r.path == leg.account
-                && r.amount.parse::<Decimal>().ok() == Some(leg.amount)
-                && r.currency == leg.currency.to_string()
-        });
-        if unchanged {
+        if unchanged(leg) {
             continue;
         }
         let same_account =
             leg.posting_id.and_then(|pid| held.get(&pid)).is_some_and(|r| r.path == leg.account);
-        let target = account(&mut db, &leg.account).await?;
+        let target = account(db, &leg.account).await?;
         match leg.posting_id {
             Some(pid) => {
                 sqlx::query(
@@ -232,7 +261,7 @@ pub async fn edit(
                 .bind(target.id)
                 .bind(leg.amount.to_string())
                 .bind(leg.currency.to_string())
-                .bind(Origin::Manual.to_string())
+                .bind(origin.to_string())
                 .bind(pid)
                 .execute(&mut *db)
                 .await?;
@@ -249,7 +278,7 @@ pub async fn edit(
                 .bind(target.id)
                 .bind(leg.amount.to_string())
                 .bind(leg.currency.to_string())
-                .bind(Origin::Manual.to_string())
+                .bind(origin.to_string())
                 .execute(&mut *db)
                 .await?
                 .last_insert_rowid();
@@ -262,7 +291,7 @@ pub async fn edit(
         sqlx::query("DELETE FROM postings WHERE id = ?").bind(r.id).execute(&mut *db).await?;
         removed.push(r.path.as_str());
     }
-    remark_unverified(&mut db, statements, id, &moved, &removed).await?;
+    remark_unverified(db, statements, id, &moved, &removed).await?;
     sqlx::query(
         "UPDATE transactions SET narration = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', \
          'now') WHERE id = ?",
@@ -272,18 +301,18 @@ pub async fn edit(
     .execute(&mut *db)
     .await?;
 
-    let after = events::snapshot(&mut db, id).await?;
+    let after = events::snapshot(db, id).await?;
     if after != before {
         let kind = match after.legs.len() > before.legs.len() {
             true => EventKind::Split,
             false => EventKind::Edited,
         };
-        events::record(&mut db, id, kind, &Change { before: Some(before), after }).await?;
+        events::record(db, id, kind, &Change { before: Some(before), after }).await?;
     }
     if edit.confirm {
-        confirm_in(&mut db, id).await?;
+        confirm_in(db, id).await?;
     }
-    gated(db, before_check).await
+    Ok(())
 }
 
 /// Refuses a transaction that is not there to change.
@@ -307,8 +336,18 @@ async fn live(db: &mut SqliteConnection, id: i64) -> Result<()> {
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<()> {
     let mut db = pool.begin().await?;
     let before_check = baseline(&mut db).await?;
-    live(&mut db, id).await?;
-    let before = events::snapshot(&mut db, id).await?;
+    delete_in(&mut db, id).await?;
+    gated(db, before_check).await
+}
+
+/// [`delete`] inside the caller's transaction, ungated. Refuses a line a split
+/// holds.
+pub(crate) async fn delete_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
+    live(db, id).await?;
+    if let Some(link) = bill_split::held(db, id).await?.first() {
+        bail!("這筆在分帳「{}」裡，先退出分帳才能刪", link.title);
+    }
+    let before = events::snapshot(db, id).await?;
     sqlx::query("DELETE FROM postings WHERE transaction_id = ?").bind(id).execute(&mut *db).await?;
     sqlx::query(
         "UPDATE transactions SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at = \
@@ -317,10 +356,8 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<()> {
     .bind(id)
     .execute(&mut *db)
     .await?;
-    let after = events::snapshot(&mut db, id).await?;
-    events::record(&mut db, id, EventKind::Deleted, &Change { before: Some(before), after })
-        .await?;
-    gated(db, before_check).await
+    let after = events::snapshot(db, id).await?;
+    events::record(db, id, EventKind::Deleted, &Change { before: Some(before), after }).await
 }
 
 /// Marks a transaction reviewed as it stands. Confirming a reviewed one
@@ -336,8 +373,14 @@ pub async fn confirm(pool: &SqlitePool, id: i64) -> Result<()> {
 /// stands. Unconfirming one not reviewed changes nothing and records nothing.
 pub async fn unconfirm(pool: &SqlitePool, id: i64) -> Result<()> {
     let mut db = pool.begin().await?;
-    live(&mut db, id).await?;
-    let before = events::snapshot(&mut db, id).await?;
+    unconfirm_in(&mut db, id).await?;
+    db.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn unconfirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
+    live(db, id).await?;
+    let before = events::snapshot(db, id).await?;
     if !before.reviewed {
         return Ok(());
     }
@@ -348,11 +391,8 @@ pub async fn unconfirm(pool: &SqlitePool, id: i64) -> Result<()> {
     .bind(id)
     .execute(&mut *db)
     .await?;
-    let after = events::snapshot(&mut db, id).await?;
-    events::record(&mut db, id, EventKind::Unconfirmed, &Change { before: Some(before), after })
-        .await?;
-    db.commit().await?;
-    Ok(())
+    let after = events::snapshot(db, id).await?;
+    events::record(db, id, EventKind::Unconfirmed, &Change { before: Some(before), after }).await
 }
 
 async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
@@ -515,16 +555,27 @@ async fn remark_unverified(
 pub async fn enter(pool: &SqlitePool, statements: &StatementAccounts, m: &Manual) -> Result<i64> {
     let mut db = pool.begin().await?;
     let before = baseline(&mut db).await?;
+    let id = enter_in(&mut db, statements, m).await?;
+    gated(db, before).await?;
+    Ok(id)
+}
+
+/// [`enter`] inside the caller's transaction, ungated.
+pub(crate) async fn enter_in(
+    db: &mut SqliteConnection,
+    statements: &StatementAccounts,
+    m: &Manual,
+) -> Result<i64> {
     if m.amount.is_zero() {
         bail!("金額不可為 0");
     }
-    let from = account(&mut db, &m.account).await?;
+    let from = account(db, &m.account).await?;
     if !matches!(from.account_type, AccountType::Asset | AccountType::Liability) {
         bail!("帳戶要是資產或負債：{}", m.account);
     }
     let (other, flow) = match (&m.category, &m.counter) {
         (Some(category), None) => {
-            let a = account(&mut db, category).await?;
+            let a = account(db, category).await?;
             let flow = match a.account_type {
                 // Spent from the account; income comes into it.
                 AccountType::Expense => -m.amount,
@@ -534,7 +585,7 @@ pub async fn enter(pool: &SqlitePool, statements: &StatementAccounts, m: &Manual
             (a, flow)
         }
         (None, Some(counter)) => {
-            let a = account(&mut db, counter).await?;
+            let a = account(db, counter).await?;
             if !matches!(a.account_type, AccountType::Asset | AccountType::Liability) {
                 bail!("對方帳戶要是資產或負債：{counter}");
             }
@@ -558,8 +609,7 @@ pub async fn enter(pool: &SqlitePool, statements: &StatementAccounts, m: &Manual
     .last_insert_rowid();
     let counter = m.category.as_ref().or(m.counter.as_ref()).expect("checked above");
     for (path, account_id, amount) in [(&m.account, from.id, flow), (counter, other.id, -flow)] {
-        let tags =
-            awaits_statement(&mut db, statements, path, m.date).await?.then_some(UNVERIFIED_TAG);
+        let tags = awaits_statement(db, statements, path, m.date).await?.then_some(UNVERIFIED_TAG);
         sqlx::query(
             "INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin) \
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -573,8 +623,7 @@ pub async fn enter(pool: &SqlitePool, statements: &StatementAccounts, m: &Manual
         .execute(&mut *db)
         .await?;
     }
-    let after = events::snapshot(&mut db, id).await?;
-    events::record(&mut db, id, EventKind::Entered, &Change { before: None, after }).await?;
-    gated(db, before).await?;
+    let after = events::snapshot(db, id).await?;
+    events::record(db, id, EventKind::Entered, &Change { before: None, after }).await?;
     Ok(id)
 }

@@ -4,6 +4,7 @@
 //! and this crate implements it.
 
 pub mod assertions;
+pub mod bill_split;
 pub mod broker;
 pub mod chart;
 pub mod check;

@@ -29,6 +29,10 @@ pub enum EventKind {
     Deleted,
     /// A 確認 taken back: it waits for review again.
     Unconfirmed,
+    /// Linked to a split; see `bill_split::Link`.
+    Attached,
+    /// Unlinked from a split; see `bill_split::Link`.
+    Detached,
 }
 
 /// A whole transaction as it stood: what `before` and `after` hold.
@@ -50,7 +54,8 @@ pub struct SnapshotLeg {
     pub origin: Option<Origin>,
 }
 
-/// The payload of every kind but [`EventKind::Paired`].
+/// The payload of every kind but [`EventKind::Paired`], [`EventKind::Attached`]
+/// and [`EventKind::Detached`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Change {
     pub before: Option<Snapshot>,
