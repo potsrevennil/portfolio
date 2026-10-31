@@ -85,7 +85,7 @@ async fn a_group_charts_each_currency_apart_and_names_whose_check_it_is() {
     // JPY has no rate, so the total is not a number; each currency still is.
     assert!(
         text.starts_with(
-            "資產 › 銀行 銀行 未完整 （未換算：5,000.00 JPY） 23,500 TWD · 5,000.00 JPY · 90.00 \
+            "資產 › 銀行 銀行 算袂出來 （欠匯率：5,000.00 JPY） 23,500 TWD · 5,000.00 JPY · 90.00 \
              USD"
         ),
         "{text}"

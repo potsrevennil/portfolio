@@ -92,19 +92,11 @@ fn HeadlineView(headline: Headline) -> impl IntoView {
     let Headline { as_of, tiles } = headline;
     let tiles = tiles
         .into_iter()
-        .map(|Tile { label, figure, beside }| {
-            let beside = beside.map(|(name, figure)| {
-                view! {
-                    <span class="beside">
-                        {name} " " <TotalText total=figure />
-                    </span>
-                }
-            });
+        .map(|Tile { label, figure }| {
             view! {
                 <div class="stat">
                     <span class="name">{label}</span>
                     <span class="value"><TotalText total=figure /></span>
-                    {beside}
                 </div>
             }
         })

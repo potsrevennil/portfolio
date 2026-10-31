@@ -4,6 +4,7 @@
 
 mod common;
 
+use chrono::NaiveDate;
 use common::{
     page::{position, printed, visible, Context, Site},
     sample::{ledger, today, MAPPING},
@@ -19,11 +20,20 @@ use web::{
     trends::Rules,
 };
 
-async fn charts(pool: &SqlitePool, market: &Market, query: ChartQuery) -> Charts {
+async fn charts_on(
+    pool: &SqlitePool,
+    market: &Market,
+    query: ChartQuery,
+    day: NaiveDate,
+) -> Charts {
     let (at_cost, investments) =
         (AtCost::parse(MAPPING).unwrap(), Investments::parse(MAPPING).unwrap());
     let rules = Rules { at_cost: &at_cost, investments: &investments };
-    web::trends::load(pool, market, &query, today(), Currency::TWD, rules).await.unwrap()
+    web::trends::load(pool, market, &query, day, Currency::TWD, rules).await.unwrap()
+}
+
+async fn charts(pool: &SqlitePool, market: &Market, query: ChartQuery) -> Charts {
+    charts_on(pool, market, query, today()).await
 }
 
 fn render(charts: Charts) -> String {
@@ -46,7 +56,7 @@ async fn net_worth_is_one_line_that_says_when_it_is_incomplete() {
     assert_eq!(printed(&charts.worth.series[0]), [
         "39,500 TWD",
         "25,500 TWD",
-        "未完整（未換算：5,000.00 JPY）",
+        "算袂出來（欠匯率：5,000.00 JPY）",
     ]);
     // Its arms and its change are read out beside it, not drawn.
     let noted: Vec<&str> = charts.worth.noted.iter().map(|s| s.name.as_str()).collect();
@@ -54,7 +64,7 @@ async fn net_worth_is_one_line_that_says_when_it_is_incomplete() {
     assert_eq!(printed(&charts.worth.noted[2]), [
         "39,500 TWD",
         "-14,000 TWD",
-        "未完整（未換算：5,000.00 JPY）",
+        "算袂出來（欠匯率：5,000.00 JPY）",
     ]);
     // Held at cost, apart from net worth.
     assert_eq!(charts.at_cost.as_ref().map(|c| c.money.to_string()).as_deref(), Some("4,000 TWD"));
@@ -65,8 +75,8 @@ async fn net_worth_is_one_line_that_says_when_it_is_incomplete() {
     let readout = &text[position(&text, "至今")..position(&text, "1萬")];
     assert!(
         readout.starts_with(
-            "至今 淨資產 未完整 （未換算：5,000.00 JPY） 資產 未完整 （未換算：5,000.00 JPY） \
-             負債 -500 TWD 變化 未完整 （未換算：5,000.00 JPY）"
+            "至今 淨資產 算袂出來 （欠匯率：5,000.00 JPY） 資產 算袂出來 （欠匯率：5,000.00 JPY） \
+             負債 -500 TWD 變化 算袂出來 （欠匯率：5,000.00 JPY）"
         ),
         "{readout}"
     );
@@ -148,16 +158,25 @@ async fn the_page_leads_with_where_things_stand() {
     let (_dir, pool, market) = ledger().await;
     let text = visible(&render(charts(&pool, &market, ChartQuery::default()).await));
     let headline = &text[..position(&text, "以成本")];
-    // Net worth and its change in the newest month, the newest month with
-    // day-to-day flows, and this year's investment result.
+    // Net worth, the newest month with day-to-day flows, and this year's
+    // investment result.
     assert!(
         headline.starts_with(
-            "總覽 2024-03-31 淨資產 未完整 （未換算：5,000.00 JPY） 較上月 未完整 \
-             （未換算：5,000.00 JPY） 3 月收入 0 TWD 3 月支出 300 TWD 3 月結餘 -300 TWD 2024 \
-             投資損益 -1,500 TWD 淨資產"
+            "總覽 2024-03-31 淨資產 算袂出來 （欠匯率：5,000.00 JPY） 3 月收入 0 TWD 3 月支出 300 \
+             TWD 3 月結餘 -300 TWD 2024 投資損益 -1,500 TWD 淨資產"
         ),
         "{headline}"
     );
+}
+
+#[tokio::test]
+async fn an_amount_held_throughout_with_no_rate_leaves_the_change_unknown() {
+    let (_dir, pool, market) = ledger().await;
+    let day = "2024-04-30".parse().unwrap();
+    let charts = charts_on(&pool, &market, ChartQuery::default(), day).await;
+    // The JPY sits unmoved through April, so it must not cancel to a figure.
+    let changes = printed(&charts.worth.noted[2]);
+    assert_eq!(changes.last().unwrap(), "算袂出來（欠匯率：5,000.00 JPY）");
 }
 
 async fn load(

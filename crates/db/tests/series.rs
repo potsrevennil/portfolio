@@ -7,6 +7,7 @@ use chrono::NaiveDate;
 use db::{
     market::Market,
     query::{self, LedgerData, PriceTable},
+    series::Valued,
 };
 use ledger::valuation::AtCost;
 use ledger_types::currency::Currency;
@@ -26,6 +27,13 @@ async fn snapshot(pool: &SqlitePool, market: &Market, end: NaiveDate) -> (Ledger
     let prices =
         query::load_fx_prices(market, &data.currencies(), Currency::TWD, end).await.unwrap();
     (data, prices)
+}
+
+#[test]
+fn a_change_keeps_naming_an_amount_held_throughout_with_no_rate() {
+    let held = Valued::of(dec!(100), Currency::JPY, None);
+    assert!((&held - &held).is_complete());
+    assert_eq!(held.since(&held), held);
 }
 
 #[tokio::test]

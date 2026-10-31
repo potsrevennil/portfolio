@@ -1149,8 +1149,7 @@ input.currency {
   border-radius: 6px;
 }
 
-.stat .name,
-.stat .beside {
+.stat .name {
   color: var(--muted);
   font-size: 0.85rem;
 }

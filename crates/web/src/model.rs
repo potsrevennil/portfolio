@@ -74,7 +74,7 @@ impl fmt::Display for Unpriced {
         match self.0.split_first() {
             None => Ok(()),
             Some((first, rest)) => {
-                write!(f, "（未換算：{first}")?;
+                write!(f, "（欠匯率：{first}")?;
                 for money in rest {
                     write!(f, "、{money}")?;
                 }
@@ -621,12 +621,11 @@ pub struct Headline {
     pub tiles: Vec<Tile>,
 }
 
-/// One headline figure, and a second one beside it, named.
+/// One headline figure, named.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tile {
     pub label: String,
     pub figure: Converted,
-    pub beside: Option<(String, Converted)>,
 }
 
 /// Something the breakdown can be set to.
@@ -745,6 +744,6 @@ mod tests {
         assert_eq!(Unpriced::default().to_string(), "");
         let unpriced =
             Unpriced(vec![money(dec!(5000), Currency::JPY), money(dec!(-2), Currency::VND)]);
-        assert_eq!(unpriced.to_string(), "（未換算：5,000.00 JPY、-2.00 VND）");
+        assert_eq!(unpriced.to_string(), "（欠匯率：5,000.00 JPY、-2.00 VND）");
     }
 }
