@@ -2,7 +2,7 @@
 //! a transaction opened for editing, and the forms' text parsed into what
 //! `db::review` writes.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, future::Future};
 
 use anyhow::{bail, Context, Result};
 use db::{
@@ -19,7 +19,8 @@ use ledger_types::currency::Currency;
 use crate::{
     entries::{self, Chart, Unlisted},
     model::{
-        Change, ChartAccount, Editing, Gap, JournalQuery, LegInput, ManualInput, Queue, Review,
+        Bulk, Change, ChartAccount, Editing, Gap, JournalQuery, LegInput, ManualInput, Queue,
+        Review,
     },
     typed::{amount, currency, date},
 };
@@ -53,7 +54,45 @@ pub async fn load(
     let confirmed = journal::by_ids(pool, &import_run::confirmed(pool).await?).await?;
     let confirmed = confirmed.into_iter().map(|e| chart.entry(e, base, &[])).collect();
     let gaps = gaps(pool, &chart).await?;
-    Ok(Queue { journal, gaps, confirmed })
+    let (accounts, parents) = (postable(&chart, &[]), chart.accounts_for(&[]));
+    Ok(Queue { journal, gaps, confirmed, accounts, parents })
+}
+
+/// Runs `change` on each ticked row, keeping what it refuses to say beside the
+/// row's date and name.
+pub async fn each_row<F, Fut>(pool: &SqlitePool, ids: &str, change: F) -> Result<Bulk>
+where
+    F: Fn(i64) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let ids: Vec<i64> = ids
+        .split(',')
+        .filter(|id| !id.is_empty())
+        .map(|id| id.parse().with_context(|| format!("不明的一筆：{id}")))
+        .collect::<Result<_>>()?;
+    let mut bulk = Bulk::default();
+    for id in ids {
+        match change(id).await {
+            Ok(()) => bulk.done += 1,
+            Err(e) => {
+                let row = journal::by_ids(pool, &[id]).await?.pop();
+                let name = row
+                    .map(|r| format!("{} {}", r.date, r.payee.or(r.narration).unwrap_or_default()));
+                bulk.left.push((id, format!("{}：{e:#}", name.unwrap_or_default())));
+            }
+        }
+    }
+    Ok(bulk)
+}
+
+/// A new account as the page offers it.
+pub async fn opened(pool: &SqlitePool, unlisted: &Unlisted, path: &str) -> Result<ChartAccount> {
+    let chart = Chart::load(pool, unlisted).await?;
+    chart
+        .accounts_for(&[])
+        .into_iter()
+        .find(|a| a.path == path)
+        .with_context(|| format!("查無口座：{path}"))
 }
 
 /// A suggestion in the reader's words.
@@ -61,19 +100,19 @@ fn said(suggestion: &Suggestion, chart: &Chart) -> String {
     match suggestion {
         Suggestion::Uncategorised => "未分類，揀一个分類".to_string(),
         Suggestion::PickedNearest => "仝金額有幾筆，先配上近的".to_string(),
-        Suggestion::Waiting => "等對帳單".to_string(),
+        Suggestion::Waiting => "等數單".to_string(),
         Suggestion::NotOnStatement { through, siblings } if siblings.is_empty() => {
-            format!("對帳單到 {through} 無這筆")
+            format!("數單到 {through} 無這筆")
         }
         Suggestion::NotOnStatement { through, siblings } => {
             let names: Vec<String> = siblings.iter().map(|a| chart.label(a)).collect();
-            format!("對帳單到 {through} 無這筆，{} 有", names.join("、"))
+            format!("數單到 {through} 無這筆，{} 有", names.join("、"))
         }
         Suggestion::SharedDeferral { other } => {
-            format!("對帳單猶無這筆，另外一爿佇 {}", chart.label(other))
+            format!("數單猶無這筆，另外一爿佇 {}", chart.label(other))
         }
         Suggestion::Moved { from, to } => {
-            format!("對帳單佇 {}，已經對 {} 移過去", chart.label(to), chart.label(from))
+            format!("數單佇 {}，已經對 {} 移過去", chart.label(to), chart.label(from))
         }
         Suggestion::OneDate { kept, .. } => format!("兩間銀行紀錄無仝工，先記 {kept}"),
         Suggestion::ExtraOpening => "這个口座有幾筆期初，用上早彼筆".to_string(),
@@ -136,12 +175,16 @@ pub async fn editing(
         .into_iter()
         .map(|e| Change { at: e.at, kind: e.kind.to_string() })
         .collect();
-    Ok(Editing { entry, accounts, history })
+    Ok(Editing { entry, accounts, parents: chart.accounts_for(&[]), history })
 }
 
-/// The accounts 記一筆 offers.
-pub async fn manual_accounts(pool: &SqlitePool, unlisted: &Unlisted) -> Result<Vec<ChartAccount>> {
-    Ok(postable(&Chart::load(pool, unlisted).await?, &[]))
+/// The accounts 記一筆 offers, and what a new one may open under.
+pub async fn manual_accounts(
+    pool: &SqlitePool,
+    unlisted: &Unlisted,
+) -> Result<(Vec<ChartAccount>, Vec<ChartAccount>)> {
+    let chart = Chart::load(pool, unlisted).await?;
+    Ok((postable(&chart, &[]), chart.accounts_for(&[])))
 }
 
 impl TryFrom<&LegInput> for LegEdit {

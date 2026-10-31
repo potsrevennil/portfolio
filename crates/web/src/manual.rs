@@ -4,8 +4,9 @@ use leptos::prelude::*;
 use leptos_meta::Title;
 
 use crate::{
+    account_box::{AccountBox, Accounts},
     model::{AccountKind, ChartAccount},
-    review::{AccountSelect, ActionError},
+    review::ActionError,
 };
 
 /// The accounts the form offers, and today's date to start from.
@@ -13,15 +14,17 @@ use crate::{
 pub struct ManualForm {
     pub today: String,
     pub accounts: Vec<ChartAccount>,
+    /// What a new account may open under.
+    pub parents: Vec<ChartAccount>,
 }
 
 #[server]
 pub async fn load_manual() -> Result<ManualForm, ServerFnError> {
     let pool = expect_context::<db::SqlitePool>();
     let unlisted = expect_context::<crate::entries::Unlisted>();
-    let accounts =
+    let (accounts, parents) =
         crate::queue::manual_accounts(&pool, &unlisted).await.map_err(crate::review::failed)?;
-    Ok(ManualForm { today: chrono::Local::now().date_naive().to_string(), accounts })
+    Ok(ManualForm { today: chrono::Local::now().date_naive().to_string(), accounts, parents })
 }
 
 #[server]
@@ -80,12 +83,11 @@ enum Kind {
 pub fn ManualEntry(form: ManualForm) -> impl IntoView {
     let enter = ServerAction::<EnterManual>::new();
     let kind = RwSignal::new(Kind::Spend);
-    let of = |kinds: &[AccountKind]| -> Vec<ChartAccount> {
-        form.accounts
-            .iter()
-            .filter(|a| a.kind.is_some_and(|k| kinds.contains(&k)))
-            .cloned()
-            .collect()
+    let of = |kinds: &[AccountKind]| {
+        let kept = |list: &[ChartAccount]| -> Vec<ChartAccount> {
+            list.iter().filter(|a| a.kind.is_some_and(|k| kinds.contains(&k))).cloned().collect()
+        };
+        Accounts::new(kept(&form.accounts), kept(&form.parents))
     };
     let held = of(&[AccountKind::Asset, AccountKind::Liability]);
     let spending = of(&[AccountKind::Expense]);
@@ -115,16 +117,16 @@ pub fn ManualEntry(form: ManualForm) -> impl IntoView {
     // Only the accounts this kind of entry needs; the others are not sent.
     let accounts = move || {
         let (from, other, other_name, other_list) = match kind.get() {
-            Kind::Spend => ("付款帳戶", "類別", "category", spending.clone()),
-            Kind::Income => ("收款帳戶", "類別", "category", income.clone()),
-            Kind::Transfer => ("從", "轉到", "counter", held.clone()),
+            Kind::Spend => ("付款帳戶", "類別", "category", spending),
+            Kind::Income => ("收款帳戶", "類別", "category", income),
+            Kind::Transfer => ("從", "轉到", "counter", held),
         };
         view! {
             <label class="field">
-                {from} <AccountSelect name="account".to_string() accounts=held.clone() blank="請選" />
+                {from} <AccountBox name="account".to_string() accounts=held placeholder="請選" />
             </label>
             <label class="field">
-                {other} <AccountSelect name=other_name.to_string() accounts=other_list blank="請選" />
+                {other} <AccountBox name=other_name.to_string() accounts=other_list placeholder="請選" />
             </label>
         }
     };

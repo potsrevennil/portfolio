@@ -314,6 +314,7 @@ impl Chart {
         ChartAccount {
             path: a.path.clone(),
             label: self.label(&a.path),
+            name: self.offer(&a.path),
             depth: a.path.matches(':').count(),
             kind: AccountKind::try_from(a.account_type).ok(),
         }

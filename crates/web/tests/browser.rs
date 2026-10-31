@@ -246,6 +246,67 @@ impl Journey {
         panic!("no row with {needle:?}:\n{}", self.text().await);
     }
 
+    /// Types into the account box holding field `name`, then presses the row
+    /// whose text holds `row`.
+    async fn pick(&self, name: &str, typed: &str, row: &str) {
+        let shell = format!(r#".account-box:has(input[name="{name}"])"#);
+        let field = self.find(&format!(r#"{shell} input[type="text"]"#)).await;
+        field.click().await.unwrap();
+        field.clear().await.unwrap();
+        field.send_keys(typed).await.unwrap();
+        self.choose(name, typed, row).await;
+    }
+
+    /// The row of an open box's tree labelled `label`.
+    async fn place(&self, shell: &str, label: &str) -> Element {
+        for row in self.all(&format!("{shell} .panel li")).await {
+            let name = row.find(Locator::Css(".row")).await.unwrap();
+            if name.text().await.unwrap() == label {
+                return row;
+            }
+        }
+        panic!("no place {label:?}:\n{}", self.text().await);
+    }
+
+    /// Presses the row holding `row` in the open list of the box holding
+    /// `name`.
+    async fn choose(&self, name: &str, typed: &str, row: &str) {
+        let shell = format!(r#".account-box:has(input[name="{name}"])"#);
+        let field = self.find(&format!(r#"{shell} input[type="text"]"#)).await;
+        if field.prop("value").await.unwrap().unwrap_or_default() != typed {
+            field.send_keys(typed).await.unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            for found in self.all(&format!("{shell} .panel button")).await {
+                if found.text().await.unwrap().contains(row) {
+                    found.click().await.unwrap();
+                    return;
+                }
+            }
+            if Instant::now() > deadline {
+                panic!("no row {row:?} for {name}:\n{}", self.text().await);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Waits until the box holding field `name` submits `path`.
+    async fn until_value(&self, name: &str, path: &str) {
+        let field = format!(r#"input[type="hidden"][name="{name}"]"#);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let value = self.find(&field).await.attr("value").await.unwrap();
+            if value.as_deref() == Some(path) {
+                return;
+            }
+            if Instant::now() > deadline {
+                panic!("{name} holds {value:?}, not {path:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn fill(&self, css: &str, value: &str) {
         let field = self.find(css).await;
         field.clear().await.unwrap();
@@ -272,6 +333,7 @@ async fn journeys() {
     }
     confirm_from_the_queue().await;
     split_in_the_editor().await;
+    tick_rows_into_a_new_account().await;
     enter_cash_by_hand().await;
     show_the_accounts_at_zero().await;
     explore_the_charts().await;
@@ -317,18 +379,31 @@ async fn split_in_the_editor() {
     j.open("/review").await;
     j.row(TAXI).await.find(Locator::LinkText("修改")).await.unwrap().click().await.unwrap();
     j.hydrated().await;
-    j.find(r#"select[name="legs[2][account]"]"#)
-        .await
-        .select_by_value("Assets:Split:Alpha:Tab")
-        .await
-        .unwrap();
+    // Unsearched, the box is the tree: fold down to the account, or search any
+    // level above it.
+    let shell = r#".account-box:has(input[name="legs[2][account]"])"#;
+    j.find(&format!(r#"{shell} input[type="text"]"#)).await.click().await.unwrap();
+    let rows = format!("{shell} .panel li");
+    let closed = j.all(&rows).await.len();
+    let bank = j.place(shell, "銀行").await;
+    bank.find(Locator::Css(".fold")).await.unwrap().click().await.unwrap();
+    j.until_count(&rows, closed + 1).await;
+    j.place(shell, "活存").await;
+    j.pick("legs[2][account]", "資產 甲公司 分帳", "甲公司 › 分帳").await;
     j.fill(r#"input[name="legs[2][amount]"]"#, "100").await;
     // The category keeps all 300: off by 100.
     j.find(r#"button[type="submit"]"#).await.click().await.unwrap();
     j.until_text("借貸不平衡").await;
     assert!(!reviewed(&j.pool, TAXI).await);
 
-    j.fill(r#"input[name="legs[0][amount]"]"#, "200").await;
+    j.pick("legs[3][account]", "吃飯", "吃飯").await;
+    j.fill(r#"input[name="legs[3][amount]"]"#, "50").await;
+    // ＋ gives a row beyond the ones the editor opens with.
+    j.until_count(r#"input[name="legs[4][account]"]"#, 0).await;
+    j.find(".add-leg").await.click().await.unwrap();
+    j.pick("legs[4][account]", "現金", "現金").await;
+    j.fill(r#"input[name="legs[4][amount]"]"#, "10").await;
+    j.fill(r#"input[name="legs[0][amount]"]"#, "140").await;
     j.find(r#"button[type="submit"]"#).await.click().await.unwrap();
     // Saved and confirmed: back to the queue, without the taxi.
     j.until_count("li.entry", 3).await;
@@ -342,7 +417,40 @@ async fn split_in_the_editor() {
     .fetch_one(&j.pool)
     .await
     .unwrap();
-    assert_eq!(legs, 3);
+    assert_eq!(legs, 5);
+    j.close().await;
+}
+
+/// Tick rows, open the account they turned out to need, and move them there.
+async fn tick_rows_into_a_new_account() {
+    let j = Journey::start().await;
+    j.open("/review").await;
+    j.hydrated().await;
+    j.until_count(".bulk.hidden", 1).await;
+    for name in [LUNCH, TAXI] {
+        j.row(name).await.find(Locator::Css(".tick")).await.unwrap().click().await.unwrap();
+    }
+    j.until_text("揀 2 筆").await;
+
+    // A name no account has: the same box offers it, then asks where it goes.
+    j.pick("account", "乙公司", "開新口座").await;
+    j.until_text("「乙公司」開佇佗位").await;
+    j.choose("account", "分帳", "分帳").await;
+    j.until_value("account", "Assets:Split:乙公司").await;
+    assert!(j.text().await.contains("揀 2 筆"), "opening an account keeps the ticks");
+    // A name after a trail says where, so the box doesn't ask.
+    j.pick("account", "分帳", "分帳").await;
+    j.until_value("account", "Assets:Split").await;
+    j.pick("account", "資產 > 分帳 > 丙公司", "「丙公司」佇").await;
+    j.until_value("account", "Assets:Split:丙公司").await;
+    // Typing on from the account the box holds goes under it.
+    j.choose("account", "丁", "「丁」佇").await;
+    j.until_value("account", "Assets:Split:丙公司:丁").await;
+    j.find(r#".bulk form:has(.account-box) button[type="submit"]"#).await.click().await.unwrap();
+    j.until_count("li.entry", 2).await;
+    j.until_text("處理好 2 筆").await;
+    j.until_count(".bulk.hidden", 1).await;
+    assert!(reviewed(&j.pool, LUNCH).await && reviewed(&j.pool, TAXI).await);
     j.close().await;
 }
 
@@ -352,12 +460,12 @@ async fn enter_cash_by_hand() {
     // 轉帳 asks where the money goes instead of a category, and back.
     let kinds = j.all(".kinds input").await;
     kinds[2].click().await.unwrap();
-    j.find(r#"select[name="counter"]"#).await;
-    j.until_count(r#"select[name="category"]"#, 0).await;
+    j.find(r#"input[name="counter"]"#).await;
+    j.until_count(r#"input[name="category"]"#, 0).await;
     kinds[0].click().await.unwrap();
     j.fill(r#"input[name="amount"]"#, "85").await;
-    j.find(r#"select[name="account"]"#).await.select_by_value("Assets:Cash").await.unwrap();
-    j.find(r#"select[name="category"]"#).await.select_by_value("Expenses:Food").await.unwrap();
+    j.pick("account", "現金", "現金").await;
+    j.pick("category", "吃飯", "吃飯").await;
     j.fill(r#"input[name="note"]"#, "豆漿").await;
     j.find(r#"button[type="submit"]"#).await.click().await.unwrap();
     j.until_text("已記下").await;

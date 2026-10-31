@@ -383,6 +383,8 @@ pub struct ChartAccount {
     pub path: String,
     /// Standalone, so it reads without the tree around it.
     pub label: String,
+    /// The whole trail of labels, which two accounts sharing a label differ by.
+    pub name: String,
     pub depth: usize,
     /// None for equity, which holds the loader's system accounts.
     pub kind: Option<AccountKind>,
@@ -443,6 +445,18 @@ pub struct Queue {
     pub journal: Journal,
     pub gaps: Vec<Gap>,
     pub confirmed: Vec<Entry>,
+    /// Where ticked rows may move.
+    pub accounts: Vec<ChartAccount>,
+    /// What a new account may open under.
+    pub parents: Vec<ChartAccount>,
+}
+
+/// What a change to several ticked rows came to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bulk {
+    pub done: usize,
+    /// The rows it left alone, each with why.
+    pub left: Vec<(i64, String)>,
 }
 
 /// An account the ledger disagrees with its statement, count or broker on, at
@@ -468,6 +482,8 @@ pub struct Editing {
     pub entry: Entry,
     /// Where a leg may post: open accounts, and each leg's own.
     pub accounts: Vec<ChartAccount>,
+    /// What a new account may open under.
+    pub parents: Vec<ChartAccount>,
     pub history: Vec<Change>,
 }
 
