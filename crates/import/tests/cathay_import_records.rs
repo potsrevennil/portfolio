@@ -5,45 +5,16 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use db::load;
 use import::bank::{import, Report};
-use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, statements::bank::Bank};
+use ledger::{accounts::Chart, statements::bank::Bank};
 use rust_decimal::Decimal;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
-fn records_dir() -> Option<PathBuf> {
-    let dir = match std::env::var_os("LEDGER_RECORDS_DIR") {
-        Some(dir) => PathBuf::from(dir),
-        None => {
-            // A worktree's records are its main checkout's.
-            let out = std::process::Command::new("git")
-                .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-                .current_dir(env!("CARGO_MANIFEST_DIR"))
-                .output()
-                .ok()?;
-            PathBuf::from(String::from_utf8(out.stdout).ok()?.trim()).parent()?.to_path_buf()
-        }
-    };
-    dir.join("raw/cathay-bank").is_dir().then_some(dir)
-}
+mod common;
 
 fn statements(records: &Path) -> Result<Vec<PathBuf>> {
-    let mut paths = Vec::new();
-    for account in std::fs::read_dir(records.join("raw/cathay-bank"))? {
-        let account = account?.path();
-        if !account.is_dir() {
-            continue;
-        }
-        for file in std::fs::read_dir(account)? {
-            let path = file?.path();
-            if path.extension().is_some_and(|e| e == "csv") {
-                paths.push(path);
-            }
-        }
-    }
-    paths.sort();
-    Ok(paths)
+    common::records::files(records, "cathay-bank", "csv")
 }
 
 async fn import_all(pool: &SqlitePool, records: &Path) -> Result<Report> {
@@ -58,34 +29,12 @@ async fn import_all(pool: &SqlitePool, records: &Path) -> Result<Report> {
 /// (a) A ledger loaded from a fresh freeze already holds every line.
 #[tokio::test]
 async fn importing_every_download_into_the_frozen_ledger_adds_nothing() -> Result<()> {
-    let Some(records) = records_dir() else {
+    let Some(records) = common::records::dir("cathay-bank") else {
         eprintln!("skipped: no records");
         return Ok(());
     };
-    let scratch = TempDir::new()?;
-    let journal = scratch.path().join("journal.csv");
-    let frozen = freeze::run(&freeze::FreezeArgs {
-        journal: journal.clone(),
-        build: BuildArgs {
-            cathay_statements: statements(&records)?,
-            line_bank_statements: Vec::new(),
-            daily_income_expense: None,
-            daily_transfers: None,
-            transactions: Some(records.join("corrected/transactions.csv")),
-            backfill: false,
-            ledger_dir: records.join("ledger"),
-        },
-    })?;
-    anyhow::ensure!(frozen.ok(), "freeze failed:\n{frozen}");
-    let url = format!("sqlite:{}", scratch.path().join("frozen.db").display());
-    load::run(&load::Args {
-        journal,
-        database_url: url.clone(),
-        market_url: format!("{url}.market"),
-        mapping: records.join("ledger/mapping.toml"),
-    })
-    .await?;
-    let pool = db::init_db(&url).await?;
+    let (pool, _scratch) =
+        common::records::frozen(&records, statements(&records)?, Vec::new()).await?;
 
     let report = import_all(&pool, &records).await?;
     eprintln!("{report}");
@@ -97,7 +46,7 @@ async fn importing_every_download_into_the_frozen_ledger_adds_nothing() -> Resul
 /// (b) Into an empty ledger, every statement closes on its own balance.
 #[tokio::test]
 async fn importing_every_download_into_an_empty_ledger_closes_every_statement() -> Result<()> {
-    let Some(records) = records_dir() else {
+    let Some(records) = common::records::dir("cathay-bank") else {
         eprintln!("skipped: no records");
         return Ok(());
     };
