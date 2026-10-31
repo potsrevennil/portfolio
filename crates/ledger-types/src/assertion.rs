@@ -79,3 +79,14 @@ impl BalanceAssertion {
         opening.into_iter().chain([(self.period_end, self.closing)])
     }
 }
+
+/// Each statement figure with the one before it on the same books, in the order
+/// given.
+pub fn successions(
+    figures: &[BalanceAssertion],
+) -> impl Iterator<Item = (&BalanceAssertion, &BalanceAssertion)> {
+    let statements = || figures.iter().filter(|a| a.source == AssertionSource::Statement);
+    statements().zip(statements().skip(1)).filter(|(before, after)| {
+        (&before.account, before.currency) == (&after.account, after.currency)
+    })
+}

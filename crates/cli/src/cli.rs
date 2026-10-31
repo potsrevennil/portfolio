@@ -45,6 +45,15 @@ enum Command {
     /// Import LINE Bank statement PDFs into SQLite (scratch databases until
     /// the Cutover)
     ImportLineBank(import::bank::Args),
+    /// Import Cathay card statement CSVs, in `<card>/` folders, into SQLite
+    /// (scratch databases until the Cutover)
+    ImportCathayCard(import::bank::Args),
+    /// Import 台新 card statement PDFs, in `<card>/` folders, into SQLite
+    /// (scratch databases until the Cutover)
+    ImportTaishinCard(import::bank::Args),
+    /// Import 台新 bank history, PDFs and xlsx in a `<kind>-<account>/` folder,
+    /// into SQLite (scratch databases until the Cutover)
+    ImportTaishinBank(import::bank::Args),
     /// Import broker statements into the broker sub-ledger (scratch databases
     /// until the Cutover)
     ImportBroker(import::broker::Args),
@@ -153,6 +162,18 @@ impl Cli {
             }
             Some(Command::ImportLineBank(args)) => {
                 print!("{}", import::bank::run(Bank::LineBank, args).await?);
+                Ok(())
+            }
+            Some(Command::ImportCathayCard(args)) => {
+                print!("{}", import::bank::run(Bank::CathayCard, args).await?);
+                Ok(())
+            }
+            Some(Command::ImportTaishinCard(args)) => {
+                print!("{}", import::bank::run(Bank::TaishinCard, args).await?);
+                Ok(())
+            }
+            Some(Command::ImportTaishinBank(args)) => {
+                print!("{}", import::bank::run(Bank::Taishin, args).await?);
                 Ok(())
             }
             Some(Command::ImportBroker(args)) => {

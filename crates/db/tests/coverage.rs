@@ -216,3 +216,42 @@ async fn a_balance_is_confirmed_only_where_the_ledger_agrees() {
         .unwrap();
     assert_eq!(closing, "120");
 }
+
+/// The page tells what a figure has checked by when a leg moved the balance
+/// it states, so a purchase still to post is past a closing it predates.
+#[tokio::test]
+async fn a_record_counts_from_the_day_it_posted() {
+    let (pool, _file) = fixture().await;
+    let mut conn = pool.acquire().await.unwrap();
+    let id = common::post(&mut conn, "2024-03-30", BANK, "-50", "TWD", None).await;
+    common::posted_on(&mut conn, id, BANK, "2024-04-02").await;
+
+    let records = coverage::ledger_records(&mut conn).await.unwrap();
+    let on_bank = records.iter().find(|r| r.account == BANK).unwrap();
+    assert_eq!(on_bank.date, "2024-04-02".parse().unwrap());
+    let positions = coverage::ledger_positions(&mut conn).await.unwrap();
+    let on_bank = positions.iter().find(|p| p.account == BANK).unwrap();
+    assert_eq!(on_bank.last, "2024-04-02".parse().unwrap());
+}
+
+/// Statements apart by days are a gap only where the balance moved in them.
+#[test]
+fn a_gap_is_days_between_statements_the_balance_moved_in() {
+    let statement = |start: &str, opening: &str, end: &str, closing: &str| BalanceAssertion {
+        period_start: Some(start.parse().unwrap()),
+        opening: Some(opening.parse().unwrap()),
+        ..balance(AssertionSource::Statement, end, closing)
+    };
+    let figures = [
+        statement("2024-01-01", "0", "2024-01-31", "10"),
+        statement("2024-02-10", "10", "2024-02-29", "20"),
+        statement("2024-03-05", "25", "2024-03-31", "30"),
+    ];
+
+    let found: Vec<_> = coverage::gaps(&figures)
+        .into_iter()
+        .map(|g| (g.from.to_string(), g.to.to_string()))
+        .collect();
+
+    assert_eq!(found, [("2024-03-01".to_string(), "2024-03-04".to_string())]);
+}

@@ -2,14 +2,15 @@
 //! acceptance checks, plus what the freeze makes of a transfer from the other
 //! bank, a called-back transfer and an idle USD account.
 //!
-//! The statements are given as the text `pdftotext -raw` prints; a stand-in
-//! `pdftotext` on PATH serves `<name>.txt` for `<name>.pdf`, so the real
-//! subprocess path runs without a PDF in the repo.
+//! The statements are given as the text `pdftotext -raw` prints.
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Once};
+use std::{collections::BTreeMap, path::PathBuf};
+
+mod common;
 
 use anyhow::Result;
 use chrono::NaiveDate;
+use common::pdf::fake_pdftotext;
 use db::{
     import::{insert_deduped, InsertOutcome, Transaction},
     load, pairing,
@@ -108,28 +109,6 @@ a:4,active,2026-01-10,,transfer,300,TWD,LINE,現金,300,TWD,,,,,,app,x,U4,raw,,
 a:5,active,2026-01-12,,expense,50,TWD,LINE,,,,飲食,,,,,app,x,U5,raw,,
 a:6,active,2026-03-05,,expense,20,TWD,LINE,,,,飲食,,,,,app,x,U6,raw,,
 ";
-
-static FAKE_PDFTOTEXT: Once = Once::new();
-
-/// Puts a `pdftotext` first on PATH that prints the `.txt` beside the `.pdf`.
-fn fake_pdftotext() {
-    FAKE_PDFTOTEXT.call_once(|| {
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fake-pdftotext");
-        std::fs::create_dir_all(&dir).expect("fake pdftotext dir");
-        let script = dir.join("pdftotext");
-        // Called as `pdftotext -raw -enc UTF-8 <file> -`.
-        std::fs::write(&script, "#!/bin/sh\nexec cat \"${4%.pdf}.txt\"\n").expect("script");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-                .expect("executable");
-        }
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        let paths = std::iter::once(dir).chain(std::env::split_paths(&path));
-        std::env::set_var("PATH", std::env::join_paths(paths).expect("PATH"));
-    });
-}
 
 struct Fixture {
     dir: TempDir,

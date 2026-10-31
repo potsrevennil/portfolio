@@ -38,3 +38,17 @@ pub async fn post(
     }
     txn
 }
+
+/// Says `account`'s leg of `txn` posted on `date`, as a card statement does.
+pub async fn posted_on(conn: &mut SqliteConnection, txn: i64, account: &str, date: &str) {
+    sqlx::query(
+        "UPDATE postings SET posted_date = ? WHERE transaction_id = ? AND account_id =
+         (SELECT id FROM accounts WHERE path = ?)",
+    )
+    .bind(date)
+    .bind(txn)
+    .bind(account)
+    .execute(conn)
+    .await
+    .unwrap();
+}

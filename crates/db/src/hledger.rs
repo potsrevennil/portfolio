@@ -23,6 +23,7 @@ struct PostingRow {
     amount: String,
     currency: String,
     tags: Option<String>,
+    posted_date: Option<String>,
 }
 
 /// One dated block of the journal. Sorting puts a day's assertions after its
@@ -37,8 +38,8 @@ enum Entry {
 pub async fn export(conn: &mut SqliteConnection) -> Result<String> {
     let rows: Vec<PostingRow> = sqlx::query_as(
         "SELECT t.id AS transaction_id, t.date, t.payee, t.narration, a.path, p.amount, \
-         p.currency, p.tags FROM postings p JOIN transactions t ON t.id = p.transaction_id JOIN \
-         accounts a ON a.id = p.account_id ORDER BY t.id, p.id",
+         p.currency, p.tags, p.posted_date FROM postings p JOIN transactions t ON t.id = \
+         p.transaction_id JOIN accounts a ON a.id = p.account_id ORDER BY t.id, p.id",
     )
     .fetch_all(&mut *conn)
     .await
@@ -91,9 +92,16 @@ pub async fn export(conn: &mut SqliteConnection) -> Result<String> {
                 writeln!(out, "{date} {description}")?;
                 for leg in legs {
                     write!(out, "    {}  {} {}", leg.path, leg.amount, leg.currency)?;
-                    match &leg.tags {
-                        Some(tags) => writeln!(out, "  ; tags: {}", clean(tags))?,
-                        None => out.push('\n'),
+                    let comment: Vec<String> = [
+                        leg.tags.as_deref().map(|tags| format!("tags: {}", clean(tags))),
+                        leg.posted_date.as_deref().map(|date| format!("date: {date}")),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    match comment.is_empty() {
+                        true => out.push('\n'),
+                        false => writeln!(out, "  ; {}", comment.join(", "))?,
                     }
                 }
             }

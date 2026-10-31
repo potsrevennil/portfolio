@@ -198,7 +198,7 @@ fn passed(report: CheckReport) -> Result<CheckReport> {
 }
 
 /// One figure an assertion states, against what the postings sum to on
-/// that day.
+/// that day, by when each one posted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Point {
     /// The day whose balance is compared: the day before `period_start` for
@@ -221,7 +221,7 @@ pub fn points(data: &LedgerData, a: &BalanceAssertion) -> Vec<Point> {
         .map(|(as_of, expected)| Point {
             as_of,
             expected,
-            computed: data.subtree_balance(&a.account, a.currency, as_of),
+            computed: data.statement_balance(&a.account, a.currency, as_of),
         })
         .collect()
 }

@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use ledger::{accounts::Chart, journal::UNVERIFIED_TAG, labels::Labels};
 use ledger_types::{
-    assertion::{AssertionSource, BalanceAssertion},
+    assertion::{successions, AssertionSource, BalanceAssertion},
     cadence::{Cadence, CadenceSpec},
     currency::Currency,
 };
@@ -82,6 +82,29 @@ pub async fn figures(conn: &mut SqliteConnection) -> Result<Vec<Figure>> {
     rows.into_iter().map(Figure::try_from).collect()
 }
 
+/// Days no statement covers, across which the balance moved: the next one opens
+/// on something other than the last closed on, so money went by unseen. Where
+/// it opens on the same balance, nothing did, as between two downloads that
+/// each start at their first line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gap {
+    pub account: String,
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+}
+
+/// The gaps in figures as [`assertions::load`] orders them.
+pub fn gaps(figures: &[BalanceAssertion]) -> Vec<Gap> {
+    successions(figures)
+        .filter(|(before, after)| after.opening.is_some_and(|opening| opening != before.closing))
+        .filter_map(|(before, after)| {
+            let from = before.period_end.succ_opt()?;
+            let to = after.period_start?.pred_opt()?;
+            (from <= to).then(|| Gap { account: before.account.clone(), from, to })
+        })
+        .collect()
+}
+
 /// One record on an account, per commodity it moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
@@ -89,6 +112,7 @@ pub struct Record {
     pub id: i64,
     /// The account it posts to.
     pub account: String,
+    /// When it moves the balance a figure states.
     pub date: NaiveDate,
     pub commodity: String,
     /// What it moves the account by; zero for a broker record, whose cash
@@ -168,15 +192,15 @@ fn sum(amounts: &str) -> Result<Decimal> {
 /// account and currency.
 pub async fn ledger_records(conn: &mut SqliteConnection) -> Result<Vec<Record>> {
     let rows: Vec<RecordRow> = sqlx::query_as(
-        "SELECT t.id, a.path AS account, t.date, p.currency AS commodity,
-                group_concat(p.amount, ' ') AS amounts,
+        "SELECT t.id, a.path AS account, max(coalesce(p.posted_date, t.date)) AS date,
+                p.currency AS commodity, group_concat(p.amount, ' ') AS amounts,
                 max(instr(',' || coalesce(p.tags, '') || ',', ',' || ? || ',') > 0) AS unverified
          FROM postings p
          JOIN accounts a ON a.id = p.account_id
          JOIN transactions t ON t.id = p.transaction_id
          WHERE a.type IN ('asset', 'liability') AND t.deleted_at IS NULL
          GROUP BY t.id, a.path, p.currency
-         ORDER BY t.date, t.id",
+         ORDER BY date, t.id",
     )
     .bind(UNVERIFIED_TAG)
     .fetch_all(conn)
@@ -188,7 +212,8 @@ pub async fn ledger_records(conn: &mut SqliteConnection) -> Result<Vec<Record>> 
 /// Each account's position per currency.
 pub async fn ledger_positions(conn: &mut SqliteConnection) -> Result<Vec<Position>> {
     let rows: Vec<PositionRow> = sqlx::query_as(
-        "SELECT a.path AS account, p.currency AS commodity, max(t.date) AS last,
+        "SELECT a.path AS account, p.currency AS commodity,
+                max(coalesce(p.posted_date, t.date)) AS last,
                 group_concat(p.amount, ' ') AS amounts
          FROM postings p
          JOIN accounts a ON a.id = p.account_id
@@ -330,7 +355,7 @@ async fn balance(
     currency: Currency,
 ) -> Result<Decimal> {
     let data = LedgerData::load_from(conn).await?;
-    Ok(data.subtree_balance(account, currency, date))
+    Ok(data.statement_balance(account, currency, date))
 }
 
 /// A balance the reader confirmed by hand — from the bank's app, a count, a
