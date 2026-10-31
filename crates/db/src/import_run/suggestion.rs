@@ -1,0 +1,62 @@
+//! What an import asks a person to look at on one transaction.
+
+use std::fmt;
+
+use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Suggestion {
+    /// Booked to a fallback: nothing names its category.
+    Uncategorised,
+    /// Several fit, a line or a record of the same amount; it took the one
+    /// nearest in date.
+    PickedNearest,
+    /// Waits for a statement to show it, or for a transfer's other half.
+    Waiting,
+    /// A statement passed its day without showing it. `siblings` are the
+    /// accounts sharing its app account that have a line it fits.
+    NotOnStatement { through: NaiveDate, siblings: Vec<String> },
+    /// Not on the statement yet, with a leg on `other`, which has a statement
+    /// of its own: moving it to the next statement would move that leg too.
+    SharedDeferral { other: String },
+    /// Booked on a pooled account, but a sibling's statement shows it: its leg
+    /// moved to `to`.
+    Moved { from: String, to: String },
+    /// Two banks date it differently and neither day balances both: it stays
+    /// one transaction on `kept`.
+    OneDate { kept: NaiveDate, dates: Vec<(String, NaiveDate)> },
+    /// One of several openings on its account: the earliest counts for the
+    /// balance chain.
+    ExtraOpening,
+}
+
+impl fmt::Display for Suggestion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Suggestion::Uncategorised => f.write_str("uncategorised"),
+            Suggestion::PickedNearest => {
+                f.write_str("several of this amount fit; paired with the nearest in date")
+            }
+            Suggestion::Waiting => f.write_str("waits for its statement line"),
+            Suggestion::NotOnStatement { through, siblings } if siblings.is_empty() => {
+                write!(f, "not on the statement through {through}")
+            }
+            Suggestion::NotOnStatement { through, siblings } => write!(
+                f,
+                "not on the statement through {through}; a line on {} fits",
+                siblings.join(", ")
+            ),
+            Suggestion::SharedDeferral { other } => {
+                write!(f, "not on this statement yet, and also on {other}")
+            }
+            Suggestion::Moved { from, to } => write!(f, "moved from {from} to {to}"),
+            Suggestion::OneDate { kept, dates } => {
+                let days: Vec<String> = dates.iter().map(|(a, d)| format!("{d} on {a}")).collect();
+                write!(f, "booked {}; kept as one on {kept}", days.join(" and "))
+            }
+            Suggestion::ExtraOpening => f.write_str("a further opening on its account"),
+        }
+    }
+}

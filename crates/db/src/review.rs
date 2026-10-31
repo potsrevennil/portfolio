@@ -355,7 +355,7 @@ pub async fn unconfirm(pool: &SqlitePool, id: i64) -> Result<()> {
     Ok(())
 }
 
-async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
+pub(crate) async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
     live(db, id).await?;
     let before = events::snapshot(db, id).await?;
     if before.reviewed {
