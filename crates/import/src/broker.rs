@@ -306,7 +306,7 @@ pub async fn import(
             }
         }
     }
-    report.check = check::gate(db).await?;
+    report.check = check::check(db).await?;
     Ok(report)
 }
 

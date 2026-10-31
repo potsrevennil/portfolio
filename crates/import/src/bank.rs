@@ -1,13 +1,16 @@
 //! What every bank import does once its statements are parsed: plan against
-//! the ledger, insert, record the statements' figures, and gate.
+//! the ledger, insert, record the statements' figures, and report what does
+//! not agree. Only a file it cannot use stops it.
 
 use std::{collections::BTreeMap, fmt, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
 use db::{
     assertions, check,
-    import::{ensure_account, insert_deduped, InsertOutcome, Transaction},
-    import_batch, pairing, SqliteConnection, SqlitePool,
+    import::{ensure_account, insert_deduped, InsertOutcome, Origin, Transaction},
+    import_batch,
+    import_run::{self, Run, Suggestion},
+    SqliteConnection, SqlitePool,
 };
 use ledger::{
     accounts::Chart,
@@ -17,7 +20,7 @@ use ledger::{
     statements::bank::{Bank, Merged},
 };
 
-use super::plan::{self, Candidate, Plan};
+use super::plan::{self, Candidate, Gap, Plan};
 
 #[derive(clap::Parser, Debug)]
 pub struct Args {
@@ -40,6 +43,12 @@ pub struct Report {
     pub counts: plan::Counts,
     pub inserted: usize,
     pub batches: usize,
+    /// Every transaction it touched, and what it suggests looking at.
+    pub run: Run,
+    pub gaps: Vec<Gap>,
+    /// Closings this download states against a different one already recorded,
+    /// which stands.
+    pub stale: Vec<String>,
     pub check: check::CheckReport,
 }
 
@@ -58,6 +67,13 @@ impl fmt::Display for Report {
         if c.verified > 0 {
             writeln!(f, "  {} unverified records verified by their lines, in place", c.verified)?;
         }
+        if c.moved > 0 {
+            writeln!(
+                f,
+                "  {} unverified records moved to the sibling account whose statement shows them",
+                c.moved
+            )?;
+        }
         if c.deferred > 0 {
             writeln!(
                 f,
@@ -66,6 +82,13 @@ impl fmt::Display for Report {
             )?;
         }
         writeln!(f, "  {} lines on or before the account's opening", c.predate_opening)?;
+        write!(f, "{}", self.run)?;
+        for gap in &self.gaps {
+            writeln!(f, "  {gap}")?;
+        }
+        for stale in &self.stale {
+            writeln!(f, "  {stale}")?;
+        }
         write!(f, "{}", self.check)
     }
 }
@@ -77,9 +100,7 @@ pub async fn run(bank: Bank, args: &Args) -> Result<Report> {
     import_all(&pool, &chart, bank, &merged, &[]).await
 }
 
-/// [`import`] as one database transaction, committed if it succeeds. Lines
-/// it could not pair on its own are kept for a person to pair in the review
-/// queue, though nothing else is written; the next import uses the picks.
+/// [`import`] as one database transaction, committed if it succeeds.
 pub async fn import_all(
     pool: &SqlitePool,
     chart: &Chart,
@@ -88,25 +109,13 @@ pub async fn import_all(
     candidates: &[Candidate],
 ) -> Result<Report> {
     let mut tx = pool.begin().await?;
-    match import(&mut tx, chart, bank, merged, candidates).await {
-        Ok(report) => {
-            tx.commit().await?;
-            Ok(report)
-        }
-        Err(e) => {
-            tx.rollback().await?;
-            if let Some(plan::Ambiguous(lines)) = e.downcast_ref() {
-                let mut choices = pool.begin().await?;
-                pairing::record(&mut choices, lines).await?;
-                choices.commit().await?;
-            }
-            Err(e)
-        }
-    }
+    let report = import(&mut tx, chart, bank, merged, candidates).await?;
+    tx.commit().await?;
+    Ok(report)
 }
 
-/// Imports `bank`'s statements into the caller's transaction and gates it;
-/// commit only on `Ok`.
+/// Imports `bank`'s statements into the caller's transaction; commit only on
+/// `Ok`.
 pub async fn import(
     db: &mut SqliteConnection,
     chart: &Chart,
@@ -134,21 +143,32 @@ pub async fn import(
             .flat_map(|(i, &n)| std::iter::repeat(first_file + i).take(n))
             .collect();
         first_file += spans.len();
-        let chosen = pairing::chosen(db, &account, statement.currency).await?;
-        statements.push(plan::Statement { account, statement, files, existing, chosen });
+        statements.push(plan::Statement { account, statement, files, existing });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
-    let Plan { transactions, mut counts, openings, verified, deferred } =
-        plan::plan(chart, &statements, &known, candidates)?;
+    let Plan { transactions, mut counts, openings, verified, deferred, moved, suggestions, gaps } =
+        plan::plan(chart, &statements, &known, candidates);
+    let labels = Labels::from(chart);
+    let mut run = Run::default();
+    for (id, suggestion) in suggestions {
+        run.suggest(id, suggestion);
+    }
+    for m in &moved {
+        import_batch::move_leg(db, &labels, m.transaction_id, &m.from, &m.to, m.amount).await?;
+    }
     for v in &verified {
         import_batch::verify(db, v).await?;
+        run.touched(v.transaction_id);
+        // Another bank's statement has yet to vouch for its other leg.
+        if !v.unchecked.is_empty() {
+            run.suggest(v.transaction_id, Suggestion::Waiting);
+        }
     }
     for d in &deferred {
         import_batch::redate(db, d.transaction_id, d.date).await?;
     }
 
-    let labels = Labels::from(chart);
-    let mut inserted = transactions.len();
+    let mut inserted = 0;
     let mut batches: BTreeMap<usize, i64> = BTreeMap::new();
     for (file, mut txn) in transactions {
         let batch = match batches.get(&file) {
@@ -161,11 +181,17 @@ pub async fn import(
         };
         txn.import_batch_id = Some(batch);
         match insert_deduped(db, &labels, &txn).await.context("inserting import")? {
-            InsertOutcome::Inserted(_) => {}
-            InsertOutcome::Duplicate(_) => bail!(
-                "{} was planned as new but is already held",
-                txn.external_ref.unwrap_or_default()
-            ),
+            InsertOutcome::Inserted(id) => {
+                inserted += 1;
+                run.touched(id);
+                if txn.postings.iter().any(|p| p.origin == Some(Origin::Fallback)) {
+                    run.suggest(id, Suggestion::Uncategorised);
+                }
+                if txn.postings.iter().any(|p| p.account == *chart.institution.clearing) {
+                    run.suggest(id, Suggestion::Waiting);
+                }
+            }
+            InsertOutcome::Duplicate(_) => counts.known += 1,
         }
     }
 
@@ -193,20 +219,21 @@ pub async fn import(
                 (OPENING_EQUITY, -s.opening_balance(), s.currency).into(),
             ],
         };
-        match insert_deduped(db, &labels, &opening).await.context("inserting an opening")? {
-            InsertOutcome::Inserted(_) => {}
-            InsertOutcome::Duplicate(_) => {
-                bail!("{} holds no postings but has an opening", &**account)
-            }
+        if let InsertOutcome::Inserted(id) =
+            insert_deduped(db, &labels, &opening).await.context("inserting an opening")?
+        {
+            run.touched(id);
+            inserted += 1;
+            counts.openings += 1;
         }
-        inserted += 1;
-        counts.openings += 1;
     }
 
     // An assertion already recorded for the same closing day stands:
     // a later download states a wider period for that day, which is the same
-    // claim, and the balance chain above has already compared every day.
+    // claim, and the balance chain above has already compared every day. One
+    // disagreeing is reported, and the ledger is held to the one recorded.
     let recorded = assertions::load(db).await?;
+    let mut stale = Vec::new();
     let mut figures = Vec::new();
     for (s, opening) in statements.iter().zip(openings) {
         figures.extend(s.statement.assertions(&s.account, opening));
@@ -221,13 +248,11 @@ pub async fn import(
                 == (&assertion.account, assertion.currency, assertion.source, assertion.period_end)
         });
         match same_day {
-            Some(other) if other.closing != assertion.closing => bail!(
+            Some(other) if other.closing != assertion.closing => stale.push(format!(
                 "this download closes {} on {}, but {other} was recorded as closing {}; one of \
-                 the two is stale — re-freeze, or drop the assertion that is",
-                assertion.closing,
-                assertion.period_end,
-                other.closing
-            ),
+                 the two is stale",
+                assertion.closing, assertion.period_end, other.closing
+            )),
             Some(_) => continue,
             // assertions::insert resolves the account by path.
             None => {
@@ -236,7 +261,17 @@ pub async fn import(
             }
         }
     }
-    let check = check::gate(db).await?;
+    let check = check::check(db).await?;
+    import_run::record(db, bank.source(), &run).await?;
 
-    Ok(Report { bank, counts, inserted, batches: batches.len() + idle_batches, check })
+    Ok(Report {
+        bank,
+        counts,
+        inserted,
+        batches: batches.len() + idle_batches,
+        run,
+        gaps,
+        stale,
+        check,
+    })
 }
