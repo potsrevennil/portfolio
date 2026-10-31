@@ -803,13 +803,12 @@ async fn detach_in(
         },
         (false, true) => {
             // The last split to let go of a shared leg returns it.
-            sqlx::query(
-                "UPDATE share SET rewrote = 1 WHERE posting_id IN
-                    (SELECT id FROM postings WHERE transaction_id = ?)",
-            )
-            .bind(transaction)
-            .execute(&mut *db)
-            .await?;
+            for share in &shares {
+                sqlx::query("UPDATE share SET rewrote = 1 WHERE posting_id = ?")
+                    .bind(share.posting_id)
+                    .execute(&mut *db)
+                    .await?;
+            }
             uncategorize(db, books, transaction, &shares).await
         }
         (false, false) => Ok(()),

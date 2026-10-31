@@ -118,6 +118,32 @@ async fn the_last_split_to_let_go_returns_a_shared_repayment() {
 }
 
 #[tokio::test]
+async fn a_leg_only_gathered_stays_in_whichever_order_the_splits_let_go() {
+    for s1_first in [true, false] {
+        let l = Ledger::new().await;
+        let dinner = l.line("2026-01-10", &[(BANK, "-300"), (ALICE, "300")]).await;
+        let line = l.line("2026-02-01", &[(BANK, "500"), (UNCAT_IN, "-300"), (BOB, "-200")]).await;
+        let (s1, s2) = (l.per_person("一").await, l.per_person("二").await);
+        bill_split::attach(&l.pool, &l.books, s1, dinner, &Attach::Share(None)).await.unwrap();
+        let to_alice = Attach::Repayment(Repayment { account: Some(ALICE.into()), amount: None });
+        bill_split::attach(&l.pool, &l.books, s1, line, &to_alice).await.unwrap();
+        bill_split::gather(&l.pool, &l.books, s2, &[line]).await.unwrap();
+
+        let order = if s1_first { [s1, s2] } else { [s2, s1] };
+        for split in order {
+            bill_split::detach(&l.pool, &l.books, split, line).await.unwrap();
+        }
+
+        // Only Alice's leg was the engine's; Bob's was on his account all along.
+        assert_eq!(
+            l.legs(line).await,
+            dec_map(&[(BANK, dec!(500)), (UNCAT_IN, dec!(-300)), (BOB, dec!(-200))]),
+            "s1 first: {s1_first}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_friend_fronted_line_has_no_money_leg_to_return_and_keeps_its_legs() {
     let l = Ledger::new().await;
     let line = l.line("2026-01-10", &[(FOOD, "1000"), (UNCAT_IN, "-1000")]).await;
