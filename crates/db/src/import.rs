@@ -39,6 +39,8 @@ pub struct Posting {
     pub currency: Currency,
     pub tags: Option<String>,
     pub origin: Option<Origin>,
+    /// The day a statement counts it, where that is not the transaction's.
+    pub posted_date: Option<NaiveDate>,
 }
 
 /// How a leg's account was chosen: the `postings.origin` vocabulary.
@@ -62,12 +64,21 @@ pub enum Origin {
 /// An untagged leg: `(account, amount, currency).into()`.
 impl<A: Into<String>> From<(A, Decimal, Currency)> for Posting {
     fn from((account, amount, currency): (A, Decimal, Currency)) -> Self {
-        Posting { account: account.into(), amount, currency, tags: None, origin: None }
+        Posting {
+            account: account.into(),
+            amount,
+            currency,
+            tags: None,
+            origin: None,
+            posted_date: None,
+        }
     }
 }
 
 impl Posting {
     pub fn with_origin(self, origin: Origin) -> Self { Posting { origin: Some(origin), ..self } }
+
+    pub fn posted_on(self, date: NaiveDate) -> Self { Posting { posted_date: Some(date), ..self } }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,8 +164,9 @@ pub async fn insert_deduped(
                 let origin = p.origin.map(|o| o.to_string());
                 sqlx::query!(
                     r#"
-                    INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin,
+                                          posted_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     "#,
                     txn_id,
                     account_id,
@@ -162,6 +174,7 @@ pub async fn insert_deduped(
                     currency,
                     p.tags,
                     origin,
+                    p.posted_date,
                 )
                 .execute(&mut *db)
                 .await?;

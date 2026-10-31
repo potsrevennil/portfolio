@@ -46,7 +46,9 @@ fn statement(lines: &[(u32, Decimal, Decimal)]) -> BankStatement {
 
 fn held(d: u32, amount: Decimal, opening: bool) -> LedgerPosting {
     LedgerPosting {
+        id: i64::from(d),
         date: day(d),
+        posted: None,
         amount,
         refs: Vec::new(),
         other_accounts: Vec::new(),

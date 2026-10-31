@@ -225,9 +225,10 @@ pub async fn edit(
         let target = account(&mut db, &leg.account).await?;
         match leg.posting_id {
             Some(pid) => {
+                // The day a statement counted it means nothing on another account.
                 sqlx::query(
-                    "UPDATE postings SET account_id = ?, amount = ?, currency = ?, origin = ? \
-                     WHERE id = ?",
+                    "UPDATE postings SET posted_date = CASE account_id WHEN ?1 THEN posted_date \
+                     END, account_id = ?1, amount = ?2, currency = ?3, origin = ?4 WHERE id = ?5",
                 )
                 .bind(target.id)
                 .bind(leg.amount.to_string())
@@ -241,9 +242,11 @@ pub async fn edit(
                 }
             }
             None => {
+                // A part of a leg already on this account posted when it did.
                 let pid = sqlx::query(
-                    "INSERT INTO postings (transaction_id, account_id, amount, currency, origin) \
-                     VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO postings (transaction_id, account_id, amount, currency, origin, \
+                     posted_date) VALUES (?1, ?2, ?3, ?4, ?5, (SELECT max(posted_date) FROM \
+                     postings WHERE transaction_id = ?1 AND account_id = ?2))",
                 )
                 .bind(id)
                 .bind(target.id)

@@ -3,8 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
-use ledger::matching::match_subsets;
+use ledger::matching::{match_subsets, DateRange};
 use rust_decimal::Decimal;
 
 use super::{Consumption, Match, MatchMode, Pool, Record};
@@ -19,11 +18,11 @@ impl MatchMode for StatementLineMode {
 
     fn propose(&self, targets: &[Record], pool: &Pool) -> Vec<Match> {
         // The core matches on amount alone, so currencies must not share a pool.
-        let mut candidates_by_ccy: BTreeMap<&str, Vec<(i64, NaiveDate, Decimal)>> = BTreeMap::new();
+        let mut candidates_by_ccy: BTreeMap<&str, Vec<(i64, DateRange, Decimal)>> = BTreeMap::new();
         for avail in pool.available() {
             candidates_by_ccy.entry(avail.record.currency.as_str()).or_default().push((
                 avail.record.ref_id,
-                avail.record.date,
+                avail.record.dates,
                 avail.remaining,
             ));
         }
@@ -40,10 +39,10 @@ impl MatchMode for StatementLineMode {
                 Some(c) => c,
             };
 
-            let lines: Vec<(NaiveDate, Decimal)> =
-                group.iter().map(|t| (t.date, t.amount)).collect();
-            let events: Vec<(NaiveDate, Decimal)> =
-                candidates.iter().map(|(_, date, amount)| (*date, *amount)).collect();
+            let lines: Vec<(DateRange, Decimal)> =
+                group.iter().map(|t| (t.dates, t.amount)).collect();
+            let events: Vec<(DateRange, Decimal)> =
+                candidates.iter().map(|(_, dates, amount)| (*dates, *amount)).collect();
 
             for (li, assigned) in match_subsets(&lines, &events).into_iter().enumerate() {
                 if let Some(subset) = assigned {
@@ -75,7 +74,12 @@ mod tests {
     use super::*;
 
     fn rec(ref_id: i64, date: &str, amount: Decimal, ccy: &str) -> Record {
-        Record { ref_id, date: date.parse().unwrap(), amount, currency: ccy.into() }
+        Record {
+            ref_id,
+            dates: date.parse::<chrono::NaiveDate>().unwrap().into(),
+            amount,
+            currency: ccy.into(),
+        }
     }
 
     #[test]
@@ -98,6 +102,21 @@ mod tests {
         let targets = vec![rec(1, "2026-02-01", dec!(-100), "USD")];
         let pool = Pool::new(vec![rec(101, "2026-02-01", dec!(-100), "TWD")]);
         assert_eq!(StatementLineMode.propose(&targets, &pool), vec![]);
+    }
+
+    #[test]
+    fn a_card_line_takes_a_record_anywhere_from_purchase_to_posting() {
+        let day = |d: &str| d.parse::<chrono::NaiveDate>().unwrap();
+        let line = Record {
+            dates: (day("2026-02-01"), day("2026-02-20")).into(),
+            ..rec(1, "2026-02-01", dec!(-5000), "TWD")
+        };
+        let pool = Pool::new(vec![
+            rec(101, "2026-02-22", dec!(-5000), "TWD"),
+            rec(102, "2026-02-12", dec!(-5000), "TWD"),
+        ]);
+        let matches = StatementLineMode.propose(&[line], &pool);
+        assert_eq!(matches[0].sources(), vec![102]);
     }
 
     #[test]
