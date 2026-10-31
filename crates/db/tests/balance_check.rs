@@ -258,5 +258,8 @@ async fn a_figure_counts_a_leg_on_the_day_it_posted() {
 
     assert!(report.ok(), "{report}");
     let data = query::LedgerData::load_from(conn).await.unwrap();
-    assert_eq!(data.subtree_balance("Assets:Bank", Currency::TWD, d(2024, 3, 31)), dec!(1150));
+    let books = data.balances_as_of(d(2024, 3, 31));
+    let bank: Decimal =
+        books.iter().filter(|b| b.path.starts_with("Assets:Bank")).map(|b| b.amount).sum();
+    assert_eq!(bank, dec!(1150));
 }

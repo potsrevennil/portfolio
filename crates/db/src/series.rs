@@ -141,29 +141,15 @@ impl LedgerData {
     /// The first posting's date, where a history starts.
     pub fn first_date(&self) -> Option<NaiveDate> { self.postings.iter().map(|p| p.date).min() }
 
-    /// `root` and its subtree's balance in `currency` at the end of `as_of`.
-    pub fn subtree_balance(&self, root: &str, currency: Currency, as_of: NaiveDate) -> Decimal {
-        self.balance_by(root, currency, as_of, |p| p.date)
-    }
-
-    /// [`Self::subtree_balance`] as a statement counts it: a leg moves the
-    /// balance when it posted, not on its transaction's date.
+    /// `root` and its subtree's balance in `currency` at the end of `as_of`, as
+    /// a statement counts it: a leg moves the balance when it posted, not on
+    /// its transaction's date.
     pub fn statement_balance(&self, root: &str, currency: Currency, as_of: NaiveDate) -> Decimal {
-        self.balance_by(root, currency, as_of, PostingEntry::statement_date)
-    }
-
-    fn balance_by(
-        &self,
-        root: &str,
-        currency: Currency,
-        as_of: NaiveDate,
-        day: impl Fn(&PostingEntry) -> NaiveDate,
-    ) -> Decimal {
         self.postings
             .iter()
             .filter(|p| {
                 p.currency == currency
-                    && day(p) <= as_of
+                    && p.statement_date() <= as_of
                     && in_subtree(&self.accounts[&p.account_id].path, root)
             })
             .map(|p| p.amount)

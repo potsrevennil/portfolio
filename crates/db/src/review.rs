@@ -22,6 +22,7 @@ use crate::{
     check::{self, Figure, Mismatch},
     events::{self, Change, EventKind},
     import::Origin,
+    import_batch::tag_unverified,
     query::AccountType,
 };
 
@@ -435,21 +436,6 @@ async fn awaits_statement(
 ) -> Result<bool> {
     let (on_statements, through) = statement_account(db, statements, path).await?;
     Ok(on_statements && through.is_none_or(|through| date > through))
-}
-
-async fn tag_unverified(db: &mut SqliteConnection, posting_id: i64, on: bool) -> Result<()> {
-    let sql = match on {
-        true => {
-            "UPDATE postings SET tags = CASE WHEN instr(',' || coalesce(tags, '') || ',', ',' || \
-             ?1 || ',') > 0 THEN tags ELSE coalesce(tags || ',', '') || ?1 END WHERE id = ?2"
-        }
-        false => {
-            "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ?1 || ',', \
-             ','), ','), '') WHERE id = ?2"
-        }
-    };
-    sqlx::query(sql).bind(UNVERIFIED_TAG).bind(posting_id).execute(db).await?;
-    Ok(())
 }
 
 /// Re-marks 未對帳 after an edit. A leg left on its account keeps its mark,
