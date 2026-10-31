@@ -218,20 +218,6 @@ pub fn plan(
         };
         openings.push(opening);
 
-        // Postings the ledger booked from other lines (a transfer's far half, a
-        // reversal) can each cover one line with no ref of its own. A known
-        // line takes back its own posting first.
-        //
-        // A leg still tagged unverified is never one of those, whatever its
-        // transaction stands for: the other bank's line vouched for the other
-        // leg, and this one is here to be verified, not to cover a line.
-        let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
-        for p in &s.existing {
-            if !st.bank.vouches_for_records() && !p.opening && !p.unverified && from_a_statement(p)
-            {
-                *spare.entry((p.date, p.amount)).or_default() += 1;
-            }
-        }
         let mut line_status: Vec<Status> = st
             .lines
             .iter()
@@ -246,6 +232,29 @@ pub fn plan(
                 }
             })
             .collect();
+        if st.bank.vouches_for_records() {
+            let (stamps, leg_splits) = vouch(st, &s.existing, &refs[si], &mut line_status);
+            plan.stamps.extend(stamps);
+            plan.leg_splits.extend(leg_splits);
+            for s in &line_status {
+                plan.counts.count(*s);
+            }
+            status.push(line_status);
+            continue;
+        }
+        // Postings the ledger booked from other lines (a transfer's far half, a
+        // reversal) can each cover one line with no ref of its own. A known
+        // line takes back its own posting first.
+        //
+        // A leg still tagged unverified is never one of those, whatever its
+        // transaction stands for: the other bank's line vouched for the other
+        // leg, and this one is here to be verified, not to cover a line.
+        let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
+        for p in &s.existing {
+            if !p.opening && !p.unverified && from_a_statement(p) {
+                *spare.entry((p.date, p.amount)).or_default() += 1;
+            }
+        }
         for (li, l) in st.lines.iter().enumerate() {
             if line_status[li] == Status::Known {
                 if let Some(n) = spare.get_mut(&(l.book_date, l.delta())).filter(|n| **n > 0) {
@@ -260,16 +269,6 @@ pub fn plan(
                     line_status[li] = Status::Covered;
                 }
             }
-        }
-        if st.bank.vouches_for_records() {
-            let (stamps, leg_splits) = vouch(st, &s.existing, &refs[si], &mut line_status);
-            plan.stamps.extend(stamps);
-            plan.leg_splits.extend(leg_splits);
-            for s in &line_status {
-                plan.counts.count(*s);
-            }
-            status.push(line_status);
-            continue;
         }
         // A new line verifies an unverified record of its amount within the
         // window, but only one-to-one: with two candidates either way (two

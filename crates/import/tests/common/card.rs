@@ -5,9 +5,9 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use db::{check, import_batch, load};
+use db::{check, import_batch};
 use import::bank::{import, Report};
-use ledger::{accounts::Chart, args::Args as BuildArgs, freeze, statements::bank::Bank};
+use ledger::{accounts::Chart, args::Args as BuildArgs, statements::bank::Bank};
 use ledger_types::{assertion::BalanceAssertion, currency::Currency};
 use sqlx::SqlitePool;
 use tempfile::TempDir;
@@ -82,29 +82,16 @@ impl Fixture {
         std::fs::write(dir.path().join("transactions.csv"), records)?;
         std::fs::write(dir.path().join("savings.csv"), SAVINGS)?;
         std::fs::create_dir(dir.path().join("testcard"))?;
-        let journal = dir.path().join("journal.csv");
-        let frozen = freeze::run(&freeze::FreezeArgs {
-            journal: journal.clone(),
-            build: BuildArgs {
-                cathay_statements: vec![dir.path().join("savings.csv")],
-                line_bank_statements: vec![],
-                daily_income_expense: None,
-                daily_transfers: None,
-                transactions: Some(dir.path().join("transactions.csv")),
-                backfill: false,
-                ledger_dir: dir.path().to_path_buf(),
-            },
-        })?;
-        anyhow::ensure!(frozen.ok(), "freeze failed:\n{frozen}");
-        let url = format!("sqlite:{}", dir.path().join("frozen.db").display());
-        load::run(&load::Args {
-            journal,
-            database_url: url.clone(),
-            market_url: format!("{url}.market"),
-            mapping: dir.path().join("mapping.toml"),
+        let pool = super::records::freeze_and_load(dir.path(), BuildArgs {
+            cathay_statements: vec![dir.path().join("savings.csv")],
+            line_bank_statements: vec![],
+            daily_income_expense: None,
+            daily_transfers: None,
+            transactions: Some(dir.path().join("transactions.csv")),
+            backfill: false,
+            ledger_dir: dir.path().to_path_buf(),
         })
         .await?;
-        let pool = db::init_db(&url).await?;
         let chart = Chart::load(dir.path().join("mapping.toml"))?;
         Ok(Fixture { dir, chart, pool })
     }

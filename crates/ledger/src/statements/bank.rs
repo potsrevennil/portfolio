@@ -79,9 +79,9 @@ impl Bank {
     /// How long before a statement's end a record may still be off it, not
     /// having posted yet. A card's foreign fees take weeks to post.
     pub fn posts_within_days(self) -> i64 {
-        match self {
-            Bank::Cathay | Bank::LineBank => 7,
-            Bank::CathayCard => 31,
+        match self.is_card() {
+            true => 31,
+            false => 7,
         }
     }
 
@@ -135,6 +135,14 @@ impl StatementLine {
     /// Signed effect on the account. `withdrawal` can be negative on 錯誤更正
     /// (error-correction) rows, which reverse an earlier debit.
     pub fn delta(&self) -> Decimal { self.deposit - self.withdrawal }
+
+    /// The `(withdrawal, deposit)` that make `delta`.
+    pub fn sides(delta: Decimal) -> (Decimal, Decimal) {
+        match delta.is_sign_negative() {
+            true => (-delta, Decimal::ZERO),
+            false => (Decimal::ZERO, delta),
+        }
+    }
 
     /// The days a record of it may be dated.
     pub fn dates(&self) -> DateRange {
