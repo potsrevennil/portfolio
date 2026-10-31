@@ -10,6 +10,7 @@ use common::{
     page::{position, visible, Context, Site},
 };
 use ledger_types::{
+    assertion::{AssertionSource, BalanceAssertion},
     cadence::{Cadence, CadenceKind, Standing},
     currency::Currency,
 };
@@ -88,6 +89,30 @@ async fn a_bank_account_checked_through_its_closing_is_current() {
         tail.link.as_deref(),
         Some("/journal?account=Assets%3ABank%3ASavings&from=2024-03-05&unverified=1")
     );
+}
+
+/// A statement the ledger disagrees with: the row says by how much, however
+/// current its figures are.
+#[tokio::test]
+async fn a_statement_the_ledger_disagrees_with_shows_its_gap() {
+    let l = ledger().await;
+    assert_eq!(account(&read(&l).await, "Assets:Bank:Savings").gap, None);
+    let mut conn = l.pool.acquire().await.unwrap();
+    let off = BalanceAssertion {
+        source: AssertionSource::Statement,
+        account: "Assets:Bank:Savings".into(),
+        currency: Currency::TWD,
+        period_start: None,
+        opening: None,
+        period_end: "2024-03-05".parse().unwrap(),
+        closing: "1".parse().unwrap(),
+    };
+    db::assertions::insert(&mut conn, &off).await.unwrap();
+    drop(conn);
+    let c = read(&l).await;
+    let gap = account(&c, "Assets:Bank:Savings").gap.clone().expect("a gap");
+    assert!(gap.starts_with("2024-03-05 差 "), "{gap}");
+    position(&visible(&render(c)), &gap);
 }
 
 #[tokio::test]

@@ -23,7 +23,8 @@ pub enum EventKind {
     /// Edited into more legs than it had.
     Split,
     Confirmed,
-    /// Chosen as the record a statement line verifies.
+    /// Chosen as the record a statement line verifies, when a person still
+    /// picked those: only older rows carry it.
     Paired,
     /// Taken out of the ledger: its legs are gone, `after` has none.
     Deleted,
@@ -50,19 +51,11 @@ pub struct SnapshotLeg {
     pub origin: Option<Origin>,
 }
 
-/// The payload of every kind but [`EventKind::Paired`].
+/// The payload of every kind written now.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Change {
     pub before: Option<Snapshot>,
     pub after: Snapshot,
-}
-
-/// The payload of [`EventKind::Paired`]: the statement line chosen for.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Pairing {
-    pub statement_ref: String,
-    pub date: NaiveDate,
-    pub amount: Decimal,
 }
 
 #[derive(Clone, Debug, PartialEq)]

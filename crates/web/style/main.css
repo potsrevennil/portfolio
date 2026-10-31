@@ -449,56 +449,27 @@ details.group > summary.row.section {
   color: var(--accent);
 }
 
-.pairings {
+.gaps {
   margin: 0.8rem 0;
   padding: 0.6rem 0.8rem;
   border: 1px solid var(--pending);
   border-radius: 0.4rem;
-}
-
-.pairings h2 {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-.pairings > ol {
   list-style: none;
-  margin: 0;
-  padding: 0;
 }
 
-.choice {
-  padding: 0.5rem 0;
-  border-top: 1px solid var(--line);
-}
-
-.choice .line {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.2rem 0.75rem;
-  font-weight: 600;
-}
-
-.choice .chosen {
-  color: var(--pending);
+.suggestions {
   margin: 0.2rem 0;
-}
-
-.candidates {
-  list-style: none;
   padding: 0;
+  list-style: none;
+  color: var(--pending);
 }
 
-.candidates label {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0 0.5rem;
-  padding: 0.3rem 0;
-  cursor: pointer;
+.confirmed {
+  margin: 1rem 0;
 }
 
-.candidates .legs {
-  grid-column: 2;
+.status.gap {
+  color: var(--pending);
 }
 
 .field {

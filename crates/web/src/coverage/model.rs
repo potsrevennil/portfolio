@@ -72,6 +72,8 @@ pub struct AccountRow {
     pub instalment: Option<Instalment>,
     /// Who owes whom and since when, where it is a split account.
     pub split: Option<SplitOpen>,
+    /// Where the ledger disagrees with its outside figure.
+    pub gap: Option<String>,
 }
 
 /// An account's cadence, as the page names it.

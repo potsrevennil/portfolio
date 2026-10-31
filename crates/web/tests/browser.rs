@@ -25,14 +25,11 @@ use std::{
 
 use common::{
     coverage,
-    queue::{ledger, COFFEE, LUNCH, TAXI},
+    queue::{ledger, LUNCH, TAXI},
 };
-use db::pairing::{self, Ambiguity};
 use fantoccini::{elements::Element, key::Key, Client, ClientBuilder, Locator};
 use hyper_util::client::legacy::connect::HttpConnector;
-use ledger_types::currency::Currency;
 use leptos::prelude::LeptosOptions;
-use rust_decimal_macros::dec;
 use serde_json::json;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
@@ -275,7 +272,6 @@ async fn journeys() {
     }
     confirm_from_the_queue().await;
     split_in_the_editor().await;
-    pick_a_pairing().await;
     enter_cash_by_hand().await;
     show_the_accounts_at_zero().await;
     explore_the_charts().await;
@@ -347,42 +343,6 @@ async fn split_in_the_editor() {
     .await
     .unwrap();
     assert_eq!(legs, 3);
-    j.close().await;
-}
-
-async fn pick_a_pairing() {
-    let j = Journey::start().await;
-    let ids: Vec<i64> =
-        sqlx::query_scalar("SELECT id FROM transactions WHERE narration IN (?, ?) ORDER BY id")
-            .bind(LUNCH)
-            .bind(COFFEE)
-            .fetch_all(&j.pool)
-            .await
-            .unwrap();
-    let mut conn = j.pool.acquire().await.unwrap();
-    pairing::record(&mut conn, &[Ambiguity {
-        account: "Assets:Bank:Savings".into(),
-        currency: Currency::TWD,
-        statement_ref: "bank:line:1".into(),
-        date: "2024-03-02".parse().unwrap(),
-        amount: dec!(-150),
-        description: "範例店".into(),
-        candidates: ids.clone(),
-    }])
-    .await
-    .unwrap();
-    drop(conn);
-
-    j.open("/review").await;
-    j.until_text("待配對").await;
-    j.find(&format!(r#"input[name="record"][value="{}"]"#, ids[1])).await.click().await.unwrap();
-    j.find(".pairings button").await.click().await.unwrap();
-    j.until_text("已選，下次匯入時對帳").await;
-    let chosen: Option<i64> = sqlx::query_scalar("SELECT transaction_id FROM verification_choice")
-        .fetch_one(&j.pool)
-        .await
-        .unwrap();
-    assert_eq!(chosen, Some(ids[1]));
     j.close().await;
 }
 

@@ -1,12 +1,16 @@
-//! Builds the review pages from `db`: the queue with the lines waiting to be
-//! paired, a transaction opened for editing, and the forms' text parsed into
-//! what `db::review` writes.
+//! Builds the review pages from `db`: the queue with what the imports suggest,
+//! a transaction opened for editing, and the forms' text parsed into what
+//! `db::review` writes.
+
+use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
 use db::{
+    assertions::AssertionSource,
+    check::{self, Figure, Mismatch},
     events,
+    import_run::{self, Suggestion},
     journal::{self, Filter},
-    pairing,
     review::{Edit, LegEdit, Manual},
     SqlitePool,
 };
@@ -15,8 +19,7 @@ use ledger_types::currency::Currency;
 use crate::{
     entries::{self, Chart, Unlisted},
     model::{
-        Change, ChartAccount, Choice, Editing, JournalQuery, LegInput, ManualInput, Money, Queue,
-        Review,
+        Change, ChartAccount, Editing, Gap, JournalQuery, LegInput, ManualInput, Queue, Review,
     },
     typed::{amount, currency, date},
 };
@@ -33,24 +36,82 @@ pub async fn load(
     query: &JournalQuery,
     base: Currency,
 ) -> Result<Queue> {
-    let journal =
+    let mut journal =
         entries::load(pool, unlisted, &query.with_review(Review::Unreviewed), base).await?;
     let chart = Chart::load(pool, unlisted).await?;
-    let mut choices = Vec::new();
-    for c in pairing::open(pool).await? {
-        let a = c.ambiguity;
-        let candidates = journal::by_ids(pool, &a.candidates).await?;
-        choices.push(Choice {
-            id: c.id,
-            date: a.date.to_string(),
-            account: chart.label(&a.account),
-            money: Money::new(a.amount, a.currency, base),
-            description: a.description,
-            candidates: candidates.into_iter().map(|e| chart.entry(e, base, &[])).collect(),
-            chosen: c.chosen,
-        });
+    let ids: Vec<i64> = journal.entries.iter().map(|e| e.id).collect();
+    let mut suggested = import_run::suggestions(pool, &ids).await?;
+    for e in &mut journal.entries {
+        let suggestions = suggested.remove(&e.id).unwrap_or_default();
+        e.suggestions = suggestions
+            .iter()
+            // The row's own badge already says it waits for its statement.
+            .filter(|s| !(e.unverified && **s == Suggestion::Waiting))
+            .map(|s| said(s, &chart))
+            .collect();
     }
-    Ok(Queue { journal, choices })
+    let confirmed = journal::by_ids(pool, &import_run::confirmed(pool).await?).await?;
+    let confirmed = confirmed.into_iter().map(|e| chart.entry(e, base, &[])).collect();
+    let gaps = gaps(pool, &chart).await?;
+    Ok(Queue { journal, gaps, confirmed })
+}
+
+/// A suggestion in the reader's words.
+fn said(suggestion: &Suggestion, chart: &Chart) -> String {
+    match suggestion {
+        Suggestion::Uncategorised => "未分類，揀一个分類".to_string(),
+        Suggestion::PickedNearest => "仝金額有幾筆，先配上近的".to_string(),
+        Suggestion::Waiting => "等對帳單".to_string(),
+        Suggestion::NotOnStatement { through, siblings } if siblings.is_empty() => {
+            format!("對帳單到 {through} 無這筆")
+        }
+        Suggestion::NotOnStatement { through, siblings } => {
+            let names: Vec<String> = siblings.iter().map(|a| chart.label(a)).collect();
+            format!("對帳單到 {through} 無這筆，{} 有", names.join("、"))
+        }
+        Suggestion::SharedDeferral { other } => {
+            format!("對帳單猶無這筆，另外一爿佇 {}", chart.label(other))
+        }
+        Suggestion::Moved { from, to } => {
+            format!("對帳單佇 {}，已經對 {} 移過去", chart.label(to), chart.label(from))
+        }
+        Suggestion::OneDate { kept, .. } => format!("兩間銀行紀錄無仝工，先記 {kept}"),
+        Suggestion::ExtraOpening => "這个口座有幾筆期初，用上早彼筆".to_string(),
+    }
+}
+
+/// Each account's earliest disagreement with a statement, a count or a broker.
+/// A 天天記帳 closing is only that app's own sum, so it is no gap.
+pub async fn gaps(pool: &SqlitePool, chart: &Chart) -> Result<Vec<Gap>> {
+    let mut conn = pool.acquire().await?;
+    let report = check::check(&mut conn).await?;
+    let mut earliest: BTreeMap<&str, &Mismatch> = BTreeMap::new();
+    for m in &report.mismatches {
+        let account = match &m.figure {
+            Figure::Balance(a) if a.source == AssertionSource::Tiantian => continue,
+            Figure::Balance(a) => a.account.as_str(),
+            Figure::Holding(h) => h.account.as_str(),
+        };
+        let held = earliest.entry(account).or_insert(m);
+        if m.as_of < held.as_of {
+            *held = m;
+        }
+    }
+    Ok(earliest
+        .into_iter()
+        .map(|(account, m)| {
+            let off = (m.computed - m.expected).abs().normalize();
+            let unit = match &m.figure {
+                Figure::Balance(a) => a.currency.to_string(),
+                Figure::Holding(h) => h.commodity.to_string(),
+            };
+            Gap {
+                account: account.to_string(),
+                label: chart.label(account),
+                text: format!("{} 差 {off} {unit}", m.as_of),
+            }
+        })
+        .collect())
 }
 
 /// Where a leg may post: accounts below a root.

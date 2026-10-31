@@ -415,8 +415,12 @@ pub const UNREVIEWED_HINT: &str = "你還沒看過這筆：確認分類沒錯後
 pub const UNVERIFIED_HINT: &str =
     "銀行對帳單還沒出現這筆；匯入下一期對帳單時會自動對上，不用處理。";
 
-fn entry(e: Entry, review: bool) -> impl IntoView {
+pub fn entry(e: Entry, review: bool) -> impl IntoView {
     let id = e.id;
+    let suggestions = (!e.suggestions.is_empty()).then(|| {
+        let rows = e.suggestions.iter().cloned().map(|s| view! { <li>{s}</li> }).collect_view();
+        view! { <ul class="suggestions">{rows}</ul> }
+    });
     let controls = match review {
         true => view! { <ReviewControls id /> }.into_any(),
         false => view! {
@@ -429,6 +433,7 @@ fn entry(e: Entry, review: bool) -> impl IntoView {
     view! {
         <li class="entry" class:unverified=e.unverified class:unreviewed=!e.reviewed>
             <EntryHead entry=e.clone() source=review />
+            {suggestions}
             <EntryLegs legs=e.legs />
             {controls}
         </li>

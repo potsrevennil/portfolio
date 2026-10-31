@@ -18,7 +18,6 @@ pub mod import_run;
 pub mod journal;
 pub mod load;
 pub mod market;
-pub mod pairing;
 
 pub mod query;
 pub mod quotes;

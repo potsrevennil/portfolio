@@ -323,6 +323,7 @@ impl Chart {
     /// filtered subtrees.
     pub fn entry(&self, e: journal::Entry, base: Currency, focus: &[String]) -> Entry {
         Entry {
+            suggestions: Vec::new(),
             id: e.id,
             date: e.date.to_string(),
             payee: e.payee,
