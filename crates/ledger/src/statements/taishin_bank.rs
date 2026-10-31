@@ -136,8 +136,7 @@ impl Query {
         let settled = self.made.pred_opt().context("a day before the query")?;
         let held: Vec<Row> =
             self.rows.into_iter().filter(|r| r.book <= settled && !r.delta.is_zero()).collect();
-        let end = held.iter().map(|r| r.book).chain([self.to.min(settled)]).max();
-        let end = end.context("a period has an end")?;
+        let end = held.iter().map(|r| r.book).fold(self.to.min(settled), NaiveDate::max);
         ensure!(
             self.from <= end,
             "made on {}, so nothing from {} has settled yet",
@@ -149,10 +148,7 @@ impl Query {
         let lines = held
             .into_iter()
             .map(|r| {
-                let (withdrawal, deposit) = match r.delta.is_sign_negative() {
-                    true => (-r.delta, Decimal::ZERO),
-                    false => (Decimal::ZERO, r.delta),
-                };
+                let (withdrawal, deposit) = StatementLine::sides(r.delta);
                 StatementLine {
                     book_date: r.book,
                     purchased: None,
@@ -271,7 +267,7 @@ pub fn load(path: &Path) -> Result<BankStatement> {
 /// Joins each account's queries. Queries that meet must carry the balance over;
 /// where they don't meet, the days between are for 對帳進度 to show.
 pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
-    merged(paths.iter().map(|path| Ok((load(path)?, path.clone()))).collect::<Result<Vec<_>>>()?)
+    merged(bank::load_all(paths, load)?)
 }
 
 fn merged(statements: Vec<(BankStatement, PathBuf)>) -> Result<Vec<Merged>> {

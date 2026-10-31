@@ -425,6 +425,14 @@ pub fn folder_account(path: &Path) -> Result<(String, String)> {
     Ok((kind.to_string(), account.to_string()))
 }
 
+/// Each file's statement, with the file.
+pub fn load_all(
+    paths: &[PathBuf],
+    load: impl Fn(&Path) -> Result<BankStatement>,
+) -> Result<Vec<(BankStatement, PathBuf)>> {
+    paths.iter().map(|path| Ok((load(path)?, path.clone()))).collect()
+}
+
 /// Joins each account and currency's statements in date order. `check` sees
 /// each statement after the one before it, naming the books and file, and may
 /// correct the later period.

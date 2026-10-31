@@ -4,13 +4,8 @@
 
 mod common;
 
-use std::path::PathBuf;
-
 use anyhow::Result;
-use common::{
-    card::{records_on, Fixture, BANK, BANK_FOLDER},
-    pdf::fake_pdftotext,
-};
+use common::card::{records_on, Fixture, BANK, BANK_FOLDER};
 use db::coverage;
 use ledger::statements::bank::Bank;
 use rust_decimal_macros::dec;
@@ -21,14 +16,6 @@ fn pdf_text(from: &str, to: &str, rows: &str) -> String {
          17:38:52\n查詢帳號：2222-22-222222\n查詢期間：{from}~{to}\n交易日 帳務日 摘要 支出金額 \
          存入金額 餘額 備註\n{rows}"
     )
-}
-
-/// Writes the query's text, and gives the PDF path it stands in for.
-fn pdf(f: &Fixture, name: &str, text: &str) -> Result<PathBuf> {
-    fake_pdftotext();
-    let folder = f.dir.path().join(BANK_FOLDER);
-    std::fs::write(folder.join(format!("{name}.txt")), text)?;
-    Ok(folder.join(format!("{name}.pdf")))
 }
 
 /// Two queries with days between them, across which a salary arrived. It's
@@ -43,8 +30,8 @@ async fn a_gap_between_queries_stays_a_gap_with_the_gate_holding() -> Result<()>
         ("2026-02-20", "expense", 40, "飲食"),
     ]))
     .await?;
-    let january = pdf(
-        &f,
+    let january = f.pdf(
+        BANK_FOLDER,
         "2026a",
         &pdf_text(
             "2026/01/01",
@@ -52,8 +39,8 @@ async fn a_gap_between_queries_stays_a_gap_with_the_gate_holding() -> Result<()>
             "2026/01/05\n10:00:00\n2026/01/05 CD轉入 0 100 100\nATM 000\n",
         ),
     )?;
-    let february = pdf(
-        &f,
+    let february = f.pdf(
+        BANK_FOLDER,
         "2026b",
         &pdf_text(
             "2026/02/18",

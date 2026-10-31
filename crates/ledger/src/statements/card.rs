@@ -14,7 +14,7 @@ use ledger_types::{
 };
 use rust_decimal::Decimal;
 
-use super::bank::{join_periods, Bank, BankStatement, Merged, Period, StatementLine};
+use super::bank::{join_periods, load_all, Bank, BankStatement, Merged, Period, StatementLine};
 
 /// One line as a card statement prints it.
 #[derive(Debug, PartialEq)]
@@ -196,9 +196,7 @@ pub fn load_merged(
     paths: &[PathBuf],
     load: impl Fn(&Path) -> Result<BankStatement>,
 ) -> Result<Vec<Merged>> {
-    let statements =
-        paths.iter().map(|path| Ok((load(path)?, path.clone()))).collect::<Result<Vec<_>>>()?;
-    merge(statements)
+    merge(load_all(paths, load)?)
 }
 
 #[cfg(test)]

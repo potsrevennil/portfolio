@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use ledger::{accounts::Chart, journal::UNVERIFIED_TAG, labels::Labels};
 use ledger_types::{
-    assertion::{AssertionSource, BalanceAssertion},
+    assertion::{successions, AssertionSource, BalanceAssertion},
     cadence::{Cadence, CadenceSpec},
     currency::Currency,
 };
@@ -95,18 +95,12 @@ pub struct Gap {
 
 /// The gaps in figures as [`assertions::load`] orders them.
 pub fn gaps(figures: &[BalanceAssertion]) -> Vec<Gap> {
-    let statements: Vec<&BalanceAssertion> =
-        figures.iter().filter(|a| a.source == AssertionSource::Statement).collect();
-    statements
-        .windows(2)
-        .filter(|pair| {
-            (&pair[0].account, pair[0].currency) == (&pair[1].account, pair[1].currency)
-                && pair[1].opening.is_some_and(|opening| opening != pair[0].closing)
-        })
-        .filter_map(|pair| {
-            let from = pair[0].period_end.succ_opt()?;
-            let to = pair[1].period_start?.pred_opt()?;
-            (from <= to).then(|| Gap { account: pair[0].account.clone(), from, to })
+    successions(figures)
+        .filter(|(before, after)| after.opening.is_some_and(|opening| opening != before.closing))
+        .filter_map(|(before, after)| {
+            let from = before.period_end.succ_opt()?;
+            let to = after.period_start?.pred_opt()?;
+            (from <= to).then(|| Gap { account: before.account.clone(), from, to })
         })
         .collect()
 }

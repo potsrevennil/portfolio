@@ -36,6 +36,7 @@ pub async fn load(
     let chart = Chart::load(pool, &Unlisted::default()).await?;
     let mut conn = pool.acquire().await?;
     let books = Books::read(&mut conn).await?;
+    let gaps = coverage::gaps(&assertions::load(&mut conn).await?);
     let ledger = by_account(coverage::ledger_records(&mut conn).await?, |r| &r.account);
     let broker = by_account(coverage::broker_records(&mut conn).await?, |r| &r.account);
     let mut rows: Vec<AccountRow> = books
@@ -47,7 +48,7 @@ pub async fn load(
                 false => &broker,
             };
             let records = records.get(held.account).map(Vec::as_slice).unwrap_or_default();
-            row(held, records, &chart.crumbs(held.account), splits, base, today)
+            row(held, records, &gaps, &chart.crumbs(held.account), splits, base, today)
         })
         .collect();
     // Instalments need no statement of their own, so they come last: the
@@ -71,7 +72,6 @@ pub async fn due(pool: &SqlitePool, today: NaiveDate) -> Result<u64> {
 /// Everything the page weighs an account against.
 struct Books {
     figures: Vec<Figure>,
-    gaps: Vec<Gap>,
     ledger: BTreeMap<String, Vec<Position>>,
     broker: BTreeMap<String, Vec<Position>>,
     schedules: BTreeMap<String, Schedule>,
@@ -81,7 +81,6 @@ impl Books {
     async fn read(conn: &mut SqliteConnection) -> Result<Self> {
         Ok(Books {
             figures: coverage::figures(conn).await?,
-            gaps: coverage::gaps(&assertions::load(conn).await?),
             ledger: by_account(coverage::ledger_positions(conn).await?, |p| &p.account),
             broker: by_account(coverage::broker_positions(conn).await?, |p| &p.account),
             schedules: coverage::schedules(conn)
@@ -116,11 +115,9 @@ impl Books {
                     true => self.broker.get(account).map(Vec::as_slice).unwrap_or_default(),
                     false => ledger,
                 };
-                let gaps = self.gaps.iter().filter(|g| in_subtree(account, &g.account)).collect();
                 Held {
                     account,
                     figures,
-                    gaps,
                     ledger,
                     checked,
                     journal: !held_by_broker,
@@ -143,7 +140,6 @@ fn by_account<T>(rows: Vec<T>, account: fn(&T) -> &String) -> BTreeMap<String, V
 struct Held<'a> {
     account: &'a str,
     figures: Vec<&'a Figure>,
-    gaps: Vec<&'a Gap>,
     /// What moved its balance.
     ledger: &'a [Position],
     /// What its figures check: the ledger's, or a broker's own records.
@@ -227,6 +223,7 @@ fn through(vouched: &BTreeMap<&str, Vouched>) -> Option<NaiveDate> {
 fn row(
     held: &Held<'_>,
     records: &[Record],
+    gaps: &[Gap],
     crumbs: &[Crumb],
     splits: &SplitAccounts,
     base: Currency,
@@ -288,7 +285,11 @@ fn row(
         recorded: records.iter().map(|r| r.date).max().map(mark),
         first: first.map(mark),
         tail: tail(&unchecked, held.journal.then_some(*account)),
-        gaps: held.gaps.iter().map(|g| GapSpan { from: mark(g.from), to: mark(g.to) }).collect(),
+        gaps: gaps
+            .iter()
+            .filter(|g| in_subtree(account, &g.account))
+            .map(|g| GapSpan { from: mark(g.from), to: mark(g.to) })
+            .collect(),
         since: since.map(mark),
         balances: held.balances(),
         instalment: (cadence == Cadence::Instalment).then(|| instalment(records)).flatten(),
