@@ -169,15 +169,17 @@ impl Engine {
     }
 }
 
+/// A TWD record, for the modes' tests.
+#[cfg(test)]
+pub(super) fn rec(ref_id: i64, date: &str, amount: Decimal) -> Record {
+    Record { ref_id, date: date.parse().unwrap(), amount, currency: "TWD".into() }
+}
+
 #[cfg(test)]
 mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-
-    fn rec(ref_id: i64, date: &str, amount: Decimal) -> Record {
-        Record { ref_id, date: date.parse().unwrap(), amount, currency: "TWD".into() }
-    }
 
     #[test]
     fn engine_runs_statement_line_and_reports_unmatched() {

@@ -12,7 +12,7 @@ use crate::review::StatementAccounts;
 /// Where a write-off goes (冇數).
 pub const BAD_DEBT: &str = "Expenses:Bad-Debt";
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 pub struct Books {
     pub split_accounts: SplitAccounts,
     /// 未分類, where a detached line's legs return.
@@ -32,11 +32,7 @@ impl From<&Chart> for Books {
             split_accounts: chart.split_accounts.clone(),
             uncategorized_income: chart.fallback.income.to_string(),
             uncategorized_expense: chart.fallback.expense.to_string(),
-            provisional: [&chart.fallback.income, &chart.fallback.expense]
-                .into_iter()
-                .chain(chart.fallback.descriptions.values())
-                .map(|a| a.to_string())
-                .collect(),
+            provisional: chart.fallback.accounts().map(|a| a.to_string()).collect(),
             statements: chart.into(),
             labels: chart.into(),
         }

@@ -454,6 +454,32 @@ impl LedgerData {
 /// by ascending date. The same shape the `portfolio` module already speaks.
 pub type PriceTable = std::collections::HashMap<String, Vec<StockPrice>>;
 
+/// One account's own balance by currency, through `as_of` where given, on the
+/// caller's connection: without the rest of the ledger, for what asks per
+/// account.
+pub(crate) async fn account_balance(
+    conn: &mut SqliteConnection,
+    path: &str,
+    as_of: Option<NaiveDate>,
+) -> Result<BTreeMap<Currency, Decimal>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT p.amount, p.currency FROM postings p
+         JOIN accounts a ON a.id = p.account_id
+         JOIN transactions t ON t.id = p.transaction_id
+         WHERE a.path = ?1 AND (?2 IS NULL OR t.date <= ?2)",
+    )
+    .bind(path)
+    .bind(as_of.map(|d| d.to_string()))
+    .fetch_all(conn)
+    .await?;
+    let mut balance = BTreeMap::new();
+    for (amount, currency) in rows {
+        let amount: Decimal = field("posting amount", &amount)?;
+        *balance.entry(field("currency", &currency)?).or_default() += amount;
+    }
+    Ok(balance)
+}
+
 /// Per-account, per-currency balances as of a date.
 pub async fn account_balances(pool: &SqlitePool, as_of: NaiveDate) -> Result<Vec<AccountBalance>> {
     Ok(LedgerData::load(pool).await?.balances_as_of(as_of))

@@ -1,32 +1,19 @@
 //! What T09's page reads: the splits, how each closed, where a line could
 //! attach, and what the repayment matcher works from.
 
-use std::{cmp::Reverse, collections::BTreeSet};
+use std::cmp::Reverse;
 
 use anyhow::Result;
 use chrono::{Datelike, NaiveDate};
 use ledger::accounts::in_subtree;
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqlitePool;
 
 use super::{
-    store::{line, load, Line, Owners},
+    read::{all, line, lines_of, load, Line, Owners},
     Books, Closed, Role, Shape, Split, Status,
 };
-use crate::review;
-
-async fn all(db: &mut SqliteConnection) -> Result<Vec<Split>> {
-    let ids: Vec<i64> =
-        sqlx::query_scalar("SELECT id FROM split WHERE deleted_at IS NULL ORDER BY id")
-            .fetch_all(&mut *db)
-            .await?;
-    let mut splits = Vec::with_capacity(ids.len());
-    for id in ids {
-        splits.push(load(db, id).await?);
-    }
-    Ok(splits)
-}
 
 /// Every split, oldest first; the caller filters by [`Split::status`].
 pub async fn list(pool: &SqlitePool) -> Result<Vec<Split>> {
@@ -82,26 +69,27 @@ pub struct Candidate {
     pub fit: bool,
 }
 
+/// Whether a leg of `found` is exactly one of these amounts still open.
+fn fits(open: impl IntoIterator<Item = (Currency, Decimal)>, found: &Line) -> bool {
+    open.into_iter().any(|(currency, open)| {
+        !open.is_zero()
+            && found.legs.iter().any(|l| (l.currency, l.amount.abs()) == (currency, open.abs()))
+    })
+}
+
 fn candidate(split: Split, found: &Line, owners: &Owners) -> Candidate {
-    let amounts = || found.legs.iter().map(|l| (l.currency, l.amount.abs()));
     let (people, fit) = match &split.shape {
         Shape::PerPerson => {
             let people = split.people();
             let touches = found
                 .legs
                 .iter()
-                .any(|l| owners.owners.get(&l.account).is_some_and(|p| people.contains(p)));
-            let fit = split.owed().iter().any(|((_, currency), owed)| {
-                !owed.is_zero() && amounts().any(|a| a == (*currency, owed.abs()))
-            });
-            (touches, fit)
+                .any(|l| owners.by_account.get(&l.account).is_some_and(|p| people.contains(p)));
+            (touches, fits(split.owed().into_iter().map(|((_, c), owed)| (c, owed)), found))
         }
         Shape::Netted { account } => {
-            let fit = split
-                .balance
-                .iter()
-                .any(|(currency, b)| !b.is_zero() && amounts().any(|a| a == (*currency, b.abs())));
-            (found.legs.iter().any(|l| l.account == *account), fit)
+            let touches = found.legs.iter().any(|l| l.account == *account);
+            (touches, fits(split.balance.iter().map(|(c, b)| (*c, *b)), found))
         }
     };
     Candidate { split, people, fit }
@@ -111,14 +99,13 @@ fn candidate(split: Split, found: &Line, owners: &Owners) -> Candidate {
 /// recency.
 pub async fn attachable(pool: &SqlitePool, transaction: i64) -> Result<Vec<Candidate>> {
     let conn = &mut *pool.acquire().await?;
-    review::live(conn, transaction).await?;
     let found = line(conn, transaction).await?;
     let owners = Owners::load(conn).await?;
     let mut candidates: Vec<Candidate> = all(conn)
         .await?
         .into_iter()
         .filter(|s| s.status() != Status::Settled)
-        .filter(|s| !s.shares.iter().any(|share| share.transaction_id == transaction))
+        .filter(|s| !s.holds(transaction))
         .map(|split| candidate(split, &found, &owners))
         .collect();
     candidates.sort_by_key(|c| Reverse((c.people, c.fit, c.split.last_date(), c.split.id)));
@@ -140,15 +127,12 @@ pub struct OpenShare {
 pub async fn open_for(pool: &SqlitePool, person: i64) -> Result<Vec<OpenShare>> {
     let mut out = Vec::new();
     for split in list(pool).await? {
-        for ((who, currency), owed) in split.owed() {
-            let since = split
-                .shares
-                .iter()
-                .filter(|s| s.role == Role::Share && s.person == Some(who))
-                .filter(|s| s.currency == currency)
-                .map(|s| s.date)
-                .min();
-            if let (true, false, Some(since)) = (who == person, owed.is_zero(), since) {
+        let theirs =
+            split.owed().into_iter().filter(|((who, _), owed)| *who == person && !owed.is_zero());
+        for ((_, currency), owed) in theirs {
+            let shares = split.shares.iter().filter(|s| s.role == Role::Share);
+            let same = shares.filter(|s| s.person == Some(person) && s.currency == currency);
+            if let Some(since) = same.map(|s| s.date).min() {
                 out.push(OpenShare { split_id: split.id, currency, owed, since });
             }
         }
@@ -177,35 +161,18 @@ pub async fn unallocated(
     person: i64,
 ) -> Result<Vec<Unallocated>> {
     let conn = &mut *pool.acquire().await?;
-    let accounts: BTreeSet<String> = sqlx::query_scalar::<_, String>(
-        "SELECT a.path FROM person_account o JOIN accounts a ON a.id = o.account_id
-         WHERE o.person_id = ?",
-    )
-    .bind(person)
-    .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .collect();
-    let transactions: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT t.id FROM transactions t
-         JOIN postings p ON p.transaction_id = t.id
-         JOIN person_account o ON o.account_id = p.account_id
-         WHERE o.person_id = ? ORDER BY t.date, t.id",
-    )
-    .bind(person)
-    .fetch_all(&mut *conn)
-    .await?;
+    let owners = Owners::load(conn).await?;
     let mut out = Vec::new();
-    for id in transactions {
-        let found = line(conn, id).await?;
+    for found in lines_of(conn, person).await? {
         if found.role(books) != Role::Repayment {
             continue;
         }
         for leg in &found.legs {
-            if accounts.contains(&leg.account) && !leg.left().is_zero() {
+            let theirs = owners.by_account.get(&leg.account) == Some(&person);
+            if theirs && !leg.left().is_zero() {
                 out.push(Unallocated {
                     posting_id: leg.posting_id,
-                    transaction_id: id,
+                    transaction_id: found.id,
                     date: found.date,
                     narration: found.narration.clone(),
                     account: leg.account.clone(),

@@ -4,13 +4,14 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::NaiveDate;
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqlitePool;
 
-use super::{people::balances, store::account_balance};
+use super::people::{balances, known};
+use crate::{query::account_balance, review};
 
 /// What a Splitwise balance is held against.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -44,31 +45,6 @@ impl AnchorRow {
     pub fn diff(&self) -> Decimal { self.ledger - self.splitwise }
 }
 
-async fn ledger_side(
-    db: &mut SqliteConnection,
-    on: &Anchored,
-    as_of: NaiveDate,
-) -> Result<BTreeMap<Currency, Decimal>> {
-    match on {
-        Anchored::Person(person) => {
-            let known: Option<i64> = sqlx::query_scalar("SELECT id FROM person WHERE id = ?")
-                .bind(person)
-                .fetch_optional(&mut *db)
-                .await?;
-            known.with_context(|| format!("查無此人 {person}"))?;
-            Ok(balances(db, Some(as_of)).await?.remove(person).unwrap_or_default())
-        }
-        Anchored::Netted(path) => {
-            let known: Option<i64> = sqlx::query_scalar("SELECT id FROM accounts WHERE path = ?")
-                .bind(path)
-                .fetch_optional(&mut *db)
-                .await?;
-            known.with_context(|| format!("查無帳戶：{path}"))?;
-            account_balance(db, path, Some(as_of)).await
-        }
-    }
-}
-
 /// A row for every currency either side holds on each subject named in
 /// `anchors`: Splitwise leaves zero balances out, so a currency it omits reads
 /// as zero. Subjects not named are not compared, since not every split account
@@ -83,9 +59,19 @@ pub async fn anchor_check(
         *subjects.entry(&a.on).or_default().entry(a.currency).or_default() += a.balance;
     }
     let conn = &mut *pool.acquire().await?;
+    let mut people = balances(conn, Some(as_of)).await?;
     let mut rows = Vec::new();
     for (on, theirs) in subjects {
-        let ours = ledger_side(conn, on, as_of).await?;
+        let ours = match on {
+            Anchored::Person(person) => {
+                known(conn, *person).await?;
+                people.remove(person).unwrap_or_default()
+            }
+            Anchored::Netted(path) => {
+                review::account(conn, path).await?;
+                account_balance(conn, path, Some(as_of)).await?
+            }
+        };
         let mut currencies: Vec<Currency> = ours.keys().chain(theirs.keys()).copied().collect();
         currencies.sort();
         currencies.dedup();

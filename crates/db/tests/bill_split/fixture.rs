@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 use chrono::NaiveDate;
 use db::{
     assertions::{self, AssertionSource, BalanceAssertion},
-    bill_split::{self, Books, Shape},
+    bill_split::{self, Attach, Books, Repayment, Shape, WriteOff},
     query::account_balances,
-    review::LegEdit,
+    review::{Edit, LegEdit},
     SqlitePool,
 };
 use ledger::accounts::Chart;
@@ -43,6 +43,22 @@ roots = ["Assets:Split"]
 "#;
 
 pub fn d(y: i32, m: u32, day: u32) -> NaiveDate { NaiveDate::from_ymd_opt(y, m, day).unwrap() }
+
+/// A repayment moved onto `account`, as much as it can pay.
+pub fn to(account: &str) -> Attach {
+    Attach::Repayment(Repayment { account: Some(account.into()), amount: None })
+}
+
+/// A TWD write-off on the fixture's day for them.
+pub fn off(account: &str, amount: Option<Decimal>) -> WriteOff {
+    WriteOff {
+        account: account.into(),
+        currency: Currency::TWD,
+        date: d(2026, 6, 1),
+        amount,
+        note: Some("討無".into()),
+    }
+}
 
 /// A TWD leg as the editor submits it.
 pub fn leg(posting_id: Option<i64>, account: &str, amount: Decimal) -> LegEdit {
@@ -142,17 +158,23 @@ impl Ledger {
             .unwrap()
     }
 
+    /// The edit rewriting a line's postings to `legs` in order, adding any past
+    /// them. Unconfirmed, and without a note.
+    pub async fn rewrite(&self, line: i64, legs: &[(&str, Decimal)]) -> Edit {
+        let held = self.posting_ids(line).await;
+        let legs = legs
+            .iter()
+            .enumerate()
+            .map(|(i, (account, amount))| leg(held.get(i).copied(), account, *amount))
+            .collect();
+        Edit { narration: None, legs, confirm: false }
+    }
+
     /// A transaction's legs as `(account, amount)`, in posting order.
     pub async fn legs(&self, transaction: i64) -> Vec<(String, Decimal)> {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT a.path, p.amount FROM postings p JOIN accounts a ON a.id = p.account_id
-             WHERE p.transaction_id = ? ORDER BY p.id",
-        )
-        .bind(transaction)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap();
-        rows.into_iter().map(|(path, amount)| (path, amount.parse().unwrap())).collect()
+        let mut conn = self.pool.acquire().await.unwrap();
+        let legs = db::events::snapshot(&mut conn, transaction).await.unwrap().legs;
+        legs.into_iter().map(|l| (l.account, l.amount)).collect()
     }
 
     /// Every account's balance.

@@ -77,14 +77,9 @@ async fn your_own_share_stays_as_it_is_while_held() {
     let line = l.line("2026-01-10", &[(FOOD, "300"), (CASH, "-300")]).await;
     let split = l.per_person("晚餐").await;
     bill_split::attach(&l.pool, &l.books, split, line, &Attach::Share(None)).await.unwrap();
-    let ids = l.posting_ids(line).await;
 
     // On 未分類 a later 天天記帳 record would replace the leg under the split.
-    let recategorized = Edit {
-        narration: None,
-        legs: vec![leg(Some(ids[0]), UNCAT_OUT, dec!(300)), leg(Some(ids[1]), CASH, dec!(-300))],
-        confirm: false,
-    };
+    let recategorized = l.rewrite(line, &[(UNCAT_OUT, dec!(300)), (CASH, dec!(-300))]).await;
     let refused = review::edit(&l.pool, &StatementAccounts::default(), line, &recategorized).await;
     assert!(refused.unwrap_err().to_string().contains("先退出分帳"));
 }

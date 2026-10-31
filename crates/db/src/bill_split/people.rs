@@ -10,15 +10,14 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use super::{
     mix::{Asked, Uses},
+    model::named,
+    read::Owners,
     Books, Person,
 };
 use crate::{import::ensure_account, query::field};
 
 pub async fn add_person(pool: &SqlitePool, name: &str) -> Result<i64> {
-    let name = name.trim();
-    if name.is_empty() {
-        bail!("名要寫");
-    }
+    let name = named(name, "名要寫")?;
     let added = sqlx::query("INSERT INTO person (name) VALUES (?) ON CONFLICT (name) DO NOTHING")
         .bind(name)
         .execute(pool)
@@ -30,10 +29,7 @@ pub async fn add_person(pool: &SqlitePool, name: &str) -> Result<i64> {
 }
 
 pub async fn rename_person(pool: &SqlitePool, id: i64, name: &str) -> Result<()> {
-    let name = name.trim();
-    if name.is_empty() {
-        bail!("名要寫");
-    }
+    let name = named(name, "名要寫")?;
     let taken: Option<i64> = sqlx::query_scalar("SELECT id FROM person WHERE name = ? AND id <> ?")
         .bind(name)
         .bind(id)
@@ -53,6 +49,15 @@ pub async fn rename_person(pool: &SqlitePool, id: i64, name: &str) -> Result<()>
     }
 }
 
+/// Refuses a person who isn't on the list.
+pub(super) async fn known(db: &mut SqliteConnection, person: i64) -> Result<()> {
+    let found: Option<i64> = sqlx::query_scalar("SELECT id FROM person WHERE id = ?")
+        .bind(person)
+        .fetch_optional(db)
+        .await?;
+    found.map(drop).with_context(|| format!("查無此人 {person}"))
+}
+
 /// Makes `path` one of a person's accounts, creating it if it is new. Which
 /// account a payee settles on is never guessed: this list and the caller say.
 pub async fn assign(pool: &SqlitePool, books: &Books, person: i64, path: &str) -> Result<()> {
@@ -60,11 +65,7 @@ pub async fn assign(pool: &SqlitePool, books: &Books, person: i64, path: &str) -
     if !books.holds(path) {
         bail!("「{path}」不是分帳底下的帳戶");
     }
-    let known: Option<i64> = sqlx::query_scalar("SELECT id FROM person WHERE id = ?")
-        .bind(person)
-        .fetch_optional(&mut *db)
-        .await?;
-    known.with_context(|| format!("查無此人 {person}"))?;
+    known(&mut db, person).await?;
     Uses::load(&mut db, books).await?.check(path, Asked::Person)?;
     let account = ensure_account(&mut db, &books.labels, path).await?;
     let linked = sqlx::query(
@@ -116,23 +117,14 @@ pub async fn people(pool: &SqlitePool) -> Result<Vec<Person>> {
     let persons: Vec<(i64, String)> =
         sqlx::query_as("SELECT id, name FROM person ORDER BY name").fetch_all(pool).await?;
     let conn = &mut *pool.acquire().await?;
-    let accounts: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT o.person_id, a.path FROM person_account o JOIN accounts a ON a.id = o.account_id
-         ORDER BY a.path",
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+    let owners = Owners::load(&mut *conn).await?;
     let mut balances = balances(conn, None).await?;
     Ok(persons
         .into_iter()
         .map(|(id, name)| Person {
             id,
             name,
-            accounts: accounts
-                .iter()
-                .filter(|(person, _)| *person == id)
-                .map(|(_, path)| path.clone())
-                .collect(),
+            accounts: owners.of(id),
             balance: balances.remove(&id).unwrap_or_default(),
         })
         .collect())

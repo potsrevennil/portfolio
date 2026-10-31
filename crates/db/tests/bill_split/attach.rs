@@ -8,16 +8,9 @@ use rust_decimal_macros::dec;
 
 use crate::fixture::*;
 
-/// The editor's legs for a 未分類 bank line: its postings rewritten in order,
-/// then any added.
+/// The editor's legs for a 未分類 bank line, saved and confirmed.
 async fn split_line(l: &Ledger, line: i64, legs: &[(&str, Decimal)]) -> Edit {
-    let held = l.posting_ids(line).await;
-    let legs = legs
-        .iter()
-        .enumerate()
-        .map(|(i, (account, amount))| leg(held.get(i).copied(), account, *amount))
-        .collect();
-    Edit { narration: Some("晚餐".into()), legs, confirm: true }
+    Edit { narration: Some("晚餐".into()), confirm: true, ..l.rewrite(line, legs).await }
 }
 
 #[tokio::test]
@@ -142,7 +135,7 @@ async fn a_repayment_moves_an_uncategorized_leg_to_the_account_the_user_names() 
     let split = l.per_person("晚餐").await;
     bill_split::gather(&l.pool, &l.books, split, &[dinner]).await.unwrap();
 
-    let how = Attach::Repayment(Repayment { account: Some(ALICE.into()), amount: None });
+    let how = to(ALICE);
     bill_split::attach(&l.pool, &l.books, split, line, &how).await.unwrap();
 
     assert_eq!(l.legs(line).await, dec_map(&[(BANK, dec!(500)), (ALICE, dec!(-500))]));
@@ -158,17 +151,17 @@ async fn a_repayment_is_refused_on_a_stranger_or_a_line_with_nothing_to_move() {
     bill_split::gather(&l.pool, &l.books, split, &[dinner]).await.unwrap();
 
     let line = l.line("2026-02-01", &[(BANK, "500"), (UNCAT_IN, "-500")]).await;
-    let stranger = Attach::Repayment(Repayment { account: Some(STRANGER.into()), amount: None });
+    let stranger = to(STRANGER);
     assert!(bill_split::attach(&l.pool, &l.books, split, line, &stranger).await.is_err());
 
-    let bobs = Attach::Repayment(Repayment { account: Some(BOB.into()), amount: None });
+    let bobs = to(BOB);
     let refused = bill_split::attach(&l.pool, &l.books, split, line, &bobs).await.unwrap_err();
     assert!(refused.to_string().contains("對得上"), "{refused}");
     // Refused means rolled back: the line keeps its 未分類 leg.
     assert_eq!(l.legs(line).await, dec_map(&[(BANK, dec!(500)), (UNCAT_IN, dec!(-500))]));
 
     let food = l.line("2026-02-02", &[(BANK, "-50"), (FOOD, "50")]).await;
-    let alice = Attach::Repayment(Repayment { account: Some(ALICE.into()), amount: None });
+    let alice = to(ALICE);
     let refused = bill_split::attach(&l.pool, &l.books, split, food, &alice).await.unwrap_err();
     assert!(refused.to_string().contains("未分類"), "{refused}");
 }
@@ -184,7 +177,7 @@ async fn a_named_account_narrows_a_repayment_to_that_leg() {
     bill_split::attach(&l.pool, &l.books, split, one, &share).await.unwrap();
     bill_split::attach(&l.pool, &l.books, split, two, &share).await.unwrap();
 
-    let alice = Attach::Repayment(Repayment { account: Some(ALICE.into()), amount: None });
+    let alice = to(ALICE);
     bill_split::attach(&l.pool, &l.books, split, both, &alice).await.unwrap();
 
     let split = bill_split::get(&l.pool, split).await.unwrap();
@@ -205,13 +198,13 @@ async fn the_other_leg_of_a_line_can_join_the_same_split_later() {
     bill_split::attach(&l.pool, &l.books, split, two, &share).await.unwrap();
 
     for account in [ALICE, BOB] {
-        let how = Attach::Repayment(Repayment { account: Some(account.into()), amount: None });
+        let how = to(account);
         bill_split::attach(&l.pool, &l.books, split, both, &how).await.unwrap();
     }
     assert_eq!(bill_split::get(&l.pool, split).await.unwrap().status(), Status::Settled);
 
     // Either leg again is a line it already holds.
-    let again = Attach::Repayment(Repayment { account: Some(ALICE.into()), amount: None });
+    let again = to(ALICE);
     let refused = bill_split::attach(&l.pool, &l.books, split, both, &again).await;
     assert!(refused.is_err());
 }

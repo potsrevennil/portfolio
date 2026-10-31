@@ -6,11 +6,11 @@ use anyhow::{bail, Result};
 use chrono::NaiveDate;
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use strum_macros::{Display, EnumString};
 
 /// The `share.role` vocabulary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Display, EnumString, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Display, EnumString, Serialize)]
 #[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -112,6 +112,11 @@ impl Split {
         owed
     }
 
+    /// Whether a leg of `transaction` is in this split.
+    pub fn holds(&self, transaction: i64) -> bool {
+        self.shares.iter().any(|s| s.transaction_id == transaction)
+    }
+
     pub fn people(&self) -> BTreeSet<i64> { self.shares.iter().filter_map(|s| s.person).collect() }
 
     fn settling(&self) -> bool {
@@ -158,14 +163,35 @@ impl Split {
     }
 }
 
+/// `name` trimmed, or `refusal` where nothing is left of it.
+pub(super) fn named<'a>(name: &'a str, refusal: &str) -> Result<&'a str> {
+    match name.trim() {
+        "" => bail!("{refusal}"),
+        trimmed => Ok(trimmed),
+    }
+}
+
+/// Whether a posting with `left` unallocated runs against what `owed` says.
+pub(super) fn opposes(left: Decimal, owed: Decimal) -> bool {
+    !left.is_zero() && !owed.is_zero() && left.is_sign_negative() != owed.is_sign_negative()
+}
+
 /// How much of a posting with `left` unallocated repays `owed`, signed like the
 /// posting: `asked`, or all it can where `None`. Anything over `owed` stays on
-/// the account, unallocated, since the money really did arrive.
-pub(super) fn allocate(left: Decimal, owed: Decimal, asked: Option<Decimal>) -> Result<Decimal> {
-    if left.is_zero() || owed.is_zero() || left.is_sign_negative() == owed.is_sign_negative() {
-        bail!("這筆不是還款：和欠的方向相同，或者已經沒有欠");
-    }
-    let most = left.abs().min(owed.abs());
+/// the account, unallocated, since the money really did arrive. A netted split
+/// has no `owed` to cap it.
+pub(super) fn allocate(
+    left: Decimal,
+    owed: Option<Decimal>,
+    asked: Option<Decimal>,
+) -> Result<Decimal> {
+    let most = match owed {
+        Some(owed) if !opposes(left, owed) => {
+            bail!("這筆不是還款：和欠的方向相同，或者已經沒有欠")
+        }
+        Some(owed) => left.abs().min(owed.abs()),
+        None => left.abs(),
+    };
     match asked {
         None if left.is_sign_negative() => Ok(-most),
         None => Ok(most),
@@ -256,18 +282,18 @@ mod tests {
 
     #[test]
     fn allocating_stops_at_the_smaller_side() {
-        assert_eq!(allocate(dec!(-1000), dec!(600), None).unwrap(), dec!(-600));
-        assert_eq!(allocate(dec!(-300), dec!(600), None).unwrap(), dec!(-300));
+        assert_eq!(allocate(dec!(-1000), Some(dec!(600)), None).unwrap(), dec!(-600));
+        assert_eq!(allocate(dec!(-300), Some(dec!(600)), None).unwrap(), dec!(-300));
         // Where they fronted it, you repay them: the signs turn over.
-        assert_eq!(allocate(dec!(500), dec!(-800), None).unwrap(), dec!(500));
-        assert_eq!(allocate(dec!(-1000), dec!(600), Some(dec!(-200))).unwrap(), dec!(-200));
+        assert_eq!(allocate(dec!(500), Some(dec!(-800)), None).unwrap(), dec!(500));
+        assert_eq!(allocate(dec!(-1000), Some(dec!(600)), Some(dec!(-200))).unwrap(), dec!(-200));
     }
 
     #[test]
     fn allocating_refuses_what_is_no_repayment() {
-        assert!(allocate(dec!(500), dec!(600), None).is_err());
-        assert!(allocate(dec!(-500), dec!(0), None).is_err());
-        assert!(allocate(dec!(-500), dec!(600), Some(dec!(-501))).is_err());
-        assert!(allocate(dec!(-500), dec!(600), Some(dec!(100))).is_err());
+        assert!(allocate(dec!(500), Some(dec!(600)), None).is_err());
+        assert!(allocate(dec!(-500), Some(dec!(0)), None).is_err());
+        assert!(allocate(dec!(-500), Some(dec!(600)), Some(dec!(-501))).is_err());
+        assert!(allocate(dec!(-500), Some(dec!(600)), Some(dec!(100))).is_err());
     }
 }

@@ -129,10 +129,7 @@ mod tests {
     use rust_decimal_macros::dec;
 
     use super::*;
-
-    fn rec(ref_id: i64, date: &str, amount: Decimal) -> Record {
-        Record { ref_id, date: date.parse().unwrap(), amount, currency: "TWD".into() }
-    }
+    use crate::matcher::engine::rec;
 
     fn run(targets: Vec<Record>, candidates: Vec<Record>) -> crate::matcher::Outcome {
         Engine::new(vec![Box::new(SplitRepaymentMode)]).run(targets, candidates)

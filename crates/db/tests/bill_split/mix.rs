@@ -39,22 +39,17 @@ fn posting(account: &str, amount: Decimal) -> Posting {
     }
 }
 
-/// A netted group, and a 未分類 line with its two posting ids.
-async fn crew_and_line(l: &Ledger) -> (i64, Vec<i64>) {
+/// A netted group and a 未分類 line.
+async fn crew_and_line(l: &Ledger) -> i64 {
     netted_crew(l).await;
-    let line = l.line("2026-01-10", &[(BANK, "-100"), (UNCAT_OUT, "100")]).await;
-    (line, l.posting_ids(line).await)
+    l.line("2026-01-10", &[(BANK, "-100"), (UNCAT_OUT, "100")]).await
 }
 
 #[tokio::test]
 async fn a_queue_edit_cannot_move_a_leg_into_a_netted_group() {
     let l = Ledger::new().await;
-    let (line, ids) = crew_and_line(&l).await;
-    let moved = Edit {
-        narration: None,
-        legs: vec![leg(Some(ids[0]), BANK, dec!(-100)), leg(Some(ids[1]), IN_CREW, dec!(100))],
-        confirm: false,
-    };
+    let line = crew_and_line(&l).await;
+    let moved = l.rewrite(line, &[(BANK, dec!(-100)), (IN_CREW, dec!(100))]).await;
     let refused = review::edit(&l.pool, &StatementAccounts::default(), line, &moved).await;
     refused_with(refused.unwrap_err(), CREW);
     assert_eq!(l.legs(line).await, dec_map(&[(BANK, dec!(-100)), (UNCAT_OUT, dec!(100))]));
@@ -63,16 +58,9 @@ async fn a_queue_edit_cannot_move_a_leg_into_a_netted_group() {
 #[tokio::test]
 async fn a_queue_edit_cannot_add_a_leg_in_a_netted_group() {
     let l = Ledger::new().await;
-    let (line, ids) = crew_and_line(&l).await;
-    let added = Edit {
-        narration: None,
-        legs: vec![
-            leg(Some(ids[0]), BANK, dec!(-100)),
-            leg(Some(ids[1]), UNCAT_OUT, dec!(60)),
-            leg(None, IN_CREW, dec!(40)),
-        ],
-        confirm: false,
-    };
+    let line = crew_and_line(&l).await;
+    let added =
+        l.rewrite(line, &[(BANK, dec!(-100)), (UNCAT_OUT, dec!(60)), (IN_CREW, dec!(40))]).await;
     let refused = review::edit(&l.pool, &StatementAccounts::default(), line, &added).await;
     refused_with(refused.unwrap_err(), CREW);
     assert_eq!(l.legs(line).await, dec_map(&[(BANK, dec!(-100)), (UNCAT_OUT, dec!(100))]));
@@ -108,11 +96,9 @@ async fn an_edit_leaves_a_leg_already_there_alone() {
     // Books already mixed: the fixture writes the leg past the gate.
     netted_crew(&l).await;
     let line = l.line("2026-01-10", &[(BANK, "-100"), (IN_CREW, "100")]).await;
-    let ids = l.posting_ids(line).await;
     let note = Edit {
         narration: Some("改備註".into()),
-        legs: vec![leg(Some(ids[0]), BANK, dec!(-100)), leg(Some(ids[1]), IN_CREW, dec!(100))],
-        confirm: false,
+        ..l.rewrite(line, &[(BANK, dec!(-100)), (IN_CREW, dec!(100))]).await
     };
     review::edit(&l.pool, &StatementAccounts::default(), line, &note).await.unwrap();
 }

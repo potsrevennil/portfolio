@@ -1,5 +1,4 @@
 use db::bill_split::{self, Attach, ClosedFilter, Closing, WriteOff};
-use ledger_types::currency::Currency;
 
 use crate::fixture::*;
 
@@ -26,13 +25,7 @@ async fn history(l: &Ledger) -> (i64, i64, i64, i64) {
     bill_split::attach(&l.pool, &l.books, partly, line, &share).await.unwrap();
     let back = l.line("2026-02-01", &[(BANK, "150"), (BOB, "-150")]).await;
     bill_split::gather(&l.pool, &l.books, partly, &[back]).await.unwrap();
-    let off = |account: &str| WriteOff {
-        account: account.into(),
-        currency: Currency::TWD,
-        date: d(2026, 5, 1),
-        amount: None,
-        note: None,
-    };
+    let off = |account| WriteOff { date: d(2026, 5, 1), ..off(account, None) };
     bill_split::write_off(&l.pool, &l.books, partly, &off(BOB)).await.unwrap();
 
     let line = l.line("2026-01-05", &[(BANK, "-70"), (ALICE_GEAR, "70")]).await;

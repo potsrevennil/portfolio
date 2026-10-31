@@ -18,15 +18,13 @@ CREATE TABLE person_account (
 CREATE INDEX idx_person_account_person ON person_account (person_id);
 
 -- `account_id` is the group's account for a netted split, where only the net
--- matters and Splitwise decides who owes whom inside it. `deleted_at` keeps a
--- deleted split's id, which detach events name.
+-- matters and Splitwise decides who owes whom inside it.
 CREATE TABLE split (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     title      TEXT NOT NULL,
     kind       TEXT NOT NULL CHECK (kind IN ('per_person', 'netted')),
     account_id INTEGER REFERENCES accounts (id) ON DELETE RESTRICT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    deleted_at TEXT,
     CHECK ((kind = 'netted') = (account_id IS NOT NULL))
 ) STRICT;
 

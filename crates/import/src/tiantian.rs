@@ -206,11 +206,7 @@ pub async fn import(
         }
     }
     let recorded = assertions::load(db).await?;
-    let fallbacks: BTreeSet<&str> = [&chart.fallback.income, &chart.fallback.expense]
-        .into_iter()
-        .chain(chart.fallback.descriptions.values())
-        .map(|a| a.as_ref())
-        .collect();
+    let fallbacks: BTreeSet<&str> = chart.fallback.accounts().map(|a| a.as_ref()).collect();
     let mut fates: HashMap<usize, Fate> = HashMap::new();
     let mut problems: Vec<String> = Vec::new();
     for ((account, currency), at) in &legs {

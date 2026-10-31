@@ -1,19 +1,8 @@
-use db::bill_split::{self, Closing, Status, WriteOff, BAD_DEBT};
+use db::bill_split::{self, Closing, Status, BAD_DEBT};
 use ledger_types::currency::Currency;
-use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use crate::fixture::*;
-
-fn off(account: &str, amount: Option<Decimal>) -> WriteOff {
-    WriteOff {
-        account: account.into(),
-        currency: Currency::TWD,
-        date: d(2026, 6, 1),
-        amount,
-        note: Some("討無".into()),
-    }
-}
 
 #[tokio::test]
 async fn a_write_off_is_its_own_record_on_bad_debt() {

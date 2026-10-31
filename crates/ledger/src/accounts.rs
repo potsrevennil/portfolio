@@ -217,6 +217,13 @@ pub struct Fallback {
     pub descriptions: HashMap<String, Account>,
 }
 
+impl Fallback {
+    /// Every account a line can land on with no app record behind it.
+    pub fn accounts(&self) -> impl Iterator<Item = &Account> {
+        [&self.income, &self.expense].into_iter().chain(self.descriptions.values())
+    }
+}
+
 /// Split accounts: running two-way balances with a person or group — a family
 /// tab, a Splitwise group. Accountants call these current accounts: one account
 /// per person or group, and the sign says who owes whom (positive, they owe

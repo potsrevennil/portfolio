@@ -75,12 +75,12 @@ struct AccountRow {
     acct_type: String,
 }
 
-struct Account {
+pub(crate) struct Account {
     id: i64,
     account_type: AccountType,
 }
 
-async fn account(db: &mut SqliteConnection, path: &str) -> Result<Account> {
+pub(crate) async fn account(db: &mut SqliteConnection, path: &str) -> Result<Account> {
     let row: AccountRow =
         sqlx::query_as("SELECT id, type AS acct_type FROM accounts WHERE path = ?")
             .bind(path)
@@ -316,7 +316,7 @@ pub(crate) async fn edit_in(
 }
 
 /// Refuses a transaction that is not there to change.
-pub(crate) async fn live(db: &mut SqliteConnection, id: i64) -> Result<()> {
+async fn live(db: &mut SqliteConnection, id: i64) -> Result<()> {
     let deleted: Option<Option<String>> =
         sqlx::query_scalar("SELECT deleted_at FROM transactions WHERE id = ?")
             .bind(id)
@@ -336,16 +336,17 @@ pub(crate) async fn live(db: &mut SqliteConnection, id: i64) -> Result<()> {
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<()> {
     let mut db = pool.begin().await?;
     let before_check = baseline(&mut db).await?;
-    if let Some(link) = bill_split::held(&mut db, id).await?.first() {
-        bail!("這筆在分帳「{}」裡，先退出分帳才能刪", link.title);
-    }
     delete_in(&mut db, id).await?;
     gated(db, before_check).await
 }
 
-/// [`delete`] inside the caller's transaction, ungated.
+/// [`delete`] inside the caller's transaction, ungated. Refuses a line a split
+/// holds.
 pub(crate) async fn delete_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
     live(db, id).await?;
+    if let Some(link) = bill_split::held(db, id).await?.first() {
+        bail!("這筆在分帳「{}」裡，先退出分帳才能刪", link.title);
+    }
     let before = events::snapshot(db, id).await?;
     sqlx::query("DELETE FROM postings WHERE transaction_id = ?").bind(id).execute(&mut *db).await?;
     sqlx::query(
