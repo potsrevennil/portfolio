@@ -12,7 +12,7 @@ use ledger_types::{
 };
 use rust_decimal::Decimal;
 
-use super::{cathay, cathay_card, line_bank};
+use super::{cathay, cathay_card, line_bank, taishin_card};
 use crate::matching::DateRange;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,7 @@ pub enum Bank {
     Cathay,
     LineBank,
     CathayCard,
+    TaishinCard,
 }
 
 impl fmt::Display for Bank {
@@ -28,12 +29,13 @@ impl fmt::Display for Bank {
             Bank::Cathay => "Cathay bank",
             Bank::LineBank => "LINE Bank",
             Bank::CathayCard => "Cathay card",
+            Bank::TaishinCard => "Taishin card",
         })
     }
 }
 
 impl Bank {
-    pub const ALL: [Bank; 3] = [Bank::Cathay, Bank::LineBank, Bank::CathayCard];
+    pub const ALL: [Bank; 4] = [Bank::Cathay, Bank::LineBank, Bank::CathayCard, Bank::TaishinCard];
 
     /// Namespaces the bank's `external_ref`s: every importer shares one dedup
     /// scope (`transactions.source = 'import'`).
@@ -42,6 +44,7 @@ impl Bank {
             Bank::Cathay => "cathay-bank:",
             Bank::LineBank => "line-bank:",
             Bank::CathayCard => "cathay-card:",
+            Bank::TaishinCard => "taishin-card:",
         }
     }
 
@@ -51,6 +54,7 @@ impl Bank {
             Bank::Cathay => "cathay-bank",
             Bank::LineBank => "line-bank",
             Bank::CathayCard => "cathay-card",
+            Bank::TaishinCard => "taishin-card",
         }
     }
 
@@ -61,6 +65,7 @@ impl Bank {
             Bank::Cathay => cathay::load_merged(paths),
             Bank::LineBank => line_bank::load_merged(paths),
             Bank::CathayCard => cathay_card::load_merged(paths),
+            Bank::TaishinCard => taishin_card::load_merged(paths),
         }
     }
 
@@ -69,12 +74,12 @@ impl Bank {
     pub fn vouches_for_records(self) -> bool {
         match self {
             Bank::Cathay | Bank::LineBank => false,
-            Bank::CathayCard => true,
+            Bank::CathayCard | Bank::TaishinCard => true,
         }
     }
 
     /// A card statement does not say when its period began.
-    pub fn is_card(self) -> bool { matches!(self, Bank::CathayCard) }
+    pub fn is_card(self) -> bool { matches!(self, Bank::CathayCard | Bank::TaishinCard) }
 
     /// How long before a statement's end a record may still be off it, not
     /// having posted yet. A card's foreign fees take weeks to post.
@@ -91,7 +96,7 @@ impl Bank {
             Bank::Cathay => cathay::info_names_account(text, account_no),
             Bank::LineBank => line_bank::remark_names_account(text, account_no),
             // Its lines name merchants; a payment does not say from where.
-            Bank::CathayCard => false,
+            Bank::CathayCard | Bank::TaishinCard => false,
         }
     }
 
@@ -113,7 +118,7 @@ impl Bank {
                     && debit.delta() == -line.delta()
             }
             // A refund is a real line of its own, and rarely the same day.
-            Bank::CathayCard => false,
+            Bank::CathayCard | Bank::TaishinCard => false,
         }
     }
 }
@@ -307,7 +312,9 @@ impl BankStatement {
         match self.bank {
             // A download may have been made partway through its range's end.
             Bank::Cathay => self.period_end,
-            Bank::LineBank | Bank::CathayCard => self.period_end.and_then(|end| end.succ_opt()),
+            Bank::LineBank | Bank::CathayCard | Bank::TaishinCard => {
+                self.period_end.and_then(|end| end.succ_opt())
+            }
         }
     }
 
