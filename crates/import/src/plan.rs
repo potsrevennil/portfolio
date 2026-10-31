@@ -474,7 +474,7 @@ pub fn plan(
         .enumerate()
         .map(|(i, &at)| Record {
             ref_id: i as i64,
-            date: line(at).book_date,
+            dates: line(at).book_date.into(),
             amount: line(at).delta(),
             currency: statements[at.0].statement.currency.to_string(),
         })
@@ -484,7 +484,7 @@ pub fn plan(
         .enumerate()
         .map(|(i, c)| Record {
             ref_id: i as i64,
-            date: c.date,
+            dates: c.date.into(),
             amount: c.amount,
             currency: c.currency.to_string(),
         })
@@ -701,7 +701,7 @@ fn chain<'a>(
             .existing
             .iter()
             .filter(|p| !moved_off(p))
-            .map(|p| (on_day(p.transaction_id, p.date), p.amount))
+            .map(|p| (on_day(p.transaction_id, p.posted.unwrap_or(p.date)), p.amount))
             .chain(
                 moved
                     .iter()
@@ -714,8 +714,9 @@ fn chain<'a>(
         for (_, t) in planned {
             for p in &t.postings {
                 if p.account == s.account && p.currency == currency {
-                    movements.push((t.date, p.amount));
-                    adds_to_last_day |= t.date == last;
+                    let day = p.posted_date.unwrap_or(t.date);
+                    movements.push((day, p.amount));
+                    adds_to_last_day |= day == last;
                 }
             }
         }

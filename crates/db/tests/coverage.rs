@@ -216,3 +216,20 @@ async fn a_balance_is_confirmed_only_where_the_ledger_agrees() {
         .unwrap();
     assert_eq!(closing, "120");
 }
+
+/// The page tells what a figure has checked by when a leg moved the balance
+/// it states, so a purchase still to post is past a closing it predates.
+#[tokio::test]
+async fn a_record_counts_from_the_day_it_posted() {
+    let (pool, _file) = fixture().await;
+    let mut conn = pool.acquire().await.unwrap();
+    let id = common::post(&mut conn, "2024-03-30", BANK, "-50", "TWD", None).await;
+    common::posted_on(&mut conn, id, BANK, "2024-04-02").await;
+
+    let records = coverage::ledger_records(&mut conn).await.unwrap();
+    let on_bank = records.iter().find(|r| r.account == BANK).unwrap();
+    assert_eq!(on_bank.date, "2024-04-02".parse().unwrap());
+    let positions = coverage::ledger_positions(&mut conn).await.unwrap();
+    let on_bank = positions.iter().find(|p| p.account == BANK).unwrap();
+    assert_eq!(on_bank.last, "2024-04-02".parse().unwrap());
+}

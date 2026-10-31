@@ -493,6 +493,7 @@ fn to_row(
             currency: p.currency,
             tags: p.tags,
             origin: None,
+            posted_date: None,
         })
         .collect();
     Ok(Transaction {
