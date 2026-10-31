@@ -7,7 +7,10 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use db::{check, load};
+use db::{
+    bill_split::{self, Books, Mixed, Shape},
+    check, load,
+};
 use import::{
     bank,
     counted::record,
@@ -49,9 +52,13 @@ expense = "Expenses:Uncategorized"
 "外幣帳戶" = "Assets:Cathay:FX"
 "券商" = "Assets:Broker"
 "起鼓" = "Equity:Opening-Balances"
+"阿明" = "Assets:Split:Crew:Ming"
 
 [counted]
 roots = ["Assets:Cash"]
+
+[split_accounts]
+roots = ["Assets:Split"]
 "#;
 
 /// The frozen history: it ends on 2026-01-06.
@@ -404,6 +411,31 @@ async fn a_bank_record_the_statement_contradicts_stops_the_import() -> Result<()
     let err = f.import_tiantian().await.expect_err("no line explains U8");
     assert!(format!("{err:#}").contains("U8"), "{err:#}");
     assert_eq!(f.transactions().await?, before);
+    Ok(())
+}
+
+/// A netted group takes no leg for one of its people, on a line a record pairs
+/// or on one it books alone: the import stops and writes nothing.
+#[tokio::test]
+async fn a_record_into_a_netted_group_stops_the_import() -> Result<()> {
+    let f = Fixture::frozen().await?;
+    f.import_january().await?;
+    let netted = Shape::Netted { account: "Assets:Split:Crew".into() };
+    bill_split::create(&f.pool, &Books::from(&f.chart), "團體", &netted).await?;
+    let before = f.transactions().await?;
+
+    let paired = "20260121,國泰,300,TWD,阿明,300,TWD,,,x,U7\n";
+    let alone = "20260108,現金,20,TWD,阿明,20,TWD,,,x,U9\n";
+    for record in [paired, alone] {
+        std::fs::write(f.path("收支.csv"), EXPORT_HEADER)?;
+        std::fs::write(f.path("轉帳.csv"), format!("{TRANSFER_HEADER}{record}"))?;
+        let err = f.import_tiantian().await.expect_err("Split:Crew is netted");
+        assert_eq!(err.downcast::<Mixed>()?, Mixed {
+            account: "Assets:Split:Crew:Ming".into(),
+            with: "Assets:Split:Crew".into(),
+        });
+        assert_eq!(f.transactions().await?, before);
+    }
     Ok(())
 }
 

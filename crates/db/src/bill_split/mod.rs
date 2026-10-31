@@ -14,6 +14,8 @@ mod views;
 
 pub use anchor::{anchor_check, Anchor, AnchorRow, Anchored};
 pub use books::{Books, BAD_DEBT};
+pub(crate) use mix::mixed;
+pub use mix::Mixed;
 pub use model::{Closed, Closing, Person, Role, Shape, Share, Split, Status};
 pub use people::{add_person, assign, people, rename_person, unassign};
 pub(crate) use store::held;

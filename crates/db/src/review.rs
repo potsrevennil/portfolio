@@ -20,7 +20,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 use crate::{
     assertions::{self, AssertionSource},
     bill_split,
-    check::{self, Figure, Mismatch},
+    check::{self, CheckReport, Figure, Mismatch},
     events::{self, Change, EventKind},
     import::Origin,
     query::AccountType,
@@ -120,23 +120,26 @@ fn balanced(legs: impl IntoIterator<Item = (Decimal, Currency)>) -> Result<()> {
     }
 }
 
-/// The figures the ledger disagrees with before a write: a write is held
-/// only to the ones it breaks, not to one already broken elsewhere.
-pub(crate) async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
-    Ok(check::check(db).await?.mismatches)
+/// What the ledger fails before a write: a write is held only to what it
+/// breaks, not to what is already broken elsewhere.
+pub(crate) async fn baseline(db: &mut SqliteConnection) -> Result<CheckReport> {
+    check::check(db).await
 }
 
-/// Commits `db` unless the write broke a balance a statement or a count
-/// vouches for; then it says which one, and what to do, in the reader's
-/// words. A 天天記帳 closing it contradicts is only that app's sum of what
-/// was logged there, so a record added later supersedes it instead.
+/// Commits `db` unless the write mixed a split group, or broke a balance a
+/// statement or a count vouches for; then it says which one, and what to do, in
+/// the reader's words. A 天天記帳 closing it contradicts is only that app's sum
+/// of what was logged there, so a record added later supersedes it instead.
 pub(crate) async fn gated(
     mut db: sqlx::Transaction<'_, sqlx::Sqlite>,
-    before: Vec<Mismatch>,
+    before: CheckReport,
 ) -> Result<()> {
     let after = check::check(&mut db).await?;
+    if let Some(mixed) = after.mixed.iter().find(|m| !before.mixed.contains(m)) {
+        return Err(mixed.clone().into());
+    }
     let (tiantian, broken): (Vec<&Mismatch>, Vec<&Mismatch>) =
-        after.mismatches.iter().filter(|m| !before.contains(m)).partition(
+        after.mismatches.iter().filter(|m| !before.mismatches.contains(m)).partition(
             |m| matches!(&m.figure, Figure::Balance(a) if a.source == AssertionSource::Tiantian),
         );
     if let Some(broken) = broken.first() {

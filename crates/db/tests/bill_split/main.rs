@@ -7,6 +7,7 @@ mod closed;
 mod detach;
 mod fixture;
 mod gather;
+mod mix;
 mod people;
 mod queue;
 mod repayments;

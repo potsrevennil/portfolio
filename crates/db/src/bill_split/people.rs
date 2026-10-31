@@ -65,9 +65,7 @@ pub async fn assign(pool: &SqlitePool, books: &Books, person: i64, path: &str) -
         .fetch_optional(&mut *db)
         .await?;
     known.with_context(|| format!("查無此人 {person}"))?;
-    if let Some(clash) = Uses::load(&mut db, books).await?.clash(path, Asked::Person) {
-        bail!("「{path}」和「{clash}」不可混用：一個群組要嘛算總額，要嘛算每個人");
-    }
+    Uses::load(&mut db, books).await?.check(path, Asked::Person)?;
     let account = ensure_account(&mut db, &books.labels, path).await?;
     let linked = sqlx::query(
         "INSERT INTO person_account (account_id, person_id) VALUES (?, ?)

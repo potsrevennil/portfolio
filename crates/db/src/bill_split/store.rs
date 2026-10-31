@@ -486,9 +486,7 @@ pub async fn create(pool: &SqlitePool, books: &Books, title: &str, shape: &Shape
             if !books.holds(account) {
                 bail!("「{account}」不是分帳底下的帳戶");
             }
-            if let Some(clash) = Uses::load(&mut db, books).await?.clash(account, Asked::Netted) {
-                bail!("「{account}」和「{clash}」不可混用：一個群組要嘛算總額，要嘛算每個人");
-            }
+            Uses::load(&mut db, books).await?.check(account, Asked::Netted)?;
             Some(ensure_account(&mut db, &books.labels, account).await?)
         }
     };

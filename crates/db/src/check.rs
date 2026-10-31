@@ -16,6 +16,7 @@ use sqlx::SqliteConnection;
 
 use super::{
     assertions::{self, AssertionSource, BalanceAssertion},
+    bill_split::{self, Mixed},
     broker,
     holdings::{self, HoldingAssertion},
     query::{in_subtree, AccountType, LedgerData},
@@ -70,13 +71,17 @@ pub struct CheckReport {
     /// by [`with_counts`]. Not a failure: until the first count there is
     /// nothing to hold them to.
     pub uncounted: Vec<(String, Currency)>,
+    /// Accounts with postings in a group settled the other way: a failure.
+    pub mixed: Vec<Mixed>,
 }
 
 impl CheckReport {
     /// Green only when something vouched for the ledger and every figure it
     /// vouched for matched: with no assertions at all there is nothing to
     /// drift against, which is a failure, not a pass.
-    pub fn ok(&self) -> bool { self.mismatches.is_empty() && self.figures() > 0 }
+    pub fn ok(&self) -> bool {
+        self.mismatches.is_empty() && self.mixed.is_empty() && self.figures() > 0
+    }
 
     /// Balance figures checked, the unit `mismatches` counts in.
     pub fn figures(&self) -> usize { self.accounts.values().map(|a| a.checked).sum() }
@@ -106,6 +111,9 @@ impl fmt::Display for CheckReport {
             )?;
         }
         for m in &self.mismatches {
+            writeln!(f, "  {m}")?;
+        }
+        for m in &self.mixed {
             writeln!(f, "  {m}")?;
         }
         if !self.unchecked.is_empty() {
@@ -178,10 +186,12 @@ async fn checked(conn: &mut SqliteConnection, counted: Option<&Chart>) -> Result
     if let Some(chart) = counted {
         report.uncounted = uncounted(&data, &assertions, chart);
     }
+    report.mixed = bill_split::mixed(conn).await?;
     Ok(report)
 }
 
-/// [`check`], failing on any mismatch with the report as the error.
+/// [`check`], failing on any mismatch with the report as the error, or on a
+/// mixed group with [`Mixed`] as the error.
 pub async fn gate(conn: &mut SqliteConnection) -> Result<CheckReport> { passed(check(conn).await?) }
 
 /// [`with_counts`], failing as [`gate`] does.
@@ -190,10 +200,10 @@ pub async fn gate_with_counts(conn: &mut SqliteConnection, chart: &Chart) -> Res
 }
 
 fn passed(report: CheckReport) -> Result<CheckReport> {
-    if report.ok() {
-        Ok(report)
-    } else {
-        anyhow::bail!("balance check failed:\n{report}")
+    match (report.mixed.first(), report.ok()) {
+        (Some(mixed), _) => Err(mixed.clone().into()),
+        (None, true) => Ok(report),
+        (None, false) => anyhow::bail!("balance check failed:\n{report}"),
     }
 }
 
