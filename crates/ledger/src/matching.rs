@@ -99,7 +99,7 @@ pub fn match_subsets(
             // others, and a card line's range can hold more than the cap. Then
             // the one nearest the purchase: repeats of one amount pair up in
             // order, not crosswise.
-            pool.sort_by_key(|ei| {
+            pool.sort_by_cached_key(|ei| {
                 let (edates, edelta) = events[*ei];
                 (
                     edelta != *delta,
