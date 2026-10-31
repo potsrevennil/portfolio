@@ -36,6 +36,7 @@ fn statement_of(account_no: &str, lines: &[(u32, Decimal, Decimal)]) -> BankStat
         lines: lines
             .iter()
             .map(|&(d, delta, balance)| StatementLine {
+                purchased: None,
                 book_date: day(d),
                 description: String::new(),
                 withdrawal: -delta.min(Decimal::ZERO),

@@ -11,7 +11,7 @@ use std::{
 use chrono::NaiveDate;
 use db::{
     import::{Origin, Posting, Transaction},
-    import_batch::{LedgerPosting, Verification},
+    import_batch::{LedgerPosting, LegPart, LegSplit, Stamp, Verification, Vouched},
     import_run::Suggestion,
 };
 use ledger::{
@@ -80,6 +80,18 @@ pub struct Counts {
     pub uncategorised: usize,
 }
 
+impl Counts {
+    fn count(&mut self, status: Status) {
+        match status {
+            Status::PredatesOpening => self.predate_opening += 1,
+            Status::Known => self.known += 1,
+            Status::Covered => self.covered += 1,
+            Status::Verifies(_) | Status::Vouches => self.verified += 1,
+            Status::New => self.new += 1,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Plan {
     /// Each with the index of the file it came from; its batch is assigned at
@@ -95,6 +107,10 @@ pub struct Plan {
     pub suggestions: Vec<(i64, Suggestion)>,
     /// Each statement the result does not chain onto, at its first bad day.
     pub gaps: Vec<Gap>,
+    /// What statements that vouch for records say of them.
+    pub stamps: Vec<Stamp>,
+    /// Records whose one leg several of those statements' lines add up to.
+    pub leg_splits: Vec<LegSplit>,
 }
 
 /// The ledger plus the import does not end a statement day on its balance: a
@@ -138,6 +154,8 @@ enum Status {
     Covered,
     /// Verifies the unverified record with this transaction id.
     Verifies(i64),
+    /// Vouches for records already on the ledger, stamped in [`Plan::stamps`].
+    Vouches,
     New,
 }
 
@@ -215,19 +233,6 @@ pub fn plan(
         };
         openings.push(opening);
 
-        // Postings the ledger booked from other lines (a transfer's far half, a
-        // reversal) can each cover one line with no ref of its own. A known
-        // line takes back its own posting first.
-        //
-        // A leg still tagged unverified is never one of those, whatever its
-        // transaction stands for: the other bank's line vouched for the other
-        // leg, and this one is here to be verified, not to cover a line.
-        let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
-        for p in &s.existing {
-            if !p.opening && !p.unverified && from_a_statement(p) {
-                *spare.entry((p.date, p.amount)).or_default() += 1;
-            }
-        }
         let mut line_status: Vec<Status> = st
             .lines
             .iter()
@@ -242,6 +247,35 @@ pub fn plan(
                 }
             })
             .collect();
+        if st.bank.vouches_for_records() {
+            let (stamps, leg_splits, passed) = vouch(st, &s.existing, &refs[si], &mut line_status);
+            plan.stamps.extend(stamps);
+            plan.leg_splits.extend(leg_splits);
+            plan.suggestions.extend(passed.into_iter().map(|id| {
+                (id, Suggestion::NotOnStatement {
+                    through: st.settled_through(),
+                    siblings: Vec::new(),
+                })
+            }));
+            for s in &line_status {
+                plan.counts.count(*s);
+            }
+            status.push(line_status);
+            continue;
+        }
+        // Postings the ledger booked from other lines (a transfer's far half, a
+        // reversal) can each cover one line with no ref of its own. A known
+        // line takes back its own posting first.
+        //
+        // A leg still tagged unverified is never one of those, whatever its
+        // transaction stands for: the other bank's line vouched for the other
+        // leg, and this one is here to be verified, not to cover a line.
+        let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
+        for p in &s.existing {
+            if !p.opening && !p.unverified && from_a_statement(p) {
+                *spare.entry((p.date, p.amount)).or_default() += 1;
+            }
+        }
         for (li, l) in st.lines.iter().enumerate() {
             if line_status[li] == Status::Known {
                 if let Some(n) = spare.get_mut(&(l.book_date, l.delta())).filter(|n| **n > 0) {
@@ -314,13 +348,7 @@ pub fn plan(
             plan.counts.deferred += 1;
         }
         for s in &line_status {
-            match s {
-                Status::PredatesOpening => plan.counts.predate_opening += 1,
-                Status::Known => plan.counts.known += 1,
-                Status::Covered => plan.counts.covered += 1,
-                Status::Verifies(_) => plan.counts.verified += 1,
-                Status::New => plan.counts.new += 1,
-            }
+            plan.counts.count(*s);
         }
         status.push(line_status);
     }
@@ -505,6 +533,10 @@ pub fn plan(
         let l = line(at);
         let currency = s.statement.currency;
         let own: Posting = (&s.account, l.delta(), currency).into();
+        let own = match s.statement.bank.vouches_for_records() {
+            true => own.posted_on(l.book_date),
+            false => own,
+        };
         let postings = match &shape[&at] {
             Shape::Absorbed => continue,
             Shape::Reversal(r) => {
@@ -556,7 +588,7 @@ pub fn plan(
             .join(" · ");
         let date = match &shape[&at] {
             Shape::Transfer(other) => half(at).booked_with(&half(*other)),
-            _ => l.book_date,
+            _ => l.purchased.unwrap_or(l.book_date),
         };
         plan.transactions.push((s.files[li], Transaction {
             date,
@@ -629,6 +661,12 @@ pub fn plan(
         .filter_map(|v| v.date.map(|date| (v.transaction_id, date)))
         .chain(plan.deferred.iter().map(|d| (d.transaction_id, d.date)))
         .collect();
+    let stamped: HashMap<i64, Vec<(NaiveDate, Decimal)>> = plan
+        .leg_splits
+        .iter()
+        .map(|s| (s.posting_id, s.parts.iter().map(|p| (p.posted, p.amount)).collect()))
+        .chain(plan.stamps.iter().map(|s| (s.posting_id, vec![(s.posted, s.amount)])))
+        .collect();
     // One record, one date: two banks may book it on different days (a
     // transfer near midnight). It keeps whichever of their dates every
     // statement it is on agrees with, or the earliest, and says so, when none
@@ -651,7 +689,7 @@ pub fn plan(
             redated.insert(transaction_id, day);
             let these =
                 statements.iter().zip(openings.iter().copied()).filter(|(s, _)| on(s, &dates));
-            chain(these, &plan.transactions, &plan.moved, &redated).is_empty()
+            chain(these, &plan.transactions, &plan.moved, &redated, &stamped).is_empty()
         });
         let day = kept.unwrap_or(earliest);
         if kept.is_none() {
@@ -668,9 +706,123 @@ pub fn plan(
         &plan.transactions,
         &plan.moved,
         &redated,
+        &stamped,
     );
     plan.openings = openings;
     plan
+}
+
+/// A statement over records the ledger already holds: each new line finds the
+/// records it stands for through the matcher, and its leg takes the line's
+/// date. Several lines one record covers (a purchase and its foreign fee,
+/// posted apart) split its leg. Lines it finds none for stay new. A record no
+/// line shows that could still be to post waits for the next statement, or the
+/// one missing after its period. An older one a period covers stays where it
+/// is and is returned: the statement passed it by, and the balance chain
+/// reports the gap.
+fn vouch(
+    st: &BankStatement,
+    existing: &[LedgerPosting],
+    refs: &[String],
+    line_status: &mut [Status],
+) -> (Vec<Stamp>, Vec<LegSplit>, Vec<i64>) {
+    let own = st.bank.ref_prefix();
+    let records: Vec<&LedgerPosting> = existing
+        .iter()
+        .filter(|p| {
+            !p.opening
+                && (p.unverified || p.posted.is_none())
+                && !p.refs.iter().any(|r| r.starts_with(own))
+        })
+        .collect();
+    let currency = st.currency.to_string();
+    let as_line = |li: usize| Record {
+        ref_id: li as i64,
+        dates: st.lines[li].dates(),
+        amount: st.lines[li].delta(),
+        currency: currency.clone(),
+    };
+    let as_record = |i: usize, p: &LedgerPosting| Record {
+        ref_id: i as i64,
+        dates: p.date.into(),
+        amount: p.amount,
+        currency: currency.clone(),
+    };
+    let new_lines = |status: &[Status]| -> Vec<usize> {
+        (0..st.lines.len()).filter(|&li| status[li] == Status::New).collect()
+    };
+    let lines = new_lines(line_status).into_iter().map(as_line).collect();
+    let pool = records.iter().enumerate().map(|(i, p)| as_record(i, p)).collect();
+    let outcome = Engine::with_default_modes().run(lines, pool);
+
+    let mut stamps = Vec::new();
+    let mut shown: HashSet<i64> = HashSet::new();
+    for m in &outcome.matches {
+        let li = m.target as usize;
+        line_status[li] = Status::Vouches;
+        for (n, c) in m.consumed.iter().enumerate() {
+            let p = records[c.source as usize];
+            shown.insert(p.id);
+            stamps.push(Stamp {
+                posting_id: p.id,
+                transaction_id: p.transaction_id,
+                posted: st.lines[li].book_date,
+                amount: p.amount,
+                vouched: Vouched::ByLine((n == 0).then(|| refs[li].clone())),
+            });
+        }
+    }
+
+    let left: Vec<usize> =
+        (0..records.len()).filter(|&i| !shown.contains(&records[i].id)).collect();
+    let targets = left.iter().map(|&i| as_record(i, records[i])).collect();
+    let pool = new_lines(line_status).into_iter().map(as_line).collect();
+    let mut leg_splits = Vec::new();
+    for m in Engine::with_default_modes().run(targets, pool).matches {
+        let p = records[m.target as usize];
+        shown.insert(p.id);
+        let mut parts = Vec::with_capacity(m.consumed.len());
+        for c in &m.consumed {
+            let li = c.source as usize;
+            line_status[li] = Status::Vouches;
+            parts.push(LegPart {
+                amount: c.amount,
+                posted: st.lines[li].book_date,
+                line: refs[li].clone(),
+            });
+        }
+        leg_splits.push(LegSplit { posting_id: p.id, transaction_id: p.transaction_id, parts });
+    }
+
+    // The days a line could still have come after: this import's last, and the
+    // last before any statement missing between its periods.
+    let breaks: Vec<NaiveDate> = st
+        .periods
+        .windows(2)
+        .filter(|pair| pair[0].end.succ_opt() != Some(pair[1].start))
+        .map(|pair| pair[0].end)
+        .chain([st.settled_through()])
+        .collect();
+    let mut passed = Vec::new();
+    for p in records.iter().filter(|p| !shown.contains(&p.id)) {
+        let waits_past = breaks
+            .iter()
+            .find(|&&end| p.date <= end && (end - p.date).num_days() < st.bank.posts_within_days());
+        match waits_past {
+            Some(end) => stamps.push(Stamp {
+                posting_id: p.id,
+                transaction_id: p.transaction_id,
+                posted: end.succ_opt().expect("a day after a statement"),
+                amount: p.amount,
+                vouched: Vouched::NotYet,
+            }),
+            None if st.periods.iter().any(|at| at.start <= p.date && p.date <= at.end) => {
+                passed.push(p.transaction_id);
+            }
+            None => {}
+        }
+    }
+    (stamps, leg_splits, passed)
 }
 
 /// Each statement's first day after the opening that the ledger plus this plan
@@ -685,6 +837,7 @@ fn chain<'a>(
     planned: &[(usize, Transaction)],
     moved: &[Moved],
     redated: &HashMap<i64, NaiveDate>,
+    stamped: &HashMap<i64, Vec<(NaiveDate, Decimal)>>,
 ) -> Vec<Gap> {
     let mut gaps = Vec::new();
     for (s, opening) in statements {
@@ -701,7 +854,10 @@ fn chain<'a>(
             .existing
             .iter()
             .filter(|p| !moved_off(p))
-            .map(|p| (on_day(p.transaction_id, p.posted.unwrap_or(p.date)), p.amount))
+            .flat_map(|p| match stamped.get(&p.id) {
+                Some(parts) => parts.clone(),
+                None => vec![(p.posted.unwrap_or(on_day(p.transaction_id, p.date)), p.amount)],
+            })
             .chain(
                 moved
                     .iter()
