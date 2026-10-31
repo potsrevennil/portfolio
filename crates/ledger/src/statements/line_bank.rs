@@ -8,9 +8,7 @@
 //! it is taken from the statement's folder (`raw/line-bank/活存-<account>/`).
 
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
-    process::Command,
     str::FromStr,
 };
 
@@ -19,7 +17,10 @@ use chrono::NaiveDate;
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 
-use super::bank::{Bank, BankStatement, Merged, Period, StatementLine};
+use super::{
+    bank::{self, folder_account, Bank, BankStatement, Merged, Period, StatementLine},
+    pdf,
+};
 
 /// The 交易說明 of a transfer the bank called back.
 const CANCEL: &str = "取消轉帳";
@@ -138,12 +139,10 @@ fn chain(rows: Vec<Row>, closing: Decimal) -> Result<(Decimal, Vec<StatementLine
                 row.description
             );
         }
-        let (withdrawal, deposit) = match row.amount.is_sign_negative() {
-            true => (-row.amount, Decimal::ZERO),
-            false => (Decimal::ZERO, row.amount),
-        };
+        let (withdrawal, deposit) = StatementLine::sides(row.amount);
         lines.push(StatementLine {
             book_date: row.date,
+            purchased: None,
             description: row.description,
             withdrawal,
             deposit,
@@ -265,36 +264,11 @@ impl FromStr for Document {
     }
 }
 
-fn pdf_text(path: &Path) -> Result<String> {
-    let out = Command::new("pdftotext")
-        .args(["-raw", "-enc", "UTF-8"])
-        .arg(path)
-        .arg("-")
-        .output()
-        .context("running pdftotext (poppler); it ships in the nix devShell")?;
-    ensure!(
-        out.status.success(),
-        "pdftotext {}: {}",
-        path.display(),
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
-    String::from_utf8(out.stdout).context("pdftotext output is not UTF-8")
-}
-
-/// `<kind>-<account>`, the statement's folder.
-fn folder_account(path: &Path) -> Result<(String, String)> {
-    let folder = path.parent().and_then(Path::file_name).and_then(|f| f.to_str());
-    let (kind, account) = folder
-        .and_then(|f| f.rsplit_once('-'))
-        .with_context(|| format!("{} is not in a <kind>-<account> folder", path.display()))?;
-    Ok((kind.to_string(), account.to_string()))
-}
-
 /// One statement per currency it covers, including a currency with no rows.
 pub fn load(path: impl AsRef<Path>) -> Result<Vec<BankStatement>> {
     let path = path.as_ref();
     let doc: Document =
-        pdf_text(path)?.parse().with_context(|| format!("reading {}", path.display()))?;
+        pdf::text(path)?.parse().with_context(|| format!("reading {}", path.display()))?;
     let (kind, account_no) = folder_account(path)?;
     ensure!(
         mask_fits(&doc.account_mask, &account_no),
@@ -336,44 +310,25 @@ pub fn load_merged(paths: &[PathBuf]) -> Result<Vec<Merged>> {
 }
 
 fn merge(statements: Vec<(BankStatement, PathBuf)>) -> Result<Vec<Merged>> {
-    let mut groups: BTreeMap<(String, Currency), Vec<(BankStatement, PathBuf)>> = BTreeMap::new();
-    for (s, path) in statements {
-        groups.entry((s.account_no.clone(), s.currency)).or_default().push((s, path));
-    }
-    let mut merged = Vec::new();
-    for ((account_no, currency), mut parts) in groups {
-        parts.sort_by_key(|(s, _)| s.periods[0].start);
-        let mut parts = parts.into_iter();
-        let (mut statement, first) = parts.next().expect("a group has a member");
-        let mut spans = vec![statement.lines.len()];
-        let mut paths = vec![first];
-        for (next, path) in parts {
-            let (before, after) = (statement.periods.last().expect("issued"), &next.periods[0]);
-            ensure!(
-                before.end.succ_opt() == Some(after.start),
-                "{account_no} {currency}: {} covers {}..{}, but the statement before ends {}; one \
-                 is missing or repeated",
-                path.display(),
-                after.start,
-                after.end,
-                before.end
-            );
-            ensure!(
-                after.opening == before.closing,
-                "{account_no} {currency}: {} opens at {}, but the month before closed at {}",
-                path.display(),
-                after.opening,
-                before.closing
-            );
-            spans.push(next.lines.len());
-            paths.push(path);
-            statement.period_end = next.period_end;
-            statement.periods.extend(next.periods);
-            statement.lines.extend(next.lines);
-        }
-        merged.push(Merged { statement, paths, spans });
-    }
-    Ok(merged)
+    bank::join_periods(statements, |account_no, path, before, after| {
+        ensure!(
+            before.end.succ_opt() == Some(after.start),
+            "{account_no}: {} covers {}..{}, but the statement before ends {}; one is missing or \
+             repeated",
+            path.display(),
+            after.start,
+            after.end,
+            before.end
+        );
+        ensure!(
+            after.opening == before.closing,
+            "{account_no}: {} opens at {}, but the month before closed at {}",
+            path.display(),
+            after.opening,
+            before.closing
+        );
+        Ok(())
+    })
 }
 
 #[cfg(test)]

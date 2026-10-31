@@ -43,7 +43,7 @@ fn parse_amount(s: &str, currency: Currency) -> Result<Decimal> {
     }
 }
 
-fn parse_slash_date(s: &str) -> Result<NaiveDate> {
+pub(super) fn parse_slash_date(s: &str) -> Result<NaiveDate> {
     let first = s.trim().lines().next().unwrap_or("").trim();
     NaiveDate::parse_from_str(first, "%Y/%m/%d")
         .with_context(|| format!("unparseable date {:?}", first))
@@ -68,7 +68,8 @@ fn clean(s: &str) -> String {
 /// zeros stripped from both sides since the export zero-pads inconsistently.
 pub fn info_names_account(info: &str, account_no: &str) -> bool {
     let want = account_no.trim_start_matches('0');
-    if want.is_empty() {
+    // A card's key is its folder's name, and a mask would fit any word.
+    if want.is_empty() || !want.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
     let mut token = String::new();
@@ -170,6 +171,7 @@ pub fn load(file_path: impl AsRef<Path>) -> Result<BankStatement> {
         let amount = |col: usize| parse_amount(rec.get(col).unwrap_or(""), currency);
 
         lines.push(StatementLine {
+            purchased: None,
             book_date: parse_slash_date(rec.get(cols.book_date).unwrap_or(f0))?,
             description: text(cols.description),
             withdrawal: amount(cols.withdrawal)?,
@@ -299,6 +301,7 @@ mod tests {
 
     fn line(day: u32, description: &str, withdrawal: Decimal, info: &str) -> StatementLine {
         StatementLine {
+            purchased: None,
             book_date: NaiveDate::from_ymd_opt(2026, 6, day).expect("valid date"),
             description: description.to_string(),
             withdrawal,

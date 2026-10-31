@@ -96,6 +96,29 @@ pub async fn load(conn: &mut SqliteConnection) -> Result<Vec<BalanceAssertion>> 
     rows.into_iter().map(BalanceAssertion::try_from).collect()
 }
 
+/// Moves a figure's start back to `start`, when a statement that doesn't print
+/// its own start turns out to follow another.
+pub async fn set_start(
+    conn: &mut SqliteConnection,
+    a: &BalanceAssertion,
+    start: chrono::NaiveDate,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE balance_assertion SET period_start = ? WHERE superseded_at IS NULL AND currency = \
+         ? AND source = ? AND period_end = ? AND account_id = (SELECT id FROM accounts WHERE path \
+         = ?)",
+    )
+    .bind(start.to_string())
+    .bind(a.currency.to_string())
+    .bind(a.source.to_string())
+    .bind(a.period_end.to_string())
+    .bind(&a.account)
+    .execute(conn)
+    .await
+    .with_context(|| format!("starting {a} on {start}"))?;
+    Ok(())
+}
+
 /// Marks a 天天記帳 closing no longer true: a person changed the records it
 /// summed. It stays on record; `load` leaves it out.
 pub async fn supersede(conn: &mut SqliteConnection, a: &BalanceAssertion) -> Result<()> {

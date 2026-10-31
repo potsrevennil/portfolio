@@ -12,5 +12,5 @@ mod model;
 mod page;
 
 pub use actions::{confirm_balance, coverage_due, load_coverage, save_schedule, CoverageActions};
-pub use model::{AccountRow, CadenceName, Coverage, Mark};
+pub use model::{AccountRow, CadenceName, Coverage, GapSpan, Mark};
 pub use page::{CoverageCount, CoveragePage, CoverageView};

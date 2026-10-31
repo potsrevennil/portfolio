@@ -14,7 +14,10 @@ use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use sqlx::SqliteConnection;
 
-use crate::import::{ensure_account, Posting};
+use crate::{
+    events::{self, Change, EventKind},
+    import::{ensure_account, Posting},
+};
 
 pub async fn create(
     db: &mut SqliteConnection,
@@ -34,7 +37,10 @@ pub async fn create(
 /// One posting already on an account.
 #[derive(Clone, Debug)]
 pub struct LedgerPosting {
+    pub id: i64,
     pub date: NaiveDate,
+    /// The day a statement counted it, where that is not `date`.
+    pub posted: Option<NaiveDate>,
     pub amount: Decimal,
     /// Its transaction's ref, then any further ones it stands for.
     pub refs: Vec<String>,
@@ -56,7 +62,9 @@ fn split(concatenated: Option<&str>) -> Vec<String> {
 
 #[derive(sqlx::FromRow)]
 struct Row {
+    id: i64,
     date: String,
+    posted_date: Option<String>,
     amount: String,
     external_ref: Option<String>,
     aliases: Option<String>,
@@ -71,7 +79,9 @@ impl TryFrom<Row> for LedgerPosting {
 
     fn try_from(r: Row) -> Result<Self> {
         Ok(LedgerPosting {
+            id: r.id,
             date: r.date.parse().with_context(|| format!("transaction date {:?}", r.date))?,
+            posted: r.posted_date.as_deref().map(str::parse).transpose().context("posted date")?,
             amount: r.amount.parse().with_context(|| format!("posting amount {:?}", r.amount))?,
             refs: r.external_ref.into_iter().chain(split(r.aliases.as_deref())).collect(),
             other_accounts: split(r.others.as_deref()),
@@ -82,15 +92,16 @@ impl TryFrom<Row> for LedgerPosting {
     }
 }
 
-/// Every posting on exactly `path` in `currency`, oldest first — the subtree
-/// is not included, since only this account's own lines chain to a statement.
+/// Every posting on exactly `path` in `currency`, in the order a statement
+/// counts them — the subtree is not included, since only this account's own
+/// lines chain to a statement.
 pub async fn postings(
     db: &mut SqliteConnection,
     path: &str,
     currency: Currency,
 ) -> Result<Vec<LedgerPosting>> {
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT t.date, p.amount, t.external_ref, t.id AS transaction_id,
+        "SELECT p.id, t.date, p.posted_date, p.amount, t.external_ref, t.id AS transaction_id,
                 (SELECT group_concat(r.external_ref, char(31)) FROM transaction_refs r
                  WHERE r.transaction_id = t.id) AS aliases,
                 (SELECT group_concat(b.path, char(31)) FROM postings q
@@ -103,7 +114,7 @@ pub async fn postings(
          JOIN accounts a ON a.id = p.account_id
          JOIN transactions t ON t.id = p.transaction_id
          WHERE a.path = ? AND p.currency = ?
-         ORDER BY t.date, t.id",
+         ORDER BY coalesce(p.posted_date, t.date), t.id",
     )
     .bind(OPENING_EQUITY)
     .bind(UNVERIFIED_TAG)
@@ -205,6 +216,113 @@ pub async fn move_leg(
     .await
     .with_context(|| format!("moving transaction {transaction_id} from {from} to {to}"))?;
     Ok(())
+}
+
+/// Adds a leg's [`UNVERIFIED_TAG`], or takes it off.
+pub(crate) async fn tag_unverified(
+    db: &mut SqliteConnection,
+    posting_id: i64,
+    on: bool,
+) -> Result<()> {
+    let sql = match on {
+        true => {
+            "UPDATE postings SET tags = CASE WHEN instr(',' || coalesce(tags, '') || ',', ',' || \
+             ?1 || ',') > 0 THEN tags ELSE coalesce(tags || ',', '') || ?1 END WHERE id = ?2"
+        }
+        false => {
+            "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ?1 || ',', \
+             ','), ','), '') WHERE id = ?2"
+        }
+    };
+    sqlx::query(sql).bind(UNVERIFIED_TAG).bind(posting_id).execute(db).await?;
+    Ok(())
+}
+
+/// What a statement says of a leg already on the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stamp {
+    pub posting_id: i64,
+    pub transaction_id: i64,
+    /// The day the statement counts it.
+    pub posted: NaiveDate,
+    pub amount: Decimal,
+    pub vouched: Vouched,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Vouched {
+    /// A line shows it. The line's ref goes on the first record it stands for.
+    ByLine(Option<String>),
+    /// No line yet: it is still to post, after the statement, and waits
+    /// tagged [`UNVERIFIED_TAG`] for the next one.
+    NotYet,
+}
+
+/// Records what a statement said of one leg. Only that leg: the transaction
+/// stays on its own date, and any other leg stays for its own statement.
+pub async fn stamp(db: &mut SqliteConnection, s: &Stamp) -> Result<()> {
+    sqlx::query("UPDATE postings SET posted_date = ? WHERE id = ?")
+        .bind(s.posted.to_string())
+        .bind(s.posting_id)
+        .execute(&mut *db)
+        .await
+        .with_context(|| format!("stamping posting {}", s.posting_id))?;
+    tag_unverified(db, s.posting_id, s.vouched == Vouched::NotYet).await?;
+    if let Vouched::ByLine(Some(line)) = &s.vouched {
+        add_ref(db, s.transaction_id, line).await?;
+    }
+    Ok(())
+}
+
+/// One record's leg, and the statement lines that add up to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegSplit {
+    pub posting_id: i64,
+    pub transaction_id: i64,
+    pub parts: Vec<LegPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegPart {
+    pub amount: Decimal,
+    pub posted: NaiveDate,
+    /// The line's ref.
+    pub line: String,
+}
+
+/// Divides a leg between the lines that add up to it, each on the day it
+/// posted: a leg has one day, and they posted apart. The transaction keeps
+/// its id, date and category, and the change goes in its event log.
+pub async fn split_leg(db: &mut SqliteConnection, s: &LegSplit) -> Result<()> {
+    let before = events::snapshot(db, s.transaction_id).await?;
+    let (first, rest) = s.parts.split_first().context("a leg split into nothing")?;
+    sqlx::query("UPDATE postings SET amount = ?, posted_date = ? WHERE id = ?")
+        .bind(first.amount.to_string())
+        .bind(first.posted.to_string())
+        .bind(s.posting_id)
+        .execute(&mut *db)
+        .await
+        .with_context(|| format!("splitting posting {}", s.posting_id))?;
+    tag_unverified(db, s.posting_id, false).await?;
+    for part in rest {
+        sqlx::query(
+            "INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin, \
+             posted_date) SELECT transaction_id, account_id, ?, currency, tags, origin, ? FROM \
+             postings WHERE id = ?",
+        )
+        .bind(part.amount.to_string())
+        .bind(part.posted.to_string())
+        .bind(s.posting_id)
+        .execute(&mut *db)
+        .await
+        .with_context(|| format!("splitting posting {}", s.posting_id))?;
+    }
+    for part in &s.parts {
+        add_ref(db, s.transaction_id, &part.line).await?;
+    }
+    let after = events::snapshot(db, s.transaction_id).await?;
+    let change = Change { before: Some(before), after };
+    events::record(db, s.transaction_id, EventKind::Split, &change).await
 }
 
 pub async fn redate(db: &mut SqliteConnection, transaction_id: i64, date: NaiveDate) -> Result<()> {

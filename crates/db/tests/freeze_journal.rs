@@ -10,9 +10,10 @@ use chrono::NaiveDate;
 use db::{
     self,
     assertions::{self, AssertionSource, BalanceAssertion},
+    import::ensure_account,
     load,
 };
-use ledger::{args::Args as BuildArgs, freeze, journal, model};
+use ledger::{args::Args as BuildArgs, freeze, journal, labels::Labels, model};
 use ledger_types::currency::Currency;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -616,6 +617,57 @@ async fn the_hledger_export_passes_hledger_check_and_catches_drift() -> anyhow::
     let out = hledger_check(&path);
     assert!(!out.status.success(), "hledger accepted a wrong balance assertion");
     assert!(String::from_utf8_lossy(&out.stderr).contains("Balance assertion failed"));
+    Ok(())
+}
+
+/// hledger keeps a leg's own date, so it checks a figure as the gate does.
+#[tokio::test]
+async fn the_hledger_export_checks_a_figure_by_when_a_leg_posted() -> anyhow::Result<()> {
+    let (dir, freeze_args, load_args) = fixture();
+    freeze::run(&freeze_args)?;
+    load::run(&load_args).await?;
+    let pool = db::init_db(&load_args.database_url).await?;
+    let late = NaiveDate::from_ymd_opt(2024, 12, 30).unwrap();
+    let day = |d: u32| NaiveDate::from_ymd_opt(2025, 1, d).unwrap();
+    let mut conn = pool.acquire().await?;
+    let id = sqlx::query("INSERT INTO transactions (date, source) VALUES (?, 'manual')")
+        .bind(late.to_string())
+        .execute(&mut *conn)
+        .await?
+        .last_insert_rowid();
+    ensure_account(&mut conn, &Labels::default(), "Liabilities:Card").await?;
+    ensure_account(&mut conn, &Labels::default(), "Expenses:Food").await?;
+    for (account, amount, posted) in
+        [("Liabilities:Card", "-50", Some(day(2).to_string())), ("Expenses:Food", "50", None)]
+    {
+        sqlx::query(
+            "INSERT INTO postings (transaction_id, account_id, amount, currency, posted_date)
+             SELECT ?, id, ?, 'TWD', ? FROM accounts WHERE path = ?",
+        )
+        .bind(id)
+        .bind(amount)
+        .bind(posted)
+        .bind(account)
+        .execute(&mut *conn)
+        .await?;
+    }
+    let figure = |period_end, closing| BalanceAssertion {
+        source: AssertionSource::Statement,
+        account: "Liabilities:Card".into(),
+        currency: Currency::TWD,
+        period_start: None,
+        opening: None,
+        period_end,
+        closing,
+    };
+    assertions::insert(&mut conn, &figure(day(1), dec!(0))).await?;
+    assertions::insert(&mut conn, &figure(day(2), dec!(-50))).await?;
+
+    let exported = db::hledger::export(&mut conn).await?;
+    let path = dir.path().join("posted.journal");
+    std::fs::write(&path, &exported)?;
+    let out = hledger_check(&path);
+    assert!(out.status.success(), "{}\n{exported}", String::from_utf8_lossy(&out.stderr));
     Ok(())
 }
 

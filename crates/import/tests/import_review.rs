@@ -319,6 +319,47 @@ async fn a_record_pairs_with_the_one_line_already_categorised() -> Result<()> {
     Ok(())
 }
 
+/// A statement's date stands over what is entered by hand: a hand edit, and a
+/// 天天記帳 record that pairs with the line and says another day.
+#[tokio::test]
+async fn a_date_a_statement_confirmed_outlasts_manual_entries() -> Result<()> {
+    let f = Fixture::new().await?;
+    let savings: &[Line] = &[OPENING[0], ("2026/01/20", "消費", "200", "", "700", "", "")];
+    f.import_bank(&[(SAVINGS, "2026/02/01", savings)]).await?;
+    let line = f.line("Assets:Cathay:Savings", "2026-01-20").await?;
+    let date_of_line = || async {
+        sqlx::query_scalar::<_, String>("SELECT date FROM transactions WHERE id = ?")
+            .bind(line)
+            .fetch_one(&f.pool)
+            .await
+    };
+
+    let legs: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT p.id, a.path, p.amount FROM postings p JOIN accounts a ON a.id = p.account_id
+         WHERE p.transaction_id = ?",
+    )
+    .bind(line)
+    .fetch_all(&f.pool)
+    .await?;
+    let legs = legs
+        .into_iter()
+        .map(|(id, account, amount)| LegEdit {
+            posting_id: Some(id),
+            account,
+            amount: amount.parse().unwrap(),
+            currency: "TWD".parse().unwrap(),
+        })
+        .collect();
+    let edit = Edit { narration: Some("午餐".into()), legs, confirm: true };
+    review::edit(&f.pool, &StatementAccounts::from(&f.chart), line, &edit).await?;
+    assert_eq!(date_of_line().await?, "2026-01-20");
+
+    let report = f.import_tiantian(&[memoed("20260118", 200, "國泰", "U1", "午餐")]).await?;
+    assert_eq!(report.counts.paired, 1, "{report}");
+    assert_eq!(date_of_line().await?, "2026-01-20");
+    Ok(())
+}
+
 /// A transfer entered by hand that 活存 books just before midnight and 投資
 /// just after: it stays one transaction, on the day both statements agree
 /// with. Both balances prove it, so it is confirmed.

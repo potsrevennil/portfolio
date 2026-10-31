@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
+use ledger::matching::DateRange;
 use rust_decimal::Decimal;
 
 use super::StatementLineMode;
@@ -9,7 +9,8 @@ use super::StatementLineMode;
 pub struct Record {
     /// Caller's handle, echoed back in [`Match`]; never interpreted here.
     pub ref_id: i64,
-    pub date: NaiveDate,
+    /// A card line's purchase through its posting; otherwise one day.
+    pub dates: DateRange,
     pub amount: Decimal,
     pub currency: String,
 }
@@ -176,7 +177,12 @@ mod tests {
     use super::*;
 
     fn rec(ref_id: i64, date: &str, amount: Decimal) -> Record {
-        Record { ref_id, date: date.parse().unwrap(), amount, currency: "TWD".into() }
+        Record {
+            ref_id,
+            dates: date.parse::<chrono::NaiveDate>().unwrap().into(),
+            amount,
+            currency: "TWD".into(),
+        }
     }
 
     #[test]

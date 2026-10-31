@@ -2,13 +2,18 @@
 //! the ledger, insert, record the statements' figures, and report what does
 //! not agree. Only a file it cannot use stops it.
 
-use std::{collections::BTreeMap, fmt, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    path::PathBuf,
+};
 
 use anyhow::{bail, Context, Result};
 use db::{
-    assertions, check,
+    assertions::{self, AssertionSource},
+    check,
     import::{ensure_account, insert_deduped, InsertOutcome, Origin, Transaction},
-    import_batch,
+    import_batch::{self, Vouched},
     import_run::{self, Run, Suggestion},
     SqliteConnection, SqlitePool,
 };
@@ -17,7 +22,10 @@ use ledger::{
     labels::Labels,
     model::{Source, OPENING_EQUITY},
     names::statement_account,
-    statements::bank::{Bank, Merged},
+    statements::{
+        bank::{Bank, Merged},
+        card,
+    },
 };
 
 use super::plan::{self, Candidate, Gap, Plan};
@@ -146,8 +154,18 @@ pub async fn import(
         statements.push(plan::Statement { account, statement, files, existing });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
-    let Plan { transactions, mut counts, openings, verified, deferred, moved, suggestions, gaps } =
-        plan::plan(chart, &statements, &known, candidates);
+    let Plan {
+        transactions,
+        mut counts,
+        openings,
+        verified,
+        deferred,
+        moved,
+        suggestions,
+        gaps,
+        stamps,
+        leg_splits,
+    } = plan::plan(chart, &statements, &known, candidates);
     let labels = Labels::from(chart);
     let mut run = Run::default();
     for (id, suggestion) in suggestions {
@@ -155,6 +173,17 @@ pub async fn import(
     }
     for m in &moved {
         import_batch::move_leg(db, &labels, m.transaction_id, &m.from, &m.to, m.amount).await?;
+    }
+    for s in &stamps {
+        import_batch::stamp(db, s).await?;
+        match s.vouched {
+            Vouched::ByLine(_) => run.touched(s.transaction_id),
+            Vouched::NotYet => run.suggest(s.transaction_id, Suggestion::Waiting),
+        }
+    }
+    for s in &leg_splits {
+        import_batch::split_leg(db, s).await?;
+        run.touched(s.transaction_id);
     }
     for v in &verified {
         import_batch::verify(db, v).await?;
@@ -234,6 +263,16 @@ pub async fn import(
     // disagreeing is reported, and the ledger is held to the one recorded.
     let recorded = assertions::load(db).await?;
     let mut stale = Vec::new();
+    let vouched: BTreeSet<&str> = statements.iter().map(|s| s.account.as_str()).collect();
+    // Its own statements now vouch for what the app's closing summed, and in
+    // posting dates, which that closing never was.
+    if bank.vouches_for_records() {
+        for a in &recorded {
+            if a.source == AssertionSource::Tiantian && vouched.contains(a.account.as_str()) {
+                assertions::supersede(db, a).await?;
+            }
+        }
+    }
     let mut figures = Vec::new();
     for (s, opening) in statements.iter().zip(openings) {
         figures.extend(s.statement.assertions(&s.account, opening));
@@ -259,6 +298,13 @@ pub async fn import(
                 ensure_account(db, &labels, &assertion.account).await?;
                 assertions::insert(db, &assertion).await?
             }
+        }
+    }
+    if bank.is_card() {
+        let mut held = assertions::load(db).await?;
+        held.retain(|a| vouched.contains(a.account.as_str()));
+        for (a, start) in card::late_starts(&held) {
+            assertions::set_start(db, a, start).await?;
         }
     }
     let check = check::check(db).await?;

@@ -22,6 +22,7 @@ use crate::{
     check::{self, Figure, Mismatch},
     events::{self, Change, EventKind},
     import::Origin,
+    import_batch::tag_unverified,
     query::AccountType,
 };
 
@@ -229,9 +230,10 @@ pub async fn edit(
         let target = account(&mut db, &leg.account).await?;
         match leg.posting_id {
             Some(pid) => {
+                // The day a statement counted it means nothing on another account.
                 sqlx::query(
-                    "UPDATE postings SET account_id = ?, amount = ?, currency = ?, origin = ? \
-                     WHERE id = ?",
+                    "UPDATE postings SET posted_date = CASE account_id WHEN ?1 THEN posted_date \
+                     END, account_id = ?1, amount = ?2, currency = ?3, origin = ?4 WHERE id = ?5",
                 )
                 .bind(target.id)
                 .bind(leg.amount.to_string())
@@ -245,9 +247,11 @@ pub async fn edit(
                 }
             }
             None => {
+                // A part of a leg already on this account posted when it did.
                 let pid = sqlx::query(
-                    "INSERT INTO postings (transaction_id, account_id, amount, currency, origin) \
-                     VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO postings (transaction_id, account_id, amount, currency, origin, \
+                     posted_date) VALUES (?1, ?2, ?3, ?4, ?5, (SELECT max(posted_date) FROM \
+                     postings WHERE transaction_id = ?1 AND account_id = ?2))",
                 )
                 .bind(id)
                 .bind(target.id)
@@ -535,21 +539,6 @@ async fn awaits_statement(
 ) -> Result<bool> {
     let (on_statements, through) = statement_account(db, statements, path).await?;
     Ok(on_statements && through.is_none_or(|through| date > through))
-}
-
-async fn tag_unverified(db: &mut SqliteConnection, posting_id: i64, on: bool) -> Result<()> {
-    let sql = match on {
-        true => {
-            "UPDATE postings SET tags = CASE WHEN instr(',' || coalesce(tags, '') || ',', ',' || \
-             ?1 || ',') > 0 THEN tags ELSE coalesce(tags || ',', '') || ?1 END WHERE id = ?2"
-        }
-        false => {
-            "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ?1 || ',', \
-             ','), ','), '') WHERE id = ?2"
-        }
-    };
-    sqlx::query(sql).bind(UNVERIFIED_TAG).bind(posting_id).execute(db).await?;
-    Ok(())
 }
 
 /// Re-marks 未對帳 after an edit. A leg left on its account keeps its mark,

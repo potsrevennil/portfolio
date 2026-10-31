@@ -31,6 +31,8 @@ clearing               = "Assets:Bank:Main:Transfer-Clearing" # internal transfe
 "210987654321" = "Assets:Bank:Main:Investment"
 "345678901234" = "Assets:Bank:Main:FX"         # foreign-currency account, one per currency
 "456789012345" = "Assets:Bank:LineBank"        # LINE Bank; its statements' folder names it
+"567890123456" = "Assets:Bank:Taishin"         # 台新; its statements' folder names it
+"examplecard"  = "Liabilities:Card:Example"    # a card, by its statements' folder, raw/<bank>-card/examplecard/
 
 # Where a statement line goes when no app record explains it. The statement
 # alone tells us only the direction, so that is all the default can use.
