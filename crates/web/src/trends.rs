@@ -53,7 +53,7 @@ pub async fn load(
     let changes: Vec<Valued> = std::iter::once(&Valued::default())
         .chain(&nets)
         .zip(&nets)
-        .map(|(before, now)| now - before)
+        .map(|(before, now)| now.since(before))
         .collect();
     let series = |name: &str, figures: &[Valued]| Series {
         name: name.to_string(),
@@ -134,11 +134,7 @@ pub async fn load(
         .rposition(|f| f.accounts.keys().any(day_to_day))
         .unwrap_or(flows.len().saturating_sub(1));
     let month = flows[newest].start.month();
-    let tile = |label: String, figure: &Valued| Tile {
-        label,
-        figure: converted(figure, base),
-        beside: None,
-    };
+    let tile = |label: String, figure: &Valued| Tile { label, figure: converted(figure, base) };
     let this_year: Valued = flows
         .iter()
         .zip(&invested)
@@ -148,10 +144,7 @@ pub async fn load(
     let headline = Headline {
         as_of: today.to_string(),
         tiles: [
-            Some(Tile {
-                beside: Some(("較上月".into(), converted(&last(&changes), base))),
-                ..tile("淨資產".into(), &last(&nets))
-            }),
+            Some(tile("淨資產".into(), &last(&nets))),
             Some(tile(format!("{month} 月收入"), &income[newest])),
             Some(tile(format!("{month} 月支出"), &expense[newest])),
             Some(tile(format!("{month} 月結餘"), &left[newest])),

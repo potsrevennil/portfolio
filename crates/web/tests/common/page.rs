@@ -107,7 +107,7 @@ pub fn printed(series: &Series) -> Vec<String> {
         .iter()
         .map(|f| match f.is_complete() {
             true => f.money.to_string(),
-            false => format!("未完整{}", f.unpriced),
+            false => format!("算袂出來{}", f.unpriced),
         })
         .collect()
 }

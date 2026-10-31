@@ -212,18 +212,18 @@ async fn every_row_is_one_figure_in_twd() {
     let page = visible(&shown(&render(&pool, &market).await));
     // Net worth heads the page, above the sections it sums; the tree follows.
     let (net, text) = net_worth_and_tree(&page);
-    assert_eq!(net, "淨資產 未完整 （未換算：5,000.00 JPY）");
+    assert_eq!(net, "淨資產 算袂出來 （欠匯率：5,000.00 JPY）");
     // 資產: 912.34 cash + 7,000 savings + 3,000 (100 USD) + 100 splits; JPY has
     // no rate, so it is named rather than taken at 1:1, and the at-cost holding
     // and the 2025 deposit are left out.
     let assets = &text[position(text, "資產")..position(text, "銀行")];
-    assert_eq!(assets.trim(), "資產 未完整 （未換算：5,000.00 JPY）");
+    assert_eq!(assets.trim(), "資產 算袂出來 （欠匯率：5,000.00 JPY）");
     // A leaf holding foreign money keeps its own balance, the statement's figure.
     let fx = &text[position(text, "外幣")..position(text, "活存")];
-    assert_eq!(fx.trim(), "外幣 未完整 （未換算：5,000.00 JPY） 5,000.00 JPY · 90.00 USD");
+    assert_eq!(fx.trim(), "外幣 算袂出來 （欠匯率：5,000.00 JPY） 5,000.00 JPY · 90.00 USD");
     // A group's own foreign money shows too, apart from its sub-accounts'.
     let bank = &text[position(text, "銀行")..position(text, "外幣")];
-    assert_eq!(bank.trim(), "銀行 未完整 （未換算：5,000.00 JPY） 10.00 USD");
+    assert_eq!(bank.trim(), "銀行 算袂出來 （欠匯率：5,000.00 JPY） 10.00 USD");
     let savings = &text[position(text, "活存")..position(text, "現金")];
     assert_eq!(savings.trim(), "活存 7,000 TWD");
     // TWD is quoted whole, as Fava prints it; the cents are still in the ledger.
@@ -261,7 +261,7 @@ async fn with_every_rate_the_totals_are_whole() {
     assert_eq!(text[..position(text, "銀行")].trim(), "資產 12,012 TWD");
     let bank = &text[position(text, "銀行")..position(text, "外幣")];
     assert_eq!(bank.trim(), "銀行 11,000 TWD 10.00 USD");
-    assert!(!page.contains("未完整"), "{page}");
+    assert!(!page.contains("算袂出來"), "{page}");
 }
 
 /// With the cache empty, every total holding foreign money says so instead
@@ -272,10 +272,10 @@ async fn with_no_rates_no_total_shows_a_figure() {
     let (empty, _empty_dir) = common::market::temp().await;
     let page = visible(&render(&pool, &empty).await);
     let (net, text) = net_worth_and_tree(&page);
-    assert_eq!(net, "淨資產 未完整 （未換算：5,000.00 JPY、100.00 USD）");
+    assert_eq!(net, "淨資產 算袂出來 （欠匯率：5,000.00 JPY、100.00 USD）");
     assert_eq!(
         text[..position(text, "銀行")].trim(),
-        "資產 未完整 （未換算：5,000.00 JPY、100.00 USD）"
+        "資產 算袂出來 （欠匯率：5,000.00 JPY、100.00 USD）"
     );
     // A TWD-only total still has its figure.
     let savings = &text[position(text, "活存")..position(text, "現金")];

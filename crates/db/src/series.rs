@@ -46,6 +46,16 @@ impl Valued {
 
     /// Every amount had a rate.
     pub fn is_complete(&self) -> bool { self.unpriced.is_empty() }
+
+    /// How far this moved from the same sum on an earlier day. An amount with
+    /// no rate on either day has an unknown worth, moved or not, so it stays
+    /// named: subtracted, an amount held throughout would cancel to a false
+    /// zero.
+    pub fn since(&self, before: &Valued) -> Valued {
+        let mut unpriced = before.unpriced.clone();
+        unpriced.extend(&self.unpriced);
+        Valued { value: self.value - before.value, unpriced }
+    }
 }
 
 impl AddAssign<&Valued> for Valued {

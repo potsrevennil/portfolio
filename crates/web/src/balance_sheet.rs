@@ -188,14 +188,14 @@ fn Figures(
     }
 }
 
-/// A converted sum, or 未完整 when an amount in it has no rate: the sum of the
-/// rest must never pass for the total. The note names what was left out.
+/// A converted sum, or 算袂出來 when an amount in it has no rate: the sum of
+/// the rest must never pass for the total. The note names what was left out.
 #[component]
 pub fn TotalText(total: Converted) -> impl IntoView {
     match total.is_complete() {
         true => view! { <MoneyText money=total.money /> }.into_any(),
         false => view! {
-            <span class="money incomplete">"未完整"</span>
+            <span class="money incomplete">"算袂出來"</span>
             <UnpricedNote unpriced=total.unpriced />
         }
         .into_any(),
