@@ -21,6 +21,10 @@ fn chart() -> Chart {
 
 fn day(d: u32) -> NaiveDate { NaiveDate::from_ymd_opt(2026, 6, d).expect("date") }
 
+fn stamps(p: &Plan) -> Vec<(i64, NaiveDate, Vouched)> {
+    p.stamps.iter().map(|s| (s.transaction_id, s.posted, s.vouched.clone())).collect()
+}
+
 fn statement(lines: &[(u32, Decimal, Decimal)]) -> BankStatement {
     statement_of("111111111111", lines)
 }
@@ -140,18 +144,13 @@ fn with(st: &BankStatement, existing: Vec<LedgerPosting>) -> Plan {
 }
 
 /// A line verifies the one unverified record of its amount near it: the
-/// record keeps its row and takes the line's date and ref; nothing is
-/// inserted for the line.
+/// record keeps its row and its date, its leg counts on the line's date, and
+/// the line's ref goes on it; nothing is inserted for the line.
 #[test]
 fn a_line_verifies_its_one_unverified_record_in_place() {
     let st = statement(&[(10, dec!(-20), dec!(80))]);
     let p = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-20), 42)]);
-    assert_eq!(p.verified, vec![Verification {
-        transaction_id: 42,
-        date: Some(day(10)),
-        statement_ref: st.dedup_refs()[0].clone(),
-        unchecked: Vec::new(),
-    }]);
+    assert_eq!(stamps(&p), [(42, day(10), Vouched::ByLine(Some(st.dedup_refs()[0].clone())))]);
     assert_eq!((p.counts.verified, p.transactions.len()), (1, 0));
 }
 
@@ -166,7 +165,7 @@ fn an_ambiguous_pairing_takes_the_nearest() {
         unverified(10, dec!(-150), 42),
     ];
     let p = with(&st, existing);
-    let verified: Vec<i64> = p.verified.iter().map(|v| v.transaction_id).collect();
+    let verified: Vec<i64> = p.stamps.iter().map(|s| s.transaction_id).collect();
     assert_eq!(verified, [42, 41]);
     assert_eq!(p.suggestions, [(42, Suggestion::PickedNearest), (41, Suggestion::PickedNearest)]);
     assert!(p.gaps.is_empty());
@@ -182,8 +181,8 @@ fn the_record_a_line_left_waits_for_the_next_statement() {
         unverified(5, dec!(-150), 42),
     ];
     let p = with(&st, existing);
-    assert_eq!(p.verified[0].transaction_id, 41);
-    assert_eq!(p.deferred[0].transaction_id, 42);
+    assert_eq!(stamps(&p)[0].0, 41);
+    assert_eq!(stamps(&p)[1], (42, day(11), Vouched::NotYet));
 }
 
 /// Uncategorised lines say how their other leg was chosen.
@@ -210,12 +209,13 @@ fn an_unverified_record_of_another_amount_is_not_on_the_statement() {
 }
 
 /// A spend recorded in the statement's last days that the bank books after
-/// it: the record waits, unverified, on the day after the statement.
+/// it: the record waits, unverified, its leg counting from the day after the
+/// statement.
 #[test]
 fn a_record_from_the_last_days_waits_for_the_next_statement() {
     let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
     let p = with(&st, vec![held(1, dec!(100), true), unverified(9, dec!(-30), 42)]);
-    assert_eq!(p.deferred, vec![Deferred { transaction_id: 42, date: day(11) }]);
+    assert_eq!(stamps(&p), [(42, day(11), Vouched::NotYet)]);
     assert_eq!((p.counts.deferred, p.counts.new, p.counts.verified), (1, 2, 0));
 }
 
@@ -235,13 +235,13 @@ fn a_record_its_statement_passes_by_moves_to_the_sibling_that_shows_it() {
     ];
     let p = plan(&chart(), &statements, &HashSet::new(), &[]);
     assert_eq!(p.moved, [Moved {
+        posting_id: p.stamps[0].posting_id,
         transaction_id: 42,
         from: "Assets:Bank:Savings".into(),
         to: OTHER.into(),
         amount: dec!(-30),
-        date: day(2),
     }]);
-    assert_eq!((p.verified[0].transaction_id, p.verified[0].date), (42, Some(day(3))));
+    assert_eq!((p.stamps[0].transaction_id, p.stamps[0].posted), (42, day(3)));
     assert_eq!((p.counts.moved, p.counts.new), (1, 2));
 }
 
@@ -268,43 +268,33 @@ fn a_record_two_sibling_lines_fit_names_the_sibling() {
 fn two_dated(other: &[(u32, Decimal, Decimal)]) -> Plan {
     let savings = statement(&[(10, dec!(-20), dec!(80))]);
     let other = statement_of("222222222222", other);
-    let transfer = |amount, other_account: &str| LedgerPosting {
+    let transfer = |id, amount, other_account: &str| LedgerPosting {
+        id,
         other_accounts: vec![other_account.to_string()],
         ..unverified(9, amount, 42)
     };
     let statements = [
         on("Assets:Bank:Savings", &savings, vec![
             held(1, dec!(100), true),
-            transfer(dec!(-20), OTHER),
+            transfer(90, dec!(-20), OTHER),
         ]),
         on(OTHER, &other, vec![
             held(1, dec!(100), true),
-            transfer(dec!(20), "Assets:Bank:Savings"),
+            transfer(91, dec!(20), "Assets:Bank:Savings"),
         ]),
     ];
     plan(&chart(), &statements, &HashSet::new(), &[])
 }
 
-/// A transfer the banks booked a day apart (near midnight) stays one record,
-/// on the day both statements' balances agree with.
+/// A transfer the banks booked a day apart (near midnight) is one record, and
+/// each leg counts on its own bank's day.
 #[test]
-fn a_transfer_two_banks_date_apart_keeps_one_date() {
+fn a_transfer_two_banks_date_apart_counts_each_leg_on_its_own_day() {
     let p = two_dated(&[(11, dec!(20), dec!(120))]);
-    let dates: Vec<_> = p.verified.iter().map(|v| (v.transaction_id, v.date)).collect();
-    assert_eq!(dates, [(42, Some(day(10))), (42, Some(day(10)))]);
-}
-
-/// When neither day keeps both statements' balances, it still stays one
-/// record, on the earlier day.
-#[test]
-fn a_transfer_no_one_date_balances_stays_one_on_the_earliest() {
-    let p = two_dated(&[(10, dec!(5), dec!(105)), (11, dec!(20), dec!(125))]);
-    let dates: Vec<_> = p.verified.iter().map(|v| v.date).collect();
-    assert_eq!(dates, [Some(day(10)), Some(day(10))]);
-    assert_eq!(p.suggestions, [(42, Suggestion::OneDate {
-        kept: day(10),
-        dates: vec![("Assets:Bank:Savings".into(), day(10)), (OTHER.into(), day(11))],
-    })]);
+    let days: Vec<_> = p.stamps.iter().map(|s| (s.transaction_id, s.posted)).collect();
+    assert_eq!(days, [(42, day(10)), (42, day(11))]);
+    assert!(p.stamps.iter().all(|s| s.unchecked.is_empty()));
+    assert!(p.gaps.is_empty(), "{:?}", p.gaps);
 }
 
 /// A transfer is one record with a leg on each account, and a line vouches
@@ -318,35 +308,19 @@ fn a_line_leaves_the_other_banks_leg_of_a_transfer_unverified() {
         ..unverified(9, dec!(-20), 42)
     };
     let p = with(&st, vec![held(1, dec!(100), true), record]);
-    assert_eq!(p.verified[0].unchecked, [OTHER]);
+    assert_eq!(p.stamps[0].unchecked, [OTHER]);
 }
 
-/// Moving a record moves its every leg, so one the other bank's statement
-/// will be checked against stays where it is, and says why.
+/// Only the leg waits: the other bank's statement still counts its own leg on
+/// its own day.
 #[test]
-fn a_transfer_the_statement_does_not_show_stays_rather_than_moves() {
+fn a_transfer_the_statement_does_not_show_waits_on_this_leg_only() {
     let st = statement(&[(3, dec!(5), dec!(105)), (10, dec!(-20), dec!(85))]);
     let record =
         LedgerPosting { other_accounts: vec![OTHER.to_string()], ..unverified(9, dec!(-30), 42) };
     let p = with(&st, vec![held(1, dec!(100), true), record]);
-    assert_eq!(p.suggestions, [(42, Suggestion::SharedDeferral { other: OTHER.into() })]);
-    assert!(p.deferred.is_empty());
-}
-
-/// A record another bank's line already verified keeps that bank's date: the
-/// two may have booked it on different days, and moving it would move the leg
-/// that bank's statement is checked against.
-#[test]
-fn a_record_another_bank_already_verified_keeps_its_date() {
-    let st = statement(&[(10, dec!(-20), dec!(80))]);
-    let record = LedgerPosting {
-        refs: vec!["tiantian:1".into(), "cathay-bank:20260609:1".into()],
-        other_accounts: vec![OTHER.to_string()],
-        ..unverified(9, dec!(-20), 42)
-    };
-    let p = with(&st, vec![held(1, dec!(100), true), record]);
-    assert_eq!(p.verified[0].date, None);
-    assert_eq!(p.counts.verified, 1);
+    assert_eq!(stamps(&p), [(42, day(11), Vouched::NotYet)]);
+    assert_eq!(p.counts.deferred, 1);
 }
 
 /// Both banks booked the transfer on one day, and the other bank verified it
@@ -362,6 +336,5 @@ fn a_same_day_transfer_the_other_bank_verified_is_verified_here_too() {
     };
     let p = with(&st, vec![held(1, dec!(100), true), record]);
     assert_eq!((p.counts.verified, p.counts.covered, p.counts.new), (1, 0, 0));
-    assert_eq!(p.verified[0].unchecked, [OTHER]);
-    assert_eq!(p.verified[0].date, None);
+    assert_eq!(p.stamps[0].unchecked, [OTHER]);
 }

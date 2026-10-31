@@ -11,7 +11,7 @@ use std::{
 use chrono::NaiveDate;
 use db::{
     import::{Origin, Posting, Transaction},
-    import_batch::{LedgerPosting, LegPart, LegSplit, Stamp, Verification, Vouched},
+    import_batch::{LedgerPosting, LegPart, LegSplit, Stamp, Vouched},
     import_run::Suggestion,
 };
 use ledger::{
@@ -19,7 +19,7 @@ use ledger::{
     model::{Source, CONVERSIONS, OPENING_EQUITY},
     names::fallback_account,
     statements::{
-        bank::{Bank, BankStatement, StatementLine},
+        bank::{posts_within_days, Bank, BankStatement, StatementLine},
         transfer::Half,
     },
 };
@@ -39,15 +39,6 @@ pub struct Statement<'a> {
     pub files: Vec<usize>,
     /// What the ledger holds on `account` in the statement's currency.
     pub existing: Vec<LedgerPosting>,
-}
-
-/// An unverified record from a statement's last days that none of its lines
-/// verifies: the bank books it after the statement, so it moves to the day
-/// after, still unverified, for the next statement to verify.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Deferred {
-    pub transaction_id: i64,
-    pub date: NaiveDate,
 }
 
 /// A 天天記帳 record a line may be matched to, already resolved to the
@@ -86,7 +77,7 @@ impl Counts {
             Status::PredatesOpening => self.predate_opening += 1,
             Status::Known => self.known += 1,
             Status::Covered => self.covered += 1,
-            Status::Verifies(_) | Status::Vouches => self.verified += 1,
+            Status::Vouches => self.verified += 1,
             Status::New => self.new += 1,
         }
     }
@@ -100,16 +91,14 @@ pub struct Plan {
     pub counts: Counts,
     /// Each statement's opening date; the ledger tracks its lines after it.
     pub openings: Vec<NaiveDate>,
-    pub verified: Vec<Verification>,
-    pub deferred: Vec<Deferred>,
     pub moved: Vec<Moved>,
     /// What it asks a person to look at, on records the ledger already holds.
     pub suggestions: Vec<(i64, Suggestion)>,
     /// Each statement the result does not chain onto, at its first bad day.
     pub gaps: Vec<Gap>,
-    /// What statements that vouch for records say of them.
+    /// What statements say of legs the ledger already holds.
     pub stamps: Vec<Stamp>,
-    /// Records whose one leg several of those statements' lines add up to.
+    /// Records whose one leg several of a statement's lines add up to.
     pub leg_splits: Vec<LegSplit>,
 }
 
@@ -140,11 +129,11 @@ impl fmt::Display for Gap {
 /// shows: its leg moves there, and that line verifies it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Moved {
+    pub posting_id: i64,
     pub transaction_id: i64,
     pub from: String,
     pub to: String,
     pub amount: Decimal,
-    pub date: NaiveDate,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -152,8 +141,6 @@ enum Status {
     PredatesOpening,
     Known,
     Covered,
-    /// Verifies the unverified record with this transaction id.
-    Verifies(i64),
     /// Vouches for records already on the ledger, stamped in [`Plan::stamps`].
     Vouches,
     New,
@@ -221,7 +208,9 @@ pub fn plan(
             }
             // Records carry the account from its first posting; the balance
             // chain below proves they reach the statement's balances.
-            ([], Some(earliest)) => earliest.date.pred_opt().expect("a day before a posting"),
+            ([], Some(earliest)) => {
+                earliest.on_statement().pred_opt().expect("a day before a posting")
+            }
             ([date], _) => *date,
             (dates, _) => {
                 let earliest = *dates.iter().min().expect("several openings");
@@ -248,7 +237,7 @@ pub fn plan(
             })
             .collect();
         if st.bank.vouches_for_records() {
-            vouch(st, &s.existing, &refs[si], &mut line_status, &mut plan);
+            vouch(s, &refs[si], &mut line_status, &mut plan);
         } else {
             // Postings the ledger booked from other lines (a transfer's far half, a
             // reversal) can each cover one line with no ref of its own. A known
@@ -260,7 +249,7 @@ pub fn plan(
             let mut spare: HashMap<(NaiveDate, Decimal), usize> = HashMap::new();
             for p in &s.existing {
                 if !p.opening && !p.unverified && from_a_statement(p) {
-                    *spare.entry((p.date, p.amount)).or_default() += 1;
+                    *spare.entry((p.on_statement(), p.amount)).or_default() += 1;
                 }
             }
             for (li, l) in st.lines.iter().enumerate() {
@@ -284,56 +273,53 @@ pub fn plan(
             let unverified: Vec<&LedgerPosting> =
                 s.existing.iter().filter(|p| p.unverified && !p.opening).collect();
             let fits = |line: &StatementLine, p: &LedgerPosting| {
-                p.amount == line.delta() && within_window(p.date, line.book_date)
+                p.amount == line.delta() && within_window(p.on_statement(), line.book_date)
             };
             let new_lines: Vec<usize> =
                 (0..st.lines.len()).filter(|&li| line_status[li] == Status::New).collect();
             let pairing = one_to_one(&new_lines, &unverified, |&li: &usize, p: &&LedgerPosting| {
                 fits(&st.lines[li], p)
             });
+            let mut verifying: HashSet<i64> = HashSet::new();
+            let mut verify = |plan: &mut Plan, status: &mut [Status], l: usize, r: usize| {
+                let (li, p) = (new_lines[l], unverified[r]);
+                status[li] = Status::Vouches;
+                verifying.insert(p.transaction_id);
+                plan.stamps.push(stamp_by_line(p, st.lines[li].book_date, &refs[si][li]));
+            };
             for &(l, r) in &pairing.pairs {
-                line_status[new_lines[l]] = Status::Verifies(unverified[r].transaction_id);
+                verify(&mut plan, &mut line_status, l, r);
             }
             let apart = |l: usize, r: usize| {
-                (st.lines[new_lines[l]].book_date - unverified[r].date).num_days().abs()
+                (st.lines[new_lines[l]].book_date - unverified[r].on_statement()).num_days().abs()
             };
             for (l, r) in pairing.nearest(apart) {
-                let id = unverified[r].transaction_id;
-                line_status[new_lines[l]] = Status::Verifies(id);
-                plan.suggestions.push((id, Suggestion::PickedNearest));
+                verify(&mut plan, &mut line_status, l, r);
+                plan.suggestions.push((unverified[r].transaction_id, Suggestion::PickedNearest));
             }
             // A record within the window of the end may be booked on the next
             // statement; an earlier one is not on it.
             let settled = st.settled_through();
             let after = settled.succ_opt().expect("a day after a statement");
-            let verifying: HashSet<i64> = line_status
-                .iter()
-                .filter_map(|s| match s {
-                    Status::Verifies(id) => Some(*id),
-                    _ => None,
-                })
-                .collect();
             for p in &unverified {
+                let day = p.on_statement();
                 let shown =
-                    p.date <= opening || p.date > settled || verifying.contains(&p.transaction_id);
+                    day <= opening || day > settled || verifying.contains(&p.transaction_id);
                 if shown {
                     continue;
                 }
-                if (settled - p.date).num_days() >= st.bank.posts_within_days() {
+                if (settled - day).num_days() >= posts_within_days(&s.account) {
                     missing.push((si, *p));
                     continue;
                 }
-                // Moving the record moves its every leg, so one reaching another
-                // account that has its own statement is not ours to move.
-                if let Some(other) =
-                    p.other_accounts.iter().find(|a| has_statements.contains(&***a))
-                {
-                    let other = other.clone();
-                    plan.suggestions.push((p.transaction_id, Suggestion::SharedDeferral { other }));
-                    continue;
-                }
-                plan.deferred.push(Deferred { transaction_id: p.transaction_id, date: after });
-                plan.suggestions.push((p.transaction_id, Suggestion::Waiting));
+                plan.stamps.push(Stamp {
+                    posting_id: p.id,
+                    transaction_id: p.transaction_id,
+                    posted: after,
+                    amount: p.amount,
+                    vouched: Vouched::NotYet,
+                    unchecked: Vec::new(),
+                });
                 plan.counts.deferred += 1;
             }
         }
@@ -362,7 +348,7 @@ pub fn plan(
                 for (li, l) in other.statement.lines.iter().enumerate() {
                     if status[o][li] == Status::New
                         && l.delta() == p.amount
-                        && within_window(l.book_date, p.date)
+                        && within_window(l.book_date, p.on_statement())
                     {
                         at.push((o, li));
                     }
@@ -376,7 +362,9 @@ pub fn plan(
         let s = &statements[*si];
         match fits.as_slice() {
             [only] if claims(only) == 1 => {
-                status[only.0][only.1] = Status::Verifies(p.transaction_id);
+                status[only.0][only.1] = Status::Vouches;
+                let line = &statements[only.0].statement.lines[only.1];
+                plan.stamps.push(stamp_by_line(p, line.book_date, &refs[only.0][only.1]));
                 plan.counts.new -= 1;
                 plan.counts.verified += 1;
                 plan.counts.moved += 1;
@@ -386,11 +374,11 @@ pub fn plan(
                     to: to.clone(),
                 }));
                 plan.moved.push(Moved {
+                    posting_id: p.id,
                     transaction_id: p.transaction_id,
                     from,
                     to,
                     amount: p.amount,
-                    date: p.date,
                 });
             }
             _ => {
@@ -591,115 +579,75 @@ pub fn plan(
         }));
     }
 
-    // --- lines that verify an unverified record: it keeps its row ---
+    // --- what the lines leave unchecked ---
     //
     // A transfer between two accounts is one record with a leg on each. Each
     // bank's line vouches for its own leg, so a leg whose account has a
     // statement no line here covers stays unverified.
-    let checked: HashMap<i64, HashSet<&str>> = status.iter().enumerate().fold(
-        HashMap::new(),
-        |mut checked: HashMap<i64, HashSet<&str>>, (si, ls)| {
-            for id in ls.iter().filter_map(|s| match s {
-                Status::Verifies(id) => Some(*id),
-                _ => None,
-            }) {
-                checked.entry(id).or_default().insert(&statements[si].account);
-            }
-            checked
-        },
-    );
-    let mut dated: Vec<(i64, &str, NaiveDate)> = Vec::new();
-    for (si, s) in statements.iter().enumerate() {
-        for (li, l) in s.statement.lines.iter().enumerate() {
-            if let Status::Verifies(transaction_id) = status[si][li] {
-                // A record moved here from a sibling is that sibling's.
-                let record = s
-                    .existing
-                    .iter()
-                    .chain(statements.iter().flat_map(|o| &o.existing))
-                    .find(|p| p.transaction_id == transaction_id)
-                    .expect("the record a line verifies");
-                let unchecked: Vec<String> = record
-                    .other_accounts
-                    .iter()
-                    .filter(|a| {
-                        has_statements.contains(&***a) && !checked[&transaction_id].contains(&***a)
-                    })
-                    .cloned()
-                    .collect();
-                // A record already standing for another bank's line is on
-                // that bank's date. Re-dating moves its every leg, and the two
-                // banks may have booked it on different days, so the date the
-                // other statement is checked against stands.
-                let date = (!from_a_statement(record)).then_some(l.book_date);
-                if let Some(date) = date {
-                    dated.push((transaction_id, &s.account, date));
-                }
-                plan.verified.push(Verification {
-                    transaction_id,
-                    date,
-                    statement_ref: refs[si][li].clone(),
-                    unchecked,
-                });
-            }
-        }
+    let legs: HashMap<i64, (&str, &LedgerPosting)> = statements
+        .iter()
+        .flat_map(|s| s.existing.iter().map(move |p| (p.id, (s.account.as_str(), p))))
+        .collect();
+    let account_now = |posting_id: i64| {
+        plan.moved
+            .iter()
+            .find(|m| m.posting_id == posting_id)
+            .map_or(legs[&posting_id].0, |m| m.to.as_str())
+    };
+    let mut checked: HashMap<i64, HashSet<String>> = HashMap::new();
+    for s in plan.stamps.iter().filter(|s| matches!(s.vouched, Vouched::ByLine(_))) {
+        let account = account_now(s.posting_id).to_string();
+        checked.entry(s.transaction_id).or_default().insert(account);
+    }
+    for s in &plan.leg_splits {
+        let account = account_now(s.posting_id).to_string();
+        checked.entry(s.transaction_id).or_default().insert(account);
+    }
+    let unchecked = |posting_id: i64, transaction_id: i64| -> Vec<String> {
+        legs[&posting_id]
+            .1
+            .other_accounts
+            .iter()
+            .filter(|a| {
+                has_statements.contains(a.as_str()) && !checked[&transaction_id].contains(*a)
+            })
+            .cloned()
+            .collect()
+    };
+    for s in plan.stamps.iter_mut().filter(|s| matches!(s.vouched, Vouched::ByLine(_))) {
+        s.unchecked = unchecked(s.posting_id, s.transaction_id);
+    }
+    for s in &mut plan.leg_splits {
+        s.unchecked = unchecked(s.posting_id, s.transaction_id);
     }
 
-    let mut redated: HashMap<i64, NaiveDate> = plan
-        .verified
-        .iter()
-        .filter_map(|v| v.date.map(|date| (v.transaction_id, date)))
-        .chain(plan.deferred.iter().map(|d| (d.transaction_id, d.date)))
-        .collect();
     let stamped: HashMap<i64, Vec<(NaiveDate, Decimal)>> = plan
         .leg_splits
         .iter()
         .map(|s| (s.posting_id, s.parts.iter().map(|p| (p.posted, p.amount)).collect()))
         .chain(plan.stamps.iter().map(|s| (s.posting_id, vec![(s.posted, s.amount)])))
         .collect();
-    // One record, one date: two banks may book it on different days (a
-    // transfer near midnight). It keeps whichever of their dates every
-    // statement it is on agrees with, or the earliest, and says so, when none
-    // does.
-    let mut dates: BTreeMap<i64, Vec<(String, NaiveDate)>> = BTreeMap::new();
-    for (transaction_id, account, date) in dated {
-        dates.entry(transaction_id).or_default().push((account.to_string(), date));
-    }
-    let on =
-        |s: &&Statement, dates: &[(String, NaiveDate)]| dates.iter().any(|(a, _)| *a == s.account);
-    for (transaction_id, dates) in dates {
-        if dates.iter().all(|(_, d)| *d == dates[0].1) {
-            continue;
-        }
-        let mut days: Vec<NaiveDate> = dates.iter().map(|(_, d)| *d).collect();
-        days.sort();
-        days.dedup();
-        let earliest = days[0];
-        let kept = days.into_iter().find(|&day| {
-            redated.insert(transaction_id, day);
-            let these =
-                statements.iter().zip(openings.iter().copied()).filter(|(s, _)| on(s, &dates));
-            chain(these, &plan.transactions, &plan.moved, &redated, &stamped).is_empty()
-        });
-        let day = kept.unwrap_or(earliest);
-        if kept.is_none() {
-            plan.suggestions.push((transaction_id, Suggestion::OneDate { kept: earliest, dates }));
-        }
-        redated.insert(transaction_id, day);
-        for v in plan.verified.iter_mut().filter(|v| v.transaction_id == transaction_id) {
-            v.date = v.date.map(|_| day);
-        }
-    }
-
     plan.gaps = chain(
         statements.iter().zip(openings.iter().copied()),
         &plan.transactions,
         &plan.moved,
-        &redated,
         &stamped,
     );
     plan.openings = openings;
     plan
+}
+
+/// A line's word on a leg the ledger holds: the leg counts on the line's day,
+/// its record keeps its own date, and the line's ref goes on the record.
+fn stamp_by_line(p: &LedgerPosting, posted: NaiveDate, line: &str) -> Stamp {
+    Stamp {
+        posting_id: p.id,
+        transaction_id: p.transaction_id,
+        posted,
+        amount: p.amount,
+        vouched: Vouched::ByLine(Some(line.to_string())),
+        unchecked: Vec::new(),
+    }
 }
 
 /// A statement over records the ledger already holds: each new line finds the
@@ -710,15 +658,11 @@ pub fn plan(
 /// one missing after its period. An older one a period covers stays where it
 /// is, with a note that the statement passed it by, and the balance chain
 /// reports the gap.
-fn vouch(
-    st: &BankStatement,
-    existing: &[LedgerPosting],
-    refs: &[String],
-    line_status: &mut [Status],
-    plan: &mut Plan,
-) {
+fn vouch(s: &Statement, refs: &[String], line_status: &mut [Status], plan: &mut Plan) {
+    let st = s.statement;
     let own = st.bank.ref_prefix();
-    let records: Vec<&LedgerPosting> = existing
+    let records: Vec<&LedgerPosting> = s
+        .existing
         .iter()
         .filter(|p| {
             !p.opening
@@ -759,6 +703,7 @@ fn vouch(
                 posted: st.lines[li].book_date,
                 amount: p.amount,
                 vouched: Vouched::ByLine((n == 0).then(|| refs[li].clone())),
+                unchecked: Vec::new(),
             });
         }
     }
@@ -784,6 +729,7 @@ fn vouch(
             posting_id: p.id,
             transaction_id: p.transaction_id,
             parts,
+            unchecked: Vec::new(),
         });
     }
 
@@ -797,9 +743,9 @@ fn vouch(
         .chain([st.settled_through()])
         .collect();
     for p in records.iter().filter(|p| !shown.contains(&p.id)) {
-        let waits_past = breaks
-            .iter()
-            .find(|&&end| p.date <= end && (end - p.date).num_days() < st.bank.posts_within_days());
+        let waits_past = breaks.iter().find(|&&end| {
+            p.date <= end && (end - p.date).num_days() < posts_within_days(&s.account)
+        });
         match waits_past {
             Some(end) => plan.stamps.push(Stamp {
                 posting_id: p.id,
@@ -807,6 +753,7 @@ fn vouch(
                 posted: end.succ_opt().expect("a day after a statement"),
                 amount: p.amount,
                 vouched: Vouched::NotYet,
+                unchecked: Vec::new(),
             }),
             None if st.periods.iter().any(|at| at.start <= p.date && p.date <= at.end) => {
                 plan.suggestions.push((p.transaction_id, Suggestion::NotOnStatement {
@@ -830,7 +777,6 @@ fn chain<'a>(
     statements: impl IntoIterator<Item = (&'a Statement<'a>, NaiveDate)>,
     planned: &[(usize, Transaction)],
     moved: &[Moved],
-    redated: &HashMap<i64, NaiveDate>,
     stamped: &HashMap<i64, Vec<(NaiveDate, Decimal)>>,
 ) -> Vec<Gap> {
     let mut gaps = Vec::new();
@@ -840,24 +786,19 @@ fn chain<'a>(
         for l in s.statement.lines.iter().filter(|l| l.book_date > opening) {
             expected.insert(l.book_date, l.balance);
         }
-        let on_day = |id: i64, date: NaiveDate| redated.get(&id).copied().unwrap_or(date);
-        let moved_off = |p: &LedgerPosting| {
-            moved.iter().any(|m| m.transaction_id == p.transaction_id && m.from == s.account)
-        };
+        let moved_off =
+            |p: &LedgerPosting| moved.iter().any(|m| m.posting_id == p.id && m.from == s.account);
         let mut movements: Vec<(NaiveDate, Decimal)> = s
             .existing
             .iter()
             .filter(|p| !moved_off(p))
             .flat_map(|p| match stamped.get(&p.id) {
                 Some(parts) => parts.clone(),
-                None => vec![(p.posted.unwrap_or(on_day(p.transaction_id, p.date)), p.amount)],
+                None => vec![(p.on_statement(), p.amount)],
             })
-            .chain(
-                moved
-                    .iter()
-                    .filter(|m| m.to == s.account)
-                    .map(|m| (on_day(m.transaction_id, m.date), m.amount)),
-            )
+            .chain(moved.iter().filter(|m| m.to == s.account).flat_map(|m| {
+                stamped.get(&m.posting_id).cloned().expect("a line stamps the leg it moved")
+            }))
             .collect();
         let last = s
             .statement

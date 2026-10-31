@@ -32,11 +32,11 @@ use ledger::{
     journal::UNVERIFIED_TAG,
     labels::Labels,
     model::{self, Source},
-    statements::bank::Bank,
+    statements::bank::{posts_within_days, Bank},
 };
 use ledger_types::currency::Currency;
 
-use crate::pairing::{one_to_one, within_window, WINDOW_DAYS};
+use crate::pairing::{one_to_one, within_window};
 
 /// `import_batch.source` for these imports.
 pub const SOURCE: &str = "tiantian";
@@ -166,7 +166,7 @@ enum Fate {
     /// Stands for this line, relabelling its fallback posting if it still has
     /// one: a line a person categorised keeps their category.
     Pairs { transaction_id: i64, fallback_posting: Option<i64> },
-    /// Books tagged unverified on this day.
+    /// Books tagged unverified, its statement leg counting from this day.
     Waits(NaiveDate),
 }
 
@@ -276,7 +276,7 @@ pub async fn import(
             let r = &records[i];
             match through {
                 Some(through) if r.date <= through => {
-                    if (through - r.date).num_days() < WINDOW_DAYS {
+                    if (through - r.date).num_days() < posts_within_days(account) {
                         fates.insert(i, Fate::Waits(through.succ_opt().expect("a next day")));
                     } else {
                         unexplained.push((i, through));
@@ -350,6 +350,8 @@ pub async fn import(
     let mut span: Option<(NaiveDate, NaiveDate)> = None;
     let is_fallback = |account: &str| fallbacks.contains(account);
     for (i, Booked { date, transfer, booking, .. }) in records.into_iter().enumerate() {
+        // A leg to count after the statement that passed its record's date.
+        let mut waits = None;
         let (mut transaction, leg) = match booking {
             Booking::LeftToStatements => {
                 counts.left_to_statements += 1;
@@ -382,10 +384,10 @@ pub async fn import(
                 run.touched(transaction_id);
                 continue;
             }
-            (Some(_), Some(Fate::Waits(day))) => {
+            (Some(leg), Some(Fate::Waits(day))) => {
                 transaction.tags.push(UNVERIFIED_TAG.to_string());
-                transaction.date = day;
                 counts.unverified += 1;
+                waits = (day != transaction.date).then_some((leg, day));
             }
             (Some(_), None) => unreachable!("every statement leg has a fate"),
             (None, _) => {}
@@ -398,7 +400,15 @@ pub async fn import(
             Some(id) => *id,
             None => *batch.insert(import_batch::create(db, SOURCE, file).await?),
         };
-        let row = to_row(&transaction, Some(batch), placeholder)?;
+        let mut row = to_row(&transaction, Some(batch), placeholder)?;
+        if let Some((leg, day)) = waits {
+            let on_statement = row.postings.iter_mut().find(|p| {
+                (&p.account, p.amount, p.currency) == (&leg.account, leg.amount, leg.currency)
+            });
+            if let Some(posting) = on_statement {
+                posting.posted_date = Some(day);
+            }
+        }
         match insert_deduped(db, &labels, &row).await.context("inserting a record")? {
             InsertOutcome::Inserted(id) => {
                 run.touched(id);

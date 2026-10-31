@@ -5,10 +5,13 @@
 mod common;
 
 use anyhow::Result;
-use common::card::{records, Fixture};
-use ledger::statements::bank::Bank;
-use ledger_types::assertion::AssertionSource;
+use common::card::{records, Fixture, CARD};
+use db::import::{ImportStore, Posting, Transaction};
+use ledger::{journal::UNVERIFIED_TAG, labels::Labels, model::Source, statements::bank::Bank};
+use ledger_types::{assertion::AssertionSource, currency::Currency};
 use rust_decimal_macros::dec;
+
+const MAIN: &str = "Assets:Bank:Main";
 
 /// One row of 帳單明細: 消費日, 交易說明, 新臺幣金額, 入帳起息日.
 type Row<'a> = (&'a str, &'a str, &'a str, &'a str);
@@ -37,6 +40,66 @@ fn statement(closes: &str, opening: u32, closing: u32, rows: &[Row]) -> String {
 
 fn leg(date: &str, posted: Option<&str>, amount: &str) -> (String, Option<String>, String) {
     (date.to_string(), posted.map(String::from), amount.to_string())
+}
+
+/// A card payment is one record with a leg on each statement's account.
+/// Whichever statement comes first, the record keeps the date written and each
+/// leg counts on its own statement's day.
+#[tokio::test]
+async fn the_order_of_two_banks_imports_changes_no_date() -> Result<()> {
+    let mut seen = Vec::new();
+    for bank_first in [true, false] {
+        let f = Fixture::frozen(&records(&[("2026-01-02", "expense", 100, "飲食")])).await?;
+        let tagged = |account: &str, amount| Posting {
+            tags: Some(UNVERIFIED_TAG.to_string()),
+            ..(account, amount, Currency::TWD).into()
+        };
+        ImportStore::new(f.pool.clone(), Labels::from(&f.chart))
+            .insert_deduped(&Transaction {
+                date: "2026-01-05".parse()?,
+                payee: None,
+                narration: None,
+                source: Source::Tiantian,
+                external_ref: Some("tiantian:T1".into()),
+                import_batch_id: None,
+                postings: vec![tagged(MAIN, dec!(-100)), tagged(CARD, dec!(100))],
+            })
+            .await?;
+        let bank = f.write(
+            "savings-2026.csv",
+            "111111111111 \
+             活存\n幣別：TWD\n交易日期,帳務日期,說明,提出,存入,餘額,交易資訊,備註\n2025/12/01,\
+             2025/12/01,存入,,1000,1000,,\n2026/01/06,2026/01/06,繳卡費,100,,900,,\n",
+        )?;
+        let card = f.write(
+            "2026-01.csv",
+            &statement("2026/01/20", 0, 0, &[
+                ("01/02", "咖啡", "100", "01/03"),
+                ("01/05", "繳款", "-100", "01/07"),
+            ]),
+        )?;
+        let (first, second) = match bank_first {
+            true => ((Bank::Cathay, &bank), (Bank::CathayCard, &card)),
+            false => ((Bank::CathayCard, &card), (Bank::Cathay, &bank)),
+        };
+        f.import(first.0, std::slice::from_ref(first.1)).await?;
+        f.import(second.0, std::slice::from_ref(second.1)).await?;
+        let legs: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT t.date, a.path, p.posted_date FROM postings p
+             JOIN transactions t ON t.id = p.transaction_id
+             JOIN accounts a ON a.id = p.account_id
+             WHERE t.external_ref = 'tiantian:T1' ORDER BY a.path",
+        )
+        .fetch_all(&f.pool)
+        .await?;
+        seen.push(legs);
+    }
+    assert_eq!(seen[0], seen[1]);
+    assert_eq!(seen[0], [
+        ("2026-01-05".into(), MAIN.into(), Some("2026-01-06".into())),
+        ("2026-01-05".into(), CARD.into(), Some("2026-01-07".into())),
+    ]);
+    Ok(())
 }
 
 /// A purchase stays on its date and moves the balance when it posts, so a

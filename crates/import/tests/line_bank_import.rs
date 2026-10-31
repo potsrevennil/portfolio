@@ -467,7 +467,15 @@ async fn the_next_statement_verifies_an_unverified_record() -> Result<()> {
             .bind(id)
             .fetch_one(&pool)
             .await?;
-    assert_eq!((date.as_str(), external_ref, reviewed), ("2026-03-06", own_ref.clone(), true));
+    assert_eq!((date.as_str(), external_ref, reviewed), ("2026-03-05", own_ref.clone(), true));
+    let posted: Option<String> = sqlx::query_scalar(
+        "SELECT p.posted_date FROM postings p JOIN accounts a ON a.id = p.account_id
+         WHERE p.transaction_id = ? AND a.type = 'asset'",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(posted.as_deref(), Some("2026-03-06"));
     let line_refs: Vec<String> =
         sqlx::query_scalar("SELECT external_ref FROM transaction_refs WHERE transaction_id = ?")
             .bind(id)
@@ -547,8 +555,8 @@ async fn an_ambiguous_statement_pairs_the_nearest() -> Result<()> {
 }
 
 /// A spend recorded on 03-29 that the bank books on 04-01: March imports on
-/// its own, the record waiting unverified on the day after it, and April's
-/// line verifies it.
+/// its own, the record waiting unverified and counting from the day after it,
+/// and April's line verifies it. Its date stays what was written.
 #[tokio::test]
 async fn a_record_the_bank_books_next_month_waits_for_that_statement() -> Result<()> {
     let f = Fixture::new()?;
@@ -563,7 +571,7 @@ async fn a_record_the_bank_books_next_month_waits_for_that_statement() -> Result
     let report = f.import(&pool, Bank::LineBank, &paths).await?;
     assert!(report.check.ok(), "{report}");
     assert_eq!((report.counts.verified, report.counts.deferred), (1, 1), "{report}");
-    assert_eq!(date_of(&pool, id).await?, "2026-04-01");
+    assert_eq!(date_of(&pool, id).await?, "2026-03-29");
     assert_eq!(unverified_count(&pool).await?, 2);
     let again = f.import(&pool, Bank::LineBank, &paths).await?;
     assert_eq!((again.inserted, again.counts.deferred), (0, 0), "{again}");

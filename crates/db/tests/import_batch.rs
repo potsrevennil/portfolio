@@ -2,7 +2,7 @@
 
 use db::{
     import::{ImportStore, Posting, Transaction},
-    import_batch::{self, Verification},
+    import_batch::{self, Stamp, Vouched},
 };
 use ledger::{journal::UNVERIFIED_TAG, labels::Labels, model::Source};
 use ledger_types::currency::Currency;
@@ -66,14 +66,18 @@ async fn verifying_leaves_an_unchecked_leg_tagged() {
     assert_eq!(leg.refs, ["tiantian:1"]);
     assert_eq!(leg.other_accounts, [OTHER]);
 
-    import_batch::verify(&mut db, &Verification {
+    import_batch::stamp(&mut db, &Stamp {
+        posting_id: leg.id,
         transaction_id: id,
-        date: Some("2026-10-01".parse().expect("date")),
-        statement_ref: "line-bank:1".into(),
+        posted: "2026-10-01".parse().expect("date"),
+        amount: leg.amount,
+        vouched: Vouched::ByLine(Some("line-bank:1".into())),
         unchecked: vec![OTHER.to_string()],
     })
     .await
-    .expect("verify");
+    .expect("stamp");
+    let held = import_batch::postings(&mut db, LINE, Currency::TWD).await.expect("postings");
+    assert_eq!(held[0].posted, "2026-10-01".parse().ok());
     drop(db);
     assert_eq!(tagged_accounts(&pool).await, [OTHER]);
 
@@ -83,9 +87,9 @@ async fn verifying_leaves_an_unchecked_leg_tagged() {
             .fetch_one(&pool)
             .await
             .expect("the record");
-    // The record keeps the ref its own source dedups on, and stands for the
-    // line as well.
-    assert_eq!((date.as_str(), external_ref.as_str()), ("2026-10-01", "tiantian:1"));
+    // The record keeps its date and the ref its own source dedups on, and
+    // stands for the line as well.
+    assert_eq!((date.as_str(), external_ref.as_str()), ("2026-09-29", "tiantian:1"));
     let mut db = pool.acquire().await.expect("connection");
     let refs = import_batch::refs(&mut db, "line-bank:").await.expect("refs");
     assert!(refs.contains("line-bank:1"), "{refs:?}");
@@ -98,45 +102,46 @@ async fn verifying_every_leg_clears_the_tag() {
     let url = format!("sqlite:{}", dir.path().join("both.db").display());
     let (pool, id) = transfer(db::init_db(&url).await.expect("db")).await;
     let mut db = pool.acquire().await.expect("connection");
-    for external_ref in ["line-bank:1", "cathay-bank:1"] {
-        import_batch::verify(&mut db, &Verification {
+    for (account, external_ref) in [(LINE, "line-bank:1"), (OTHER, "cathay-bank:1")] {
+        let held = import_batch::postings(&mut db, account, Currency::TWD).await.expect("legs");
+        import_batch::stamp(&mut db, &Stamp {
+            posting_id: held[0].id,
             transaction_id: id,
-            date: Some("2026-10-01".parse().expect("date")),
-            statement_ref: external_ref.into(),
+            posted: "2026-10-01".parse().expect("date"),
+            amount: held[0].amount,
+            vouched: Vouched::ByLine(Some(external_ref.into())),
             unchecked: Vec::new(),
         })
         .await
-        .expect("verify");
+        .expect("stamp");
     }
     drop(db);
     assert!(tagged_accounts(&pool).await.is_empty());
 }
 
-/// Verifying with no date leaves the record where the bank that booked it
-/// first put it, and still clears its leg's tag.
+/// A record still to post counts from the day after the statement, and keeps
+/// its tag and its date.
 #[tokio::test]
-async fn verifying_without_a_date_moves_nothing() {
+async fn a_leg_still_to_post_stays_tagged() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let url = format!("sqlite:{}", dir.path().join("dateless.db").display());
+    let url = format!("sqlite:{}", dir.path().join("waits.db").display());
     let (pool, id) = transfer(db::init_db(&url).await.expect("db")).await;
     let mut db = pool.acquire().await.expect("connection");
-    import_batch::verify(&mut db, &Verification {
+    let held = import_batch::postings(&mut db, LINE, Currency::TWD).await.expect("legs");
+    import_batch::stamp(&mut db, &Stamp {
+        posting_id: held[0].id,
         transaction_id: id,
-        date: None,
-        statement_ref: "line-bank:1".into(),
-        unchecked: vec![OTHER.to_string()],
+        posted: "2026-10-01".parse().expect("date"),
+        amount: held[0].amount,
+        vouched: Vouched::NotYet,
+        unchecked: Vec::new(),
     })
     .await
-    .expect("verify");
-    drop(db);
-
-    let date: String = sqlx::query_scalar("SELECT date FROM transactions WHERE id = ?")
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .expect("the record");
-    assert_eq!(date, "2026-09-29");
-    assert_eq!(tagged_accounts(&pool).await, [OTHER]);
+    .expect("stamp");
+    let held = import_batch::postings(&mut db, LINE, Currency::TWD).await.expect("legs");
+    assert!(held[0].unverified);
+    assert_eq!(held[0].date, "2026-09-29".parse().expect("date"));
+    assert_eq!(held[0].on_statement(), "2026-10-01".parse().expect("date"));
 }
 
 /// A memo is text, not a pattern. `提%` is not already in `提款`, though a LIKE

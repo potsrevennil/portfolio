@@ -10,8 +10,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use db::{
-    assertions::{self, AssertionSource},
-    check,
+    assertions, check,
     import::{ensure_account, insert_deduped, InsertOutcome, Origin, Transaction},
     import_batch::{self, Vouched},
     import_run::{self, Run, Suggestion},
@@ -85,7 +84,7 @@ impl fmt::Display for Report {
         if c.deferred > 0 {
             writeln!(
                 f,
-                "  {} unverified records not on the statement yet, moved to the day after it",
+                "  {} unverified records not on the statement yet, counted from the day after it",
                 c.deferred
             )?;
         }
@@ -139,6 +138,7 @@ pub async fn import(
     let (merged, idle): (Vec<&Merged>, Vec<&Merged>) =
         merged.iter().partition(|m| !m.statement.lines.is_empty());
     let files: Vec<&PathBuf> = merged.iter().flat_map(|m| &m.paths).collect();
+    let before = check::check(db).await?.mismatches;
 
     let mut statements = Vec::with_capacity(merged.len());
     let mut first_file = 0;
@@ -154,18 +154,8 @@ pub async fn import(
         statements.push(plan::Statement { account, statement, files, existing });
     }
     let known = import_batch::refs(db, bank.ref_prefix()).await?;
-    let Plan {
-        transactions,
-        mut counts,
-        openings,
-        verified,
-        deferred,
-        moved,
-        suggestions,
-        gaps,
-        stamps,
-        leg_splits,
-    } = plan::plan(chart, &statements, &known, candidates);
+    let Plan { transactions, mut counts, openings, moved, suggestions, gaps, stamps, leg_splits } =
+        plan::plan(chart, &statements, &known, candidates);
     let labels = Labels::from(chart);
     let mut run = Run::default();
     for (id, suggestion) in suggestions {
@@ -176,25 +166,22 @@ pub async fn import(
     }
     for s in &stamps {
         import_batch::stamp(db, s).await?;
-        match s.vouched {
-            Vouched::ByLine(_) => run.touched(s.transaction_id),
-            Vouched::NotYet => run.suggest(s.transaction_id, Suggestion::Waiting),
+        // It waits for this statement's next, or another's for its other leg.
+        match (&s.vouched, s.unchecked.is_empty()) {
+            (Vouched::ByLine(_), true) => run.touched(s.transaction_id),
+            (Vouched::ByLine(_), false) => {
+                run.touched(s.transaction_id);
+                run.suggest(s.transaction_id, Suggestion::Waiting);
+            }
+            (Vouched::NotYet, _) => run.suggest(s.transaction_id, Suggestion::Waiting),
         }
     }
     for s in &leg_splits {
         import_batch::split_leg(db, s).await?;
         run.touched(s.transaction_id);
-    }
-    for v in &verified {
-        import_batch::verify(db, v).await?;
-        run.touched(v.transaction_id);
-        // Another bank's statement has yet to vouch for its other leg.
-        if !v.unchecked.is_empty() {
-            run.suggest(v.transaction_id, Suggestion::Waiting);
+        if !s.unchecked.is_empty() {
+            run.suggest(s.transaction_id, Suggestion::Waiting);
         }
-    }
-    for d in &deferred {
-        import_batch::redate(db, d.transaction_id, d.date).await?;
     }
 
     let mut inserted = 0;
@@ -264,15 +251,6 @@ pub async fn import(
     let recorded = assertions::load(db).await?;
     let mut stale = Vec::new();
     let vouched: BTreeSet<&str> = statements.iter().map(|s| s.account.as_str()).collect();
-    // Its own statements now vouch for what the app's closing summed, and in
-    // posting dates, which that closing never was.
-    if bank.vouches_for_records() {
-        for a in &recorded {
-            if a.source == AssertionSource::Tiantian && vouched.contains(a.account.as_str()) {
-                assertions::supersede(db, a).await?;
-            }
-        }
-    }
     let mut figures = Vec::new();
     for (s, opening) in statements.iter().zip(openings) {
         figures.extend(s.statement.assertions(&s.account, opening));
@@ -307,6 +285,8 @@ pub async fn import(
             assertions::set_start(db, a, start).await?;
         }
     }
+    // What this import contradicts of the app's closings gives way to the bank.
+    check::broken_by_write(db, &before).await?;
     let check = check::check(db).await?;
     import_run::record(db, bank.source(), &run).await?;
 

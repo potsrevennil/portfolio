@@ -18,15 +18,9 @@ pub enum Suggestion {
     /// A statement passed its day without showing it. `siblings` are the
     /// accounts sharing its app account that have a line it fits.
     NotOnStatement { through: NaiveDate, siblings: Vec<String> },
-    /// Not on the statement yet, with a leg on `other`, which has a statement
-    /// of its own: moving it to the next statement would move that leg too.
-    SharedDeferral { other: String },
     /// Booked on a pooled account, but a sibling's statement shows it: its leg
     /// moved to `to`.
     Moved { from: String, to: String },
-    /// Two banks date it differently and neither day balances both: it stays
-    /// one transaction on `kept`.
-    OneDate { kept: NaiveDate, dates: Vec<(String, NaiveDate)> },
     /// One of several openings on its account: the earliest counts for the
     /// balance chain.
     ExtraOpening,
@@ -48,14 +42,7 @@ impl fmt::Display for Suggestion {
                 "not on the statement through {through}; a line on {} fits",
                 siblings.join(", ")
             ),
-            Suggestion::SharedDeferral { other } => {
-                write!(f, "not on this statement yet, and also on {other}")
-            }
             Suggestion::Moved { from, to } => write!(f, "moved from {from} to {to}"),
-            Suggestion::OneDate { kept, dates } => {
-                let days: Vec<String> = dates.iter().map(|(a, d)| format!("{d} on {a}")).collect();
-                write!(f, "booked {}; kept as one on {kept}", days.join(" and "))
-            }
             Suggestion::ExtraOpening => f.write_str("a further opening on its account"),
         }
     }

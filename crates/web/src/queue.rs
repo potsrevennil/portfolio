@@ -108,13 +108,9 @@ fn said(suggestion: &Suggestion, chart: &Chart) -> String {
             let names: Vec<String> = siblings.iter().map(|a| chart.label(a)).collect();
             format!("數單到 {through} 無這筆，{} 有", names.join("、"))
         }
-        Suggestion::SharedDeferral { other } => {
-            format!("數單猶無這筆，另外一爿佇 {}", chart.label(other))
-        }
         Suggestion::Moved { from, to } => {
             format!("數單佇 {}，已經對 {} 移過去", chart.label(to), chart.label(from))
         }
-        Suggestion::OneDate { kept, .. } => format!("兩間銀行紀錄無仝工，先記 {kept}"),
         Suggestion::ExtraOpening => "這个口座有幾筆期初，用上早彼筆".to_string(),
     }
 }

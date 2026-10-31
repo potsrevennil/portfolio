@@ -56,8 +56,10 @@ async fn a_gap_between_queries_stays_a_gap_with_the_gate_holding() -> Result<()>
     assert!(f.gate_passes().await?);
     let figures = f.figures_of(BANK).await?;
     let closings: Vec<_> = figures.iter().map(|a| (a.period_end.to_string(), a.closing)).collect();
+    // The app's closing of 02-20 still agrees, so it stands.
     assert_eq!(closings, [
         ("2026-02-01".to_string(), dec!(100)),
+        ("2026-02-20".to_string(), dec!(560)),
         ("2026-03-01".to_string(), dec!(560))
     ]);
     let gaps = coverage::gaps(&figures);

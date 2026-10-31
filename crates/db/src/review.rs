@@ -18,7 +18,7 @@ use rust_decimal::Decimal;
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::{
-    assertions::{self, AssertionSource},
+    assertions::AssertionSource,
     check::{self, Figure, Mismatch},
     events::{self, Change, EventKind},
     import::Origin,
@@ -128,22 +128,12 @@ async fn baseline(db: &mut SqliteConnection) -> Result<Vec<Mismatch>> {
 
 /// Commits `db` unless the write broke a balance a statement or a count
 /// vouches for; then it says which one, and what to do, in the reader's
-/// words. A 天天記帳 closing it contradicts is only that app's sum of what
-/// was logged there, so a record added later supersedes it instead.
+/// words.
 async fn gated(mut db: sqlx::Transaction<'_, sqlx::Sqlite>, before: Vec<Mismatch>) -> Result<()> {
-    let after = check::check(&mut db).await?;
-    let (tiantian, broken): (Vec<&Mismatch>, Vec<&Mismatch>) =
-        after.mismatches.iter().filter(|m| !before.contains(m)).partition(
-            |m| matches!(&m.figure, Figure::Balance(a) if a.source == AssertionSource::Tiantian),
-        );
+    let broken = check::broken_by_write(&mut db, &before).await?;
     if let Some(broken) = broken.first() {
         let refusal = refusal(&mut db, broken).await?;
         bail!(refusal);
-    }
-    for m in tiantian {
-        if let Figure::Balance(a) = &m.figure {
-            assertions::supersede(&mut db, a).await?;
-        }
     }
     db.commit().await?;
     Ok(())

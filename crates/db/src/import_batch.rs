@@ -53,6 +53,11 @@ pub struct LedgerPosting {
     pub unverified: bool,
 }
 
+impl LedgerPosting {
+    /// The day it counts on a statement.
+    pub fn on_statement(&self) -> NaiveDate { self.posted.unwrap_or(self.date) }
+}
+
 /// `char(31)` in the queries: no ref or account path holds it.
 const SEPARATOR: char = '\u{1f}';
 
@@ -155,41 +160,27 @@ pub async fn add_ref(
     Ok(())
 }
 
-/// An unverified record a statement line checked, and what that leaves
-/// unchecked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Verification {
-    pub transaction_id: i64,
-    /// The line's date, or `None` to leave the record on its own: a
-    /// transaction has one date, so re-dating moves its every leg.
-    pub date: Option<NaiveDate>,
-    pub statement_ref: String,
-    /// Legs on these accounts stay unverified: no line here vouched for them.
-    pub unchecked: Vec<String>,
-}
-
-/// Marks an unverified record as checked by a statement line: it takes the
-/// line's date, stands for the line too, and its legs lose the unverified tag,
-/// bar those on `unchecked` accounts. Its own ref stays, so its source still
-/// knows it, and so do its category and review state.
-pub async fn verify(db: &mut SqliteConnection, v: &Verification) -> Result<()> {
-    if let Some(date) = v.date {
-        redate(db, v.transaction_id, date).await?;
-    }
-    add_ref(db, v.transaction_id, &v.statement_ref).await?;
-    let held = vec!["?"; v.unchecked.len()].join(", ");
+/// Takes the unverified tag off a checked record's legs, bar those on
+/// `unchecked` accounts: a statement of their own has yet to vouch for them.
+async fn clear_unverified(
+    db: &mut SqliteConnection,
+    transaction_id: i64,
+    unchecked: &[String],
+) -> Result<()> {
+    let held = vec!["?"; unchecked.len()].join(", ");
     let sql = format!(
         "UPDATE postings SET tags = nullif(trim(replace(',' || tags || ',', ',' || ? || ',', \
          ','), ','), '') WHERE transaction_id = ? AND account_id NOT IN
          (SELECT id FROM accounts WHERE path IN ({held}))"
     );
-    let mut clear = sqlx::query(&sql).bind(UNVERIFIED_TAG).bind(v.transaction_id);
-    for account in &v.unchecked {
+    let mut clear = sqlx::query(&sql).bind(UNVERIFIED_TAG).bind(transaction_id);
+    for account in unchecked {
         clear = clear.bind(account);
     }
-    clear.execute(db).await.with_context(|| {
-        format!("clearing the unverified tag of transaction {}", v.transaction_id)
-    })?;
+    clear
+        .execute(db)
+        .await
+        .with_context(|| format!("clearing the unverified tag of transaction {transaction_id}"))?;
     Ok(())
 }
 
@@ -247,6 +238,9 @@ pub struct Stamp {
     pub posted: NaiveDate,
     pub amount: Decimal,
     pub vouched: Vouched,
+    /// Accounts of its other legs that a statement of their own has yet to
+    /// vouch for. Their legs stay unverified.
+    pub unchecked: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,11 +261,16 @@ pub async fn stamp(db: &mut SqliteConnection, s: &Stamp) -> Result<()> {
         .execute(&mut *db)
         .await
         .with_context(|| format!("stamping posting {}", s.posting_id))?;
-    tag_unverified(db, s.posting_id, s.vouched == Vouched::NotYet).await?;
-    if let Vouched::ByLine(Some(line)) = &s.vouched {
-        add_ref(db, s.transaction_id, line).await?;
+    match &s.vouched {
+        Vouched::NotYet => tag_unverified(db, s.posting_id, true).await,
+        Vouched::ByLine(line) => {
+            clear_unverified(db, s.transaction_id, &s.unchecked).await?;
+            match line {
+                Some(line) => add_ref(db, s.transaction_id, line).await,
+                None => Ok(()),
+            }
+        }
     }
-    Ok(())
 }
 
 /// One record's leg, and the statement lines that add up to it.
@@ -280,6 +279,8 @@ pub struct LegSplit {
     pub posting_id: i64,
     pub transaction_id: i64,
     pub parts: Vec<LegPart>,
+    /// As on [`Stamp::unchecked`].
+    pub unchecked: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,7 +304,7 @@ pub async fn split_leg(db: &mut SqliteConnection, s: &LegSplit) -> Result<()> {
         .execute(&mut *db)
         .await
         .with_context(|| format!("splitting posting {}", s.posting_id))?;
-    tag_unverified(db, s.posting_id, false).await?;
+    clear_unverified(db, s.transaction_id, &s.unchecked).await?;
     for part in rest {
         sqlx::query(
             "INSERT INTO postings (transaction_id, account_id, amount, currency, tags, origin, \
@@ -323,16 +324,6 @@ pub async fn split_leg(db: &mut SqliteConnection, s: &LegSplit) -> Result<()> {
     let after = events::snapshot(db, s.transaction_id).await?;
     let change = Change { before: Some(before), after };
     events::record(db, s.transaction_id, EventKind::Split, &change).await
-}
-
-pub async fn redate(db: &mut SqliteConnection, transaction_id: i64, date: NaiveDate) -> Result<()> {
-    sqlx::query("UPDATE transactions SET date = ? WHERE id = ?")
-        .bind(date.to_string())
-        .bind(transaction_id)
-        .execute(db)
-        .await
-        .with_context(|| format!("re-dating transaction {transaction_id}"))?;
-    Ok(())
 }
 
 /// A transaction with a leg on some account, and all its legs.

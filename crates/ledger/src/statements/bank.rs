@@ -40,6 +40,15 @@ impl fmt::Display for Bank {
     }
 }
 
+/// How long before a statement's end a record on `account` may still be off
+/// it, not having posted yet. A card's foreign fees take weeks to post.
+pub fn posts_within_days(account: &str) -> i64 {
+    match account.starts_with("Liabilities:") {
+        true => 31,
+        false => 7,
+    }
+}
+
 impl Bank {
     pub const ALL: [Bank; 5] =
         [Bank::Cathay, Bank::LineBank, Bank::CathayCard, Bank::TaishinCard, Bank::Taishin];
@@ -90,15 +99,6 @@ impl Bank {
 
     /// A card statement does not say when its period began.
     pub fn is_card(self) -> bool { matches!(self, Bank::CathayCard | Bank::TaishinCard) }
-
-    /// How long before a statement's end a record may still be off it, not
-    /// having posted yet. A card's foreign fees take weeks to post.
-    pub fn posts_within_days(self) -> i64 {
-        match self.is_card() {
-            true => 31,
-            false => 7,
-        }
-    }
 
     /// Does a line's text name `account_no`, in this bank's way of writing one?
     pub fn names_account(self, text: &str, account_no: &str) -> bool {

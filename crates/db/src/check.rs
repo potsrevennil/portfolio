@@ -159,6 +159,25 @@ impl fmt::Display for Unchecked {
     }
 }
 
+/// What a write broke, against the mismatches from before it. A 天天記帳
+/// closing it contradicts is only that app's sum of what was logged there, so
+/// it is superseded, and only the others come back.
+pub async fn broken_by_write(
+    conn: &mut SqliteConnection,
+    before: &[Mismatch],
+) -> Result<Vec<Mismatch>> {
+    let (closings, broken): (Vec<Mismatch>, Vec<Mismatch>) =
+        check(conn).await?.mismatches.into_iter().filter(|m| !before.contains(m)).partition(
+            |m| matches!(&m.figure, Figure::Balance(a) if a.source == AssertionSource::Tiantian),
+        );
+    for m in &closings {
+        if let Figure::Balance(a) = &m.figure {
+            assertions::supersede(conn, a).await?;
+        }
+    }
+    Ok(broken)
+}
+
 /// Checks every recorded assertion against the postings and broker records
 /// visible on `conn`, including the caller's uncommitted writes.
 pub async fn check(conn: &mut SqliteConnection) -> Result<CheckReport> { checked(conn, None).await }
