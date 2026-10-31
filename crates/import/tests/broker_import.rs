@@ -181,7 +181,7 @@ async fn of_two_downloads_of_one_period_the_newer_is_read() -> Result<()> {
 }
 
 #[tokio::test]
-async fn a_statement_the_records_dont_reach_fails_the_gate() -> Result<()> {
+async fn a_statement_the_records_dont_reach_shows_in_the_check() -> Result<()> {
     let f = Fixture::new()?;
     let pool = f.db().await?;
     // States three shares; the one trade bought two.
@@ -192,14 +192,14 @@ async fn a_statement_the_records_dont_reach_fails_the_gate() -> Result<()> {
         "19",
         &[("ZZA", "3")],
     );
-    let err = f.import(&pool, &[f.file("wrong.csv", &wrong)?]).await.unwrap_err();
-    let message = format!("{err:#}");
+    let (report, _) = f.import(&pool, &[f.file("wrong.csv", &wrong)?]).await?;
+    let message = report.check.to_string();
     assert!(
         message.contains(&format!("MISMATCH {IB} ZZA (statement as of 2025-06-30)")),
         "{message}"
     );
     assert!(message.contains("broker records sum to 2"), "{message}");
-    assert_eq!(count(&pool, "broker_record").await?, 0, "nothing committed");
+    assert!(count(&pool, "broker_record").await? > 0, "imported all the same");
     Ok(())
 }
 
@@ -218,8 +218,9 @@ async fn a_position_sold_off_is_asserted_at_zero() -> Result<()> {
             "Current Quantity\n",
             "Current Quantity\nMark-to-Market Performance Summary,Data,Stocks,ZZA,2,0\n",
         );
-    let err = f.import(&pool, &[f.file("empty.csv", &empty)?]).await.unwrap_err();
-    assert!(format!("{err:#}").contains("expected 0, broker records sum to 2"), "{err:#}");
+    let (report, _) = f.import(&pool, &[f.file("empty.csv", &empty)?]).await?;
+    let message = report.check.to_string();
+    assert!(message.contains("expected 0, broker records sum to 2"), "{message}");
 
     // An opening that contradicts the recorded closing is refused outright.
     let contradicting = empty.replace("Stocks,ZZA,2,0", "Stocks,ZZA,3,0");

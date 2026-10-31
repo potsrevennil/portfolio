@@ -449,56 +449,131 @@ details.group > summary.row.section {
   color: var(--accent);
 }
 
-.pairings {
+.gaps {
   margin: 0.8rem 0;
   padding: 0.6rem 0.8rem;
   border: 1px solid var(--pending);
   border-radius: 0.4rem;
-}
-
-.pairings h2 {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-.pairings > ol {
   list-style: none;
-  margin: 0;
+}
+
+.suggestions {
+  margin: 0.2rem 0;
   padding: 0;
+  list-style: none;
+  color: var(--pending);
 }
 
-.choice {
-  padding: 0.5rem 0;
-  border-top: 1px solid var(--line);
+.confirmed {
+  margin: 1rem 0;
 }
 
-.choice .line {
+.tick-all {
+  display: block;
+  margin: 0.5rem 0;
+}
+
+.bulk {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.2rem 0.75rem;
-  font-weight: 600;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  padding: 0.6rem 0.8rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
 }
 
-.choice .chosen {
-  color: var(--pending);
-  margin: 0.2rem 0;
+.bulk form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
 }
 
-.candidates {
+.account-box {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+  min-width: 12rem;
+}
+
+.account-box input[type="text"] {
+  width: 100%;
+  font: inherit;
+}
+
+.account-box .panel {
+  position: absolute;
+  z-index: 10;
+  top: 100%;
+  left: 0;
+  width: max-content;
+  min-width: 100%;
+  max-width: calc(100vw - 2rem);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.3rem;
+}
+
+.account-box .panel .note {
+  margin: 0.3rem 0.5rem;
+}
+
+.account-box ul {
   list-style: none;
+  margin: 0;
   padding: 0;
+  max-height: 18rem;
+  overflow: auto;
 }
 
-.candidates label {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0 0.5rem;
-  padding: 0.3rem 0;
-  cursor: pointer;
+.account-box li {
+  display: flex;
+  align-items: baseline;
 }
 
-.candidates .legs {
-  grid-column: 2;
+.account-box li button {
+  padding: 0.2rem 0.5rem;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 0;
+  font: inherit;
+  white-space: nowrap;
+}
+
+.account-box li .row {
+  flex: 1 1 auto;
+}
+
+.account-box li .fold {
+  flex: none;
+  width: 1.2rem;
+  padding: 0.2rem 0;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* Lined up with the names beside it that have a fold. */
+.account-box li.leaf .row {
+  margin-left: 1.2rem;
+}
+
+.account-box li .row:hover,
+.account-box li .row.active {
+  background: var(--line);
+}
+
+.add-leg {
+  margin: 0 0 0.5rem;
+}
+
+.status.gap {
+  color: var(--pending);
 }
 
 .field {
@@ -518,9 +593,13 @@ details.group > summary.row.section {
   max-width: 100%;
 }
 
-/* Narrow screens: the table scrolls inside itself, the page does not. */
-.edit form {
-  overflow-x: auto;
+/* Narrow screens: the account column gives way; a box's list must not clip. */
+.legs-edit {
+  width: 100%;
+}
+
+.legs-edit td:first-child {
+  width: 100%;
 }
 
 .legs-edit {

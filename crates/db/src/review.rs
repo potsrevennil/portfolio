@@ -178,6 +178,16 @@ async fn refusal(db: &mut SqliteConnection, m: &Mismatch) -> Result<String> {
     })
 }
 
+async fn postings_of(db: &mut SqliteConnection, id: i64) -> Result<Vec<PostingRow>> {
+    Ok(sqlx::query_as(
+        "SELECT p.id, a.path, p.amount, p.currency FROM postings p
+         JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
+    )
+    .bind(id)
+    .fetch_all(db)
+    .await?)
+}
+
 /// Rewrites a transaction's legs and note in place.
 pub async fn edit(
     pool: &SqlitePool,
@@ -189,13 +199,7 @@ pub async fn edit(
     let before_check = baseline(&mut db).await?;
     live(&mut db, id).await?;
     let before = events::snapshot(&mut db, id).await?;
-    let rows: Vec<PostingRow> = sqlx::query_as(
-        "SELECT p.id, a.path, p.amount, p.currency FROM postings p
-         JOIN accounts a ON a.id = p.account_id WHERE p.transaction_id = ? ORDER BY p.id",
-    )
-    .bind(id)
-    .fetch_all(&mut *db)
-    .await?;
+    let rows = postings_of(&mut db, id).await?;
     let held: HashMap<i64, &PostingRow> = rows.iter().map(|r| (r.id, r)).collect();
 
     balanced(edit.legs.iter().map(|l| (l.amount, l.currency)))?;
@@ -286,6 +290,105 @@ pub async fn edit(
     gated(db, before_check).await
 }
 
+/// Moves a transaction's category to `to`, leaving the rest of it alone: its
+/// one income or expense leg, or else its one leg no statement posts to.
+/// Anything else has no single leg to move, and is for the editor.
+pub async fn move_category(
+    pool: &SqlitePool,
+    statements: &StatementAccounts,
+    id: i64,
+    to: &str,
+    confirm: bool,
+) -> Result<()> {
+    let mut db = pool.acquire().await?;
+    live(&mut db, id).await?;
+    let narration: Option<String> =
+        sqlx::query_scalar("SELECT narration FROM transactions WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *db)
+            .await?;
+    let rows = postings_of(&mut db, id).await?;
+    let mut categories = Vec::new();
+    let mut unstated = Vec::new();
+    for r in &rows {
+        match account(&mut db, &r.path).await?.account_type {
+            AccountType::Income | AccountType::Expense => categories.push(r.id),
+            AccountType::Asset | AccountType::Liability => {
+                if !statement_account(&mut db, statements, &r.path).await?.0 {
+                    unstated.push(r.id);
+                }
+            }
+            AccountType::Equity => {}
+        }
+    }
+    drop(db);
+    let leg = match (categories.as_slice(), unstated.as_slice()) {
+        ([only], _) | ([], [only]) => *only,
+        ([], []) => bail!("這筆是口座之間的轉帳，愛開來改"),
+        _ => bail!("這筆有幾若个口座會當改，愛開來改"),
+    };
+    let legs = rows
+        .iter()
+        .map(|r| {
+            Ok(LegEdit {
+                posting_id: Some(r.id),
+                account: if r.id == leg { to.to_string() } else { r.path.clone() },
+                amount: r.amount.parse().with_context(|| format!("leg amount {:?}", r.amount))?,
+                currency: r
+                    .currency
+                    .parse()
+                    .with_context(|| format!("currency {:?}", r.currency))?,
+            })
+        })
+        .collect::<Result<_>>()?;
+    edit(pool, statements, id, &Edit { narration, legs, confirm }).await
+}
+
+/// Opens an account under one the chart already has, and returns its path.
+/// `name` is its label and the last part of its path.
+pub async fn open_account(pool: &SqlitePool, parent: &str, name: &str) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("請寫口座的名");
+    }
+    if name.contains([':', '›', '>']) {
+        bail!("名袂使有「:」「›」「>」");
+    }
+    let mut db = pool.begin().await?;
+    let under = account(&mut db, parent).await?;
+    if under.account_type == AccountType::Equity {
+        bail!("這跤袂使開口座");
+    }
+    let path = format!("{parent}:{name}");
+    let taken: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts WHERE path = ? OR (label = ? AND path LIKE ? || ':%'
+            AND path NOT LIKE ? || ':%:%')",
+    )
+    .bind(&path)
+    .bind(name)
+    .bind(parent)
+    .bind(parent)
+    .fetch_one(&mut *db)
+    .await?;
+    if taken > 0 {
+        bail!("已經有這个口座矣");
+    }
+    let id = sqlx::query("INSERT INTO accounts (path, label, type) VALUES (?, ?, ?)")
+        .bind(&path)
+        .bind(name)
+        .bind(under.account_type.to_string())
+        .execute(&mut *db)
+        .await
+        .with_context(|| format!("opening {path}"))?
+        .last_insert_rowid();
+    sqlx::query("INSERT INTO account_events (account_id, event) VALUES (?, 'created')")
+        .bind(id)
+        .execute(&mut *db)
+        .await?;
+    db.commit().await?;
+    Ok(path)
+}
+
 /// Refuses a transaction that is not there to change.
 async fn live(db: &mut SqliteConnection, id: i64) -> Result<()> {
     let deleted: Option<Option<String>> =
@@ -355,7 +458,7 @@ pub async fn unconfirm(pool: &SqlitePool, id: i64) -> Result<()> {
     Ok(())
 }
 
-async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
+pub(crate) async fn confirm_in(db: &mut SqliteConnection, id: i64) -> Result<()> {
     live(db, id).await?;
     let before = events::snapshot(db, id).await?;
     if before.reviewed {

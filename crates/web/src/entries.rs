@@ -314,6 +314,7 @@ impl Chart {
         ChartAccount {
             path: a.path.clone(),
             label: self.label(&a.path),
+            name: self.offer(&a.path),
             depth: a.path.matches(':').count(),
             kind: AccountKind::try_from(a.account_type).ok(),
         }
@@ -323,6 +324,7 @@ impl Chart {
     /// filtered subtrees.
     pub fn entry(&self, e: journal::Entry, base: Currency, focus: &[String]) -> Entry {
         Entry {
+            suggestions: Vec::new(),
             id: e.id,
             date: e.date.to_string(),
             payee: e.payee,

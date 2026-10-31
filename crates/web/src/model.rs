@@ -383,6 +383,8 @@ pub struct ChartAccount {
     pub path: String,
     /// Standalone, so it reads without the tree around it.
     pub label: String,
+    /// The whole trail of labels, which two accounts sharing a label differ by.
+    pub name: String,
     pub depth: usize,
     /// None for equity, which holds the loader's system accounts.
     pub kind: Option<AccountKind>,
@@ -414,6 +416,8 @@ pub struct Entry {
     /// Booked after the account's last statement: nothing has checked it.
     pub unverified: bool,
     pub legs: Vec<Leg>,
+    /// What the import that touched it asks the reader to look at.
+    pub suggestions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -434,26 +438,34 @@ pub struct Journal {
     pub pages: u32,
 }
 
-/// A statement line the importer would not pair alone, and the unverified
-/// records it fits.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Choice {
-    pub id: i64,
-    pub date: String,
-    pub account: String,
-    pub money: Money,
-    pub description: String,
-    pub candidates: Vec<Entry>,
-    /// The record picked, waiting for the next import.
-    pub chosen: Option<i64>,
-}
-
-/// 待確認: the journal held to unreviewed records, and the lines waiting to
-/// be paired.
+/// 待確認: the journal held to unreviewed records, where the ledger disagrees
+/// with an outside figure, and what the last imports took as confirmed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Queue {
     pub journal: Journal,
-    pub choices: Vec<Choice>,
+    pub gaps: Vec<Gap>,
+    pub confirmed: Vec<Entry>,
+    /// Where ticked rows may move.
+    pub accounts: Vec<ChartAccount>,
+    /// What a new account may open under.
+    pub parents: Vec<ChartAccount>,
+}
+
+/// What a change to several ticked rows came to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bulk {
+    pub done: usize,
+    /// The rows it left alone, each with why.
+    pub left: Vec<(i64, String)>,
+}
+
+/// An account the ledger disagrees with its statement, count or broker on, at
+/// the earliest such day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gap {
+    pub account: String,
+    pub label: String,
+    pub text: String,
 }
 
 /// One change the app recorded on a transaction.
@@ -470,6 +482,8 @@ pub struct Editing {
     pub entry: Entry,
     /// Where a leg may post: open accounts, and each leg's own.
     pub accounts: Vec<ChartAccount>,
+    /// What a new account may open under.
+    pub parents: Vec<ChartAccount>,
     pub history: Vec<Change>,
 }
 

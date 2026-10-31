@@ -53,6 +53,12 @@ pub async fn load(
     // page is for what needs fetching. The sort is stable, so the chart's
     // order holds otherwise.
     rows.sort_by_key(|r| r.instalment.is_some());
+    drop(conn);
+    for gap in crate::queue::gaps(pool, &chart).await? {
+        if let Some(row) = rows.iter_mut().find(|r| r.account == gap.account) {
+            row.gap = Some(gap.text);
+        }
+    }
 
     Ok(Coverage { today: today.to_string(), months: months(&rows, today), accounts: rows })
 }
@@ -286,6 +292,7 @@ fn row(
         balances: held.balances(),
         instalment: (cadence == Cadence::Instalment).then(|| instalment(records)).flatten(),
         split: splits.covers(account).then(|| split(records, base, today)),
+        gap: None,
     }
 }
 

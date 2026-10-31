@@ -1,9 +1,12 @@
 //! Cathay bank import into SQLite, on invented statements: the synthetic
 //! versions of T4a's two acceptance checks, plus the dedup-key fragility.
 
+mod common;
+
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
+use common::cathay::{period, twd, Line};
 use db::load;
 use import::{
     bank::{import, Report},
@@ -45,33 +48,6 @@ expense = "Expenses:Uncategorized"
 "券商"     = "Assets:Broker"
 "起鼓"     = "Equity:Opening-Balances"
 "#;
-
-/// A line as (date, 說明, 提出, 存入, 餘額, 交易資訊, 備註), oldest first.
-type Line<'a> = (&'a str, &'a str, &'a str, &'a str, &'a str, &'a str, &'a str);
-
-/// A TWD export as the bank writes it: BOM, CRLF, the lone-quote spacer
-/// record, newest line first.
-fn twd(account: &str, lines: &[Line]) -> String { period(account, None, lines) }
-
-/// The same, with the `(自 … 至 …)` header the bank puts on a dated download.
-fn period(account: &str, period_end: Option<&str>, lines: &[Line]) -> String {
-    let header = period_end
-        .map(|end| format!("\"筆數\",\"(自 2020/01/01 至 {end})\"\r\n"))
-        .unwrap_or_default();
-    // The lone-quote spacer record, then the column header.
-    let columns = ["交易日期", "帳務日期", "說明", "提出", "存入", "餘額", "交易資訊", "備註"]
-        .map(|c| format!("\"{c}\""))
-        .join(",");
-    let mut out =
-        format!("\u{feff}\"{account} 活存\"\r\n{header}\"幣別：TWD\"\r\n\"\r\n\"\r\n{columns}\r\n");
-    for (date, desc, out_, in_, bal, info, memo) in lines.iter().rev() {
-        out.push_str(&format!(
-            "\"{date}\",\"{date}\",\"{desc}\",\"{out_}\",\"{in_}\",\"{bal}\",\"{info}\",\"{memo}\"\
-             \r\n"
-        ));
-    }
-    out
-}
 
 const SAVINGS_2022: &[Line] = &[("2022/12/01", "存入", "", "1000", "1000", "", "")];
 const SAVINGS_2023: &[Line] = &[
@@ -202,7 +178,8 @@ async fn an_empty_ledger_closes_on_every_statement() -> Result<()> {
     // 12 lines, less the far halves of two transfers and one reversal, plus
     // three openings.
     assert_eq!(count(&pool, "SELECT count(*) FROM transactions").await?, 12);
-    assert_eq!(count(&pool, "SELECT count(*) FROM transactions WHERE reviewed = 1").await?, 0);
+    // Openings, and what no fallback had to name, need no look.
+    assert_eq!(count(&pool, "SELECT count(*) FROM transactions WHERE reviewed = 1").await?, 7);
     assert_eq!(
         count(&pool, "SELECT count(*) FROM transactions WHERE import_batch_id IS NULL").await?,
         0
@@ -302,9 +279,10 @@ async fn a_download_starting_mid_day_fails_loudly() -> Result<()> {
     // The next download starts at the second withdrawal: its key has no `:2`,
     // so it looks like the first one, already held.
     let tail = f.write("tail.csv", &twd("111111111111", &SAVINGS_2023[4..]))?;
-    let err = import_files(&pool, &f.chart, &[tail], &[]).await.expect_err("must not chain");
-    assert!(format!("{err:#}").contains("starts mid-day"), "{err:#}");
-    assert_eq!(count(&pool, "SELECT count(*) FROM transactions").await?, before);
+    let report = import_files(&pool, &f.chart, &[tail], &[]).await?;
+    assert_eq!(report.gaps.len(), 1, "{report}");
+    assert!(!report.check.mismatches.is_empty(), "{report}");
+    assert!(count(&pool, "SELECT count(*) FROM transactions").await? >= before);
     Ok(())
 }
 
@@ -386,22 +364,20 @@ async fn a_second_foreign_download_the_same_day_is_refused_loudly() -> Result<()
         "\"交易資訊\"\n\"2023/02/10\",\"2023/02/10\",\"USD 0.50\",\"−\",\"USD \
          1.50\",\"−\",\"網銀轉\"\n",
     );
-    let err = import_files(&pool, &f.chart, &[f.write("later.csv", &afternoon)?], &[])
-        .await
-        .expect_err("contradicts the recorded closing");
-    assert!(format!("{err:#}").contains("stale"), "{err:#}");
-    assert_eq!(count(&pool, "SELECT count(*) FROM transactions").await?, before);
+    let later = import_files(&pool, &f.chart, &[f.write("later.csv", &afternoon)?], &[]).await?;
+    assert_eq!(later.stale.len(), 1, "{later}");
+    assert!(count(&pool, "SELECT count(*) FROM transactions").await? >= before);
     Ok(())
 }
 
 #[tokio::test]
-async fn a_missing_download_fails_loudly() -> Result<()> {
+async fn a_missing_download_shows_its_gap() -> Result<()> {
     let f = Fixture::new()?;
     let paths = f.statements()?;
     let pool = f.db("gap.db").await?;
     import_files(&pool, &f.chart, &paths[..1], &[]).await?;
-    let err = import_files(&pool, &f.chart, &paths[2..3], &[]).await.expect_err("2023 is missing");
-    assert!(format!("{err:#}").contains("one is missing"), "{err:#}");
+    let report = import_files(&pool, &f.chart, &paths[2..3], &[]).await?;
+    assert!(!report.gaps.is_empty(), "{report}");
     Ok(())
 }
 
@@ -428,10 +404,10 @@ async fn labels_come_from_the_matched_record_then_the_rules() -> Result<()> {
 }
 
 /// Two downloads whose header period ends on the same day but which disagree
-/// about the closing balance: one of them is stale, and the import says so
+/// about the closing balance: one of them is stale, and the report says so
 /// rather than recording a second figure for that day.
 #[tokio::test]
-async fn a_closing_figure_that_contradicts_a_recorded_one_is_refused() -> Result<()> {
+async fn a_closing_figure_that_contradicts_a_recorded_one_is_reported() -> Result<()> {
     let f = Fixture::new()?;
     let pool = f.db("stale.db").await?;
     let short =
@@ -439,7 +415,7 @@ async fn a_closing_figure_that_contradicts_a_recorded_one_is_refused() -> Result
     import_files(&pool, &f.chart, &[short], &[]).await?;
 
     let full = f.write("full.csv", &period("111111111111", Some("2023/12/31"), SAVINGS_2023))?;
-    let err = import_files(&pool, &f.chart, &[full], &[]).await.expect_err("stale assertion");
-    assert!(format!("{err:#}").contains("is stale"), "{err:#}");
+    let report = import_files(&pool, &f.chart, &[full], &[]).await?;
+    assert_eq!(report.stale.len(), 1, "{report}");
     Ok(())
 }

@@ -1,23 +1,19 @@
 //! 日記帳: every transaction, newest first, with its legs. The filter and the
 //! list are components of their own so T9's review queue can reuse them.
 
-use leptos::{
-    ev,
-    prelude::*,
-    wasm_bindgen::JsCast,
-    web_sys::{HtmlDetailsElement, Node},
-};
+use leptos::{prelude::*, web_sys::HtmlDetailsElement};
 use leptos_meta::Title;
 use leptos_router::{components::Form, hooks::use_query_map};
 
 use crate::{
+    account_box::closes_on_leaving,
     balance_sheet::MoneyText,
     error::LoadFailed,
     model::{
         offered_for, AccountChoice, AccountNode, Entry, Journal, JournalQuery, Origin, Review,
         Source,
     },
-    review::ReviewControls,
+    review::{ReviewControls, Selection},
 };
 
 #[server]
@@ -136,39 +132,8 @@ pub fn JournalFilter(
             }
         }
     });
-    // A `<details>` gives no way out of its own panel, so the control closes
-    // it when the reader presses somewhere else. Pressing rather than focus:
-    // Safari and Firefox focus neither a link nor a summary when it is
-    // pressed, so a pick would arrive as focus going nowhere and close the
-    // panel out from under the click.
-    //
-    // In an effect because the server has no window to listen to, and holding
-    // the element itself because the callback runs outside the reactive
-    // ownership tree, where the node ref reads back empty.
-    Effect::new(move |_| {
-        // Each run registers its own listener, and its own cleanup takes that
-        // one away: skipping the work when the control is unchanged would
-        // leave the removal without its replacement.
-        if let Some(control) = combo.get() {
-            let elsewhere = window_event_listener(ev::pointerdown, move |press| {
-                let at = press.target().and_then(|t| t.dyn_into::<Node>().ok());
-                if !control.contains(at.as_ref()) {
-                    dropped.set(false);
-                }
-            });
-            on_cleanup(move || elsewhere.remove());
-        }
-    });
-    // Tabbing away is the other way out, and the only one focus can tell us
-    // about: a press that lands nowhere focusable is not a departure.
-    let left = move |ev: ev::FocusEvent| {
-        let into = ev.related_target().and_then(|target| target.dyn_into::<Node>().ok());
-        if into.is_some_and(|node| {
-            combo.get_untracked().is_none_or(|combo| !combo.contains(Some(&node)))
-        }) {
-            dropped.set(false);
-        }
-    };
+    // A `<details>` gives no way out of its own panel.
+    let left = closes_on_leaving(combo, move || dropped.set(false));
 
     let current = query.review.clone().unwrap_or_default();
     let option = move |current: String, value: String, text: &'static str| {
@@ -415,8 +380,33 @@ pub const UNREVIEWED_HINT: &str = "你還沒看過這筆：確認分類沒錯後
 pub const UNVERIFIED_HINT: &str =
     "銀行對帳單還沒出現這筆；匯入下一期對帳單時會自動對上，不用處理。";
 
-fn entry(e: Entry, review: bool) -> impl IntoView {
+pub fn entry(e: Entry, review: bool) -> impl IntoView {
     let id = e.id;
+    let tick = use_context::<Selection>().map(|Selection { ticked, .. }| {
+        view! {
+            <input
+                type="checkbox"
+                class="tick"
+                aria-label="揀這筆"
+                prop:checked=move || ticked.with(|t| t.contains(&id))
+                on:change=move |ev| {
+                    let on = event_target_checked(&ev);
+                    ticked
+                        .update(|t| {
+                            if on {
+                                t.insert(id);
+                            } else {
+                                t.remove(&id);
+                            }
+                        });
+                }
+            />
+        }
+    });
+    let suggestions = (!e.suggestions.is_empty()).then(|| {
+        let rows = e.suggestions.iter().cloned().map(|s| view! { <li>{s}</li> }).collect_view();
+        view! { <ul class="suggestions">{rows}</ul> }
+    });
     let controls = match review {
         true => view! { <ReviewControls id /> }.into_any(),
         false => view! {
@@ -428,7 +418,9 @@ fn entry(e: Entry, review: bool) -> impl IntoView {
     };
     view! {
         <li class="entry" class:unverified=e.unverified class:unreviewed=!e.reviewed>
+            {tick}
             <EntryHead entry=e.clone() source=review />
+            {suggestions}
             <EntryLegs legs=e.legs />
             {controls}
         </li>

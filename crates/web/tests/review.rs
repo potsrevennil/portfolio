@@ -4,26 +4,24 @@
 
 mod common;
 
-use chrono::NaiveDate;
 use common::{
     page::{position, visible, Context, Site},
     queue::{ledger, COFFEE, FEE, LUNCH, TAXI},
 };
 use db::{
-    pairing::{self, Ambiguity},
+    import_run::{self, Run, Suggestion},
     review::StatementAccounts,
 };
-use ledger_types::currency::Currency;
 use leptos::prelude::*;
-use rust_decimal_macros::dec;
 use serde_json::Value;
 use sqlx::SqlitePool;
 use web::{
+    account_box::open_account,
     journal::{load_journal, JournalList},
     manual::enter_manual,
     model::{Editing, JournalQuery, LegInput, Origin, Queue, Source as TxnSource},
     review::{
-        choose_pairing, confirm_entry, delete_entry, load_entry, load_queue, review_count,
+        confirm_entry, confirm_rows, delete_entry, load_entry, load_queue, move_rows, review_count,
         save_entry, unconfirm_entry, Actions, Editor, SPARE_ROWS,
     },
     server,
@@ -391,6 +389,87 @@ async fn an_edit_is_refused_by_name() {
     assert!(events(&pool, fee).await.is_empty());
 }
 
+/// Accounts open from the page, under one the chart has, named as typed.
+#[tokio::test]
+async fn open_an_account_from_the_page() {
+    let (_dir, pool) = ledger().await;
+    let open = |parent: &str, name: &str| {
+        let (parent, name) = (parent.to_string(), name.to_string());
+        let pool = pool.clone();
+        async move { call(&pool, || open_account(parent, name)).await }
+    };
+    let named = open("Assets:Split", " 乙公司 ").await.unwrap();
+    assert_eq!((named.path.as_str(), named.label.as_str()), ("Assets:Split:乙公司", "乙公司"));
+    assert!(named.name.ends_with("分帳 › 乙公司"), "{}", named.name);
+    let income = open("Income", "利息").await.unwrap();
+    let kind: String = sqlx::query_scalar("SELECT type FROM accounts WHERE path = ?")
+        .bind(&income.path)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(kind, "income");
+
+    for (parent, name, said) in [
+        ("Assets:Split", "乙公司", "已經有這个口座"),
+        ("Assets:Split", " ", "請寫口座的名"),
+        ("Assets:Split", "丙:丁", "袂使有"),
+        ("Assets:Split", "分帳 › 丁", "袂使有"),
+        ("Assets:Split", "分帳>丁", "袂使有"),
+        ("", "丙", "請揀欲開佇佗位"),
+        ("Assets:Nowhere", "丙", "查無帳戶"),
+        ("Equity", "丙", "袂使開口座"),
+    ] {
+        let refused = open(parent, name).await.unwrap_err().to_string();
+        assert!(refused.contains(said), "{parent} {name}: {refused}");
+    }
+}
+
+/// Ticked rows change one by one: each stays its own record, and what has no
+/// single leg to move is left alone, said why, for the editor.
+#[tokio::test]
+async fn ticked_rows_change_together() {
+    let (_dir, pool) = ledger().await;
+    let tab = call(&pool, || open_account("Assets:Split".to_string(), "乙公司".to_string()))
+        .await
+        .unwrap()
+        .path;
+    let (lunch, taxi) = (id_of(&pool, LUNCH).await, id_of(&pool, TAXI).await);
+    let (advance, wallet) = (id_of(&pool, "代墊").await, id_of(&pool, "存入舊錢包").await);
+    let legs_before = (legs(&pool, lunch).await, legs(&pool, wallet).await);
+    let ids = format!("{lunch},{taxi},{advance},{wallet}");
+
+    let moved = call(&pool, || move_rows(ids, tab.clone(), Some("1".to_string()))).await.unwrap();
+
+    assert_eq!(moved.done, 3);
+    let [(left, why)] = moved.left.as_slice() else { panic!("{:?}", moved.left) };
+    assert_eq!(*left, wallet);
+    assert!(why.contains("存入舊錢包") && why.contains("幾若个"), "{why}");
+    assert_eq!(legs(&pool, wallet).await, legs_before.1);
+    // The same postings, the same money: only the account differs.
+    for (id, kept) in [(lunch, "Assets:Cash"), (taxi, "Liabilities:Card")] {
+        let accounts: Vec<_> = legs(&pool, id).await.into_iter().map(|l| l.1).collect();
+        assert!(accounts.contains(&tab) && accounts.iter().any(|a| a == kept), "{accounts:?}");
+    }
+    let after: Vec<_> = legs(&pool, lunch).await;
+    assert_eq!(
+        after.iter().map(|l| (l.0, l.2.clone())).collect::<Vec<_>>(),
+        legs_before.0.iter().map(|l| (l.0, l.2.clone())).collect::<Vec<_>>(),
+    );
+    // A leg no statement posts to moves where there is no category.
+    let advance_legs: Vec<_> = legs(&pool, advance).await.into_iter().map(|l| l.1).collect();
+    assert!(advance_legs.contains(&tab), "{advance_legs:?}");
+    assert!(advance_legs.iter().any(|a| a == "Assets:Bank:Savings"), "{advance_legs:?}");
+    assert_eq!(narrations(&queue(&pool, JournalQuery::default()).await), [COFFEE, FEE]);
+
+    let ids = format!("{},{}", id_of(&pool, FEE).await, id_of(&pool, COFFEE).await);
+    let confirmed = call(&pool, || confirm_rows(ids)).await.unwrap();
+    assert_eq!((confirmed.done, confirmed.left.len()), (2, 0));
+    assert!(narrations(&queue(&pool, JournalQuery::default()).await).is_empty());
+
+    let unpicked = call(&pool, || move_rows(taxi.to_string(), String::new(), None)).await;
+    assert!(unpicked.unwrap_err().to_string().contains("請揀口座"));
+}
+
 /// The editor as the server renders it: every leg a row of plain form
 /// fields, then the blank rows to split into.
 #[tokio::test]
@@ -403,7 +482,7 @@ async fn the_editor_offers_each_leg_and_spare_rows() {
     let rows = html.matches("<tr>").count() - 1;
     assert_eq!(rows, editing.entry.legs.len() + SPARE_ROWS);
     assert!(html.contains(r#"name="legs[1][account]""#), "{html}");
-    assert!(html.contains(r#"<option value="Expenses:Uncategorized" selected"#), "{html}");
+    assert!(html.contains(r#"name="legs[1][account]" value="Expenses:Uncategorized""#), "{html}");
     assert!(html.contains(r#"name="legs[2][currency]" value="TWD""#), "{html}");
     let text = visible(&html);
     position(&text, "未分類");
@@ -415,82 +494,36 @@ async fn the_editor_offers_each_leg_and_spare_rows() {
     assert!(!offered.iter().any(|p| p.starts_with("Equity") || !p.contains(':')), "{offered:?}");
 }
 
-// --- Pairing a statement line -----------------------------------------------
+// --- What an import suggests ------------------------------------------------
 
 #[tokio::test]
-async fn an_ambiguous_line_is_paired_by_a_pick() {
+async fn the_queue_says_what_an_import_suggests_and_lists_what_it_confirmed() {
     let (_dir, pool) = ledger().await;
     let coffee = id_of(&pool, COFFEE).await;
     let lunch = id_of(&pool, LUNCH).await;
+    let mut run = Run::default();
+    run.suggest(coffee, Suggestion::Uncategorised);
+    run.touched(lunch);
     let mut conn = pool.acquire().await.unwrap();
-    pairing::record(&mut conn, &[Ambiguity {
-        account: "Assets:Bank:Savings".into(),
-        currency: Currency::TWD,
-        statement_ref: "bank:line:1".into(),
-        date: NaiveDate::from_ymd_opt(2024, 3, 2).unwrap(),
-        amount: dec!(-150),
-        description: "範例店".into(),
-        candidates: vec![coffee, lunch],
-    }])
-    .await
-    .unwrap();
+    import_run::record(&mut conn, "cathay", &run).await.unwrap();
     drop(conn);
 
     let q = queue(&pool, JournalQuery::default()).await;
-    let [choice] = q.choices.as_slice() else { panic!("{:?}", q.choices) };
-    let offered: Vec<_> = choice.candidates.iter().map(|e| e.id).collect();
-    assert_eq!(offered, [coffee, lunch]);
+    let row = q.journal.entries.iter().find(|e| e.id == coffee).expect("still to review");
+    assert_eq!(row.suggestions, ["未分類，揀一个分類"]);
+    assert!(q.journal.entries.iter().all(|e| e.id != lunch), "confirmed");
     let html = with_actions(|| {
-        let choices = q.choices.clone();
-        view! { <web::review::Pairings choices /> }.to_html()
+        let entries = q.confirmed.clone();
+        view! { <web::review::Confirmed entries /> }.to_html()
     });
-    position(&visible(&html), "待配對");
-    position(&visible(&html), "2024-03-02 活存 -150 TWD 範例店");
-    assert_eq!(html.matches(r#"type="radio" name="record""#).count(), 2, "{html}");
+    position(&visible(&html), "頂擺匯入已確認 1");
+    assert!(html.contains(&format!(r#"href="/review/{lunch}""#)), "{html}");
 
-    let id = choice.id;
-    let none = call(&pool, || choose_pairing(id, None)).await.unwrap_err().to_string();
-    assert!(none.contains("請選一筆紀錄"), "{none}");
-    let salary = id_of(&pool, "薪水").await;
-    let stranger = call(&pool, || choose_pairing(id, Some(salary))).await.unwrap_err();
-    assert!(stranger.to_string().contains("不在可配對的紀錄裡"), "{stranger}");
-    // A candidate deleted since is no longer one.
-    call(&pool, || delete_entry(lunch, Some("1".into()))).await.unwrap();
-    let gone = call(&pool, || choose_pairing(id, Some(lunch))).await.unwrap_err();
-    assert!(gone.to_string().contains("不在可配對的紀錄裡"), "{gone}");
-
-    call(&pool, || choose_pairing(id, Some(coffee))).await.unwrap();
+    // Still open to change: taken back, it waits again.
+    call(&pool, || unconfirm_entry(lunch)).await.unwrap();
     let q = queue(&pool, JournalQuery::default()).await;
-    assert_eq!(q.choices[0].chosen, Some(coffee));
-    let chosen = with_actions(|| {
-        let choices = q.choices.clone();
-        view! { <web::review::Pairings choices /> }.to_html()
-    });
-    position(&visible(&chosen), "已選，下次匯入時對帳");
-    let events = events(&pool, coffee).await;
-    assert_eq!(events[0].0, "paired");
-    assert_eq!(events[0].1["statement_ref"], "bank:line:1");
-
-    // Refused again, the line's pick no longer fit its record: the pick is
-    // dropped, to be made again from the candidates seen now.
-    let mut conn = pool.acquire().await.unwrap();
-    pairing::record(&mut conn, &[Ambiguity {
-        account: "Assets:Bank:Savings".into(),
-        currency: Currency::TWD,
-        statement_ref: "bank:line:1".into(),
-        date: NaiveDate::from_ymd_opt(2024, 3, 2).unwrap(),
-        amount: dec!(-150),
-        description: "範例店".into(),
-        candidates: vec![lunch, coffee],
-    }])
-    .await
-    .unwrap();
-    drop(conn);
-    let q = queue(&pool, JournalQuery::default()).await;
-    assert_eq!(q.choices[0].chosen, None);
-    // The deleted lunch is no longer offered.
-    let offered: Vec<_> = q.choices[0].candidates.iter().map(|e| e.id).collect();
-    assert_eq!(offered, [coffee]);
+    assert!(q.journal.entries.iter().any(|e| e.id == lunch));
+    assert!(q.confirmed.is_empty());
 }
 
 /// An opening balance's equity leg: hidden from every picker but its own
@@ -509,7 +542,7 @@ async fn an_equity_leg_stays_editable() {
     let offered: Vec<_> = editing.accounts.iter().map(|a| a.path.as_str()).collect();
     assert!(offered.contains(&"Equity:Opening-Balances"), "{offered:?}");
     let html = with_actions(|| view! { <Editor editing=editing.clone() /> }.to_html());
-    assert!(html.contains(r#"<option value="Equity:Opening-Balances" selected"#), "{html}");
+    assert!(html.contains(r#"value="Equity:Opening-Balances""#), "{html}");
 
     let ids: Vec<i64> = legs(&pool, opening).await.into_iter().map(|(p, ..)| p).collect();
     let legs_in = vec![

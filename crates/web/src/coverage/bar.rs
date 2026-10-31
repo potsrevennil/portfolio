@@ -195,13 +195,14 @@ fn status_text(row: &AccountRow) -> impl IntoView {
 
     let ask = row.wanted.as_ref().map(|what| format!("猶欠 {what}"));
     let (text, note) = match (row.status, row.late_days) {
+        _ if row.gap.is_some() => (row.gap.clone(), ask),
         (Standing::Current, _) => (Some("對到最新".to_string()), None),
         (Standing::Due, _) => (ask, None),
         (Standing::Overdue, Some(days)) => (Some(format!("逾期 {days} 日")), ask),
         _ => (None, None),
     };
     view! {
-        <span class="status">{text}</span>
+        <span class="status" class:gap=row.gap.is_some()>{text}</span>
         {note.map(|n| view! { <small>{n}</small> })}
     }
 }

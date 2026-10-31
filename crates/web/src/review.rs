@@ -1,18 +1,21 @@
-//! 待確認: the journal held to unreviewed records, each confirmed as it is or
-//! opened to edit or split, and the statement lines waiting for a person to
-//! say which record each one is.
+//! 待確認: the journal held to unreviewed records, each with what the import
+//! suggests, confirmed as it is or opened to edit or split; where the ledger
+//! disagrees with an outside figure; and what the last imports took as
+//! confirmed, still open to change. Rows can be ticked and changed together.
+
+use std::collections::BTreeSet;
 
 use leptos::prelude::*;
 use leptos_meta::Title;
 use leptos_router::hooks::{use_params_map, use_query_map};
 
 use crate::{
-    balance_sheet::MoneyText,
-    journal::{EntryHead, EntryLegs, JournalFilter, JournalList, OriginNote},
-    model::{ChartAccount, Choice, Editing, JournalQuery, LegInput, Queue},
+    account_box::{AccountBox, Accounts},
+    journal::{entry, EntryHead, JournalFilter, JournalList, OriginNote},
+    model::{Bulk, ChartAccount, Editing, Entry, Gap, JournalQuery, LegInput, Queue},
 };
 
-/// Blank rows the editor offers for splitting a leg.
+/// Blank rows the editor opens with for splitting a leg; ＋ adds more.
 pub const SPARE_ROWS: usize = 2;
 
 #[server]
@@ -86,11 +89,31 @@ pub async fn delete_entry(id: i64, sure: Option<String>) -> Result<(), ServerFnE
     Ok(())
 }
 
+/// Confirms each ticked row as it stands.
 #[server]
-pub async fn choose_pairing(choice: i64, record: Option<i64>) -> Result<(), ServerFnError> {
+pub async fn confirm_rows(ids: String) -> Result<Bulk, ServerFnError> {
     let pool = expect_context::<db::SqlitePool>();
-    let record = record.ok_or_else(|| ServerFnError::new("請選一筆紀錄"))?;
-    db::pairing::choose(&pool, choice, record).await.map_err(failed)
+    crate::queue::each_row(&pool, &ids, |id| db::review::confirm(&pool, id)).await.map_err(failed)
+}
+
+/// Moves each ticked row's category to `account`.
+#[server]
+pub async fn move_rows(
+    ids: String,
+    account: String,
+    confirm: Option<String>,
+) -> Result<Bulk, ServerFnError> {
+    if account.trim().is_empty() {
+        return Err(ServerFnError::new("請揀口座"));
+    }
+    let pool = expect_context::<db::SqlitePool>();
+    let statements = expect_context::<db::review::StatementAccounts>();
+    let confirm = confirm.is_some();
+    crate::queue::each_row(&pool, &ids, |id| {
+        db::review::move_category(&pool, &statements, id, &account, confirm)
+    })
+    .await
+    .map_err(failed)
 }
 
 /// The server's words, as the page shows them.
@@ -103,9 +126,19 @@ pub fn failed(e: anyhow::Error) -> ServerFnError { ServerFnError::new(format!("{
 pub struct Actions {
     pub confirm: ServerAction<ConfirmEntry>,
     pub save: ServerAction<SaveEntry>,
-    pub choose: ServerAction<ChoosePairing>,
     pub delete: ServerAction<DeleteEntry>,
     pub unconfirm: ServerAction<UnconfirmEntry>,
+    pub confirm_rows: ServerAction<ConfirmRows>,
+    pub move_rows: ServerAction<MoveRows>,
+}
+
+/// The rows ticked on 待確認. Only that page provides it, so only its rows
+/// offer a tick.
+#[derive(Clone, Copy)]
+pub struct Selection {
+    pub ticked: RwSignal<BTreeSet<i64>>,
+    /// What the last change to them came to.
+    pub outcome: RwSignal<Option<Result<Bulk, ServerFnError>>>,
 }
 
 impl Actions {
@@ -113,9 +146,10 @@ impl Actions {
         Actions {
             confirm: ServerAction::new(),
             save: ServerAction::new(),
-            choose: ServerAction::new(),
             delete: ServerAction::new(),
             unconfirm: ServerAction::new(),
+            confirm_rows: ServerAction::new(),
+            move_rows: ServerAction::new(),
         }
     }
 
@@ -123,9 +157,10 @@ impl Actions {
     pub fn version(&self) -> usize {
         self.confirm.version().get()
             + self.save.version().get()
-            + self.choose.version().get()
             + self.delete.version().get()
             + self.unconfirm.version().get()
+            + self.confirm_rows.version().get()
+            + self.move_rows.version().get()
     }
 }
 
@@ -160,6 +195,21 @@ pub fn CountBadge(
 pub fn ReviewPage() -> impl IntoView {
     let actions = expect_context::<Actions>();
     let params = use_query_map();
+    let selection =
+        Selection { ticked: RwSignal::new(BTreeSet::new()), outcome: RwSignal::new(None) };
+    provide_context(selection);
+    // Out here, as the list below is rebuilt with each change. What a change
+    // left alone stays ticked, to open or try again.
+    for result in [actions.confirm_rows.value(), actions.move_rows.value()] {
+        Effect::new(move |_| {
+            if let Some(result) = result.get() {
+                if let Ok(bulk) = &result {
+                    selection.ticked.set(bulk.left.iter().map(|(id, _)| *id).collect());
+                }
+                selection.outcome.set(Some(result));
+            }
+        });
+    }
     let queue = Resource::new(
         move || (JournalQuery::from(&params.get()), actions.version()),
         |(query, _)| load_queue(query),
@@ -169,11 +219,12 @@ pub fn ReviewPage() -> impl IntoView {
         <Transition fallback=|| view! { <p class="note">"載入中…"</p> }>
             {move || Suspend::new(async move {
                 match queue.await {
-                    Ok(Queue { journal, choices }) => {
+                    Ok(Queue { journal, gaps, confirmed, accounts, parents }) => {
+                        let page: Vec<i64> = journal.entries.iter().map(|e| e.id).collect();
                         view! {
                             <div class="journal review">
                                 <ActionError result=actions.confirm.value() />
-                                <Pairings choices />
+                                <Gaps gaps />
                                 <JournalFilter
                                     action="/review"
                                     query=journal.query.clone()
@@ -182,7 +233,9 @@ pub fn ReviewPage() -> impl IntoView {
                                     tree=journal.tree.clone()
                                     review=false
                                 />
+                                <Ticked page accounts parents />
                                 <JournalList action="/review" journal review=true />
+                                <Confirmed entries=confirmed />
                             </div>
                         }
                             .into_any()
@@ -209,6 +262,108 @@ pub fn ReviewControls(id: i64) -> impl IntoView {
     }
 }
 
+/// Ticks every row of the page, and once any is ticked, changes them together.
+#[component]
+pub fn Ticked(
+    page: Vec<i64>,
+    accounts: Vec<ChartAccount>,
+    parents: Vec<ChartAccount>,
+) -> impl IntoView {
+    let Selection { ticked, outcome } = expect_context::<Selection>();
+    let Actions { confirm_rows, move_rows, .. } = expect_context::<Actions>();
+    let accounts = Accounts::new(accounts, parents);
+    let ids = move || ticked.with(|t| t.iter().map(i64::to_string).collect::<Vec<_>>().join(","));
+    let count = move || ticked.with(BTreeSet::len);
+    view! {
+        <label class="tick-all">
+            <input
+                type="checkbox"
+                on:change=move |ev| {
+                    let on = event_target_checked(&ev);
+                    let page = page.clone();
+                    ticked
+                        .update(|t| {
+                            for id in page {
+                                if on {
+                                    t.insert(id);
+                                } else {
+                                    t.remove(&id);
+                                }
+                            }
+                        });
+                }
+            />
+            "揀這頁全部"
+        </label>
+        <BulkOutcome outcome />
+        <div class="bulk" class:hidden=move || count() == 0>
+            <span class="count">{move || format!("揀 {} 筆", count())}</span>
+            <ActionForm action=confirm_rows>
+                <input type="hidden" name="ids" prop:value=ids />
+                <button type="submit">"確認"</button>
+            </ActionForm>
+            <ActionForm action=move_rows>
+                <input type="hidden" name="ids" prop:value=ids />
+                <AccountBox name="account".to_string() accounts placeholder="改去佗一个口座" />
+                <label>
+                    <input type="checkbox" name="confirm" value="1" checked=true />
+                    "同時確認"
+                </label>
+                <button type="submit">"改"</button>
+            </ActionForm>
+        </div>
+    }
+}
+
+/// What the last change to several rows came to.
+#[component]
+pub fn BulkOutcome(outcome: RwSignal<Option<Result<Bulk, ServerFnError>>>) -> impl IntoView {
+    move || {
+        outcome.get().map(|r| match r {
+            Ok(Bulk { done, left }) => view! {
+                <div class="note">
+                    <p>{format!("處理好 {done} 筆")}</p>
+                    <ul>
+                        {left
+                            .into_iter()
+                            .map(|(_, why)| view! { <li class="error">{why}</li> })
+                            .collect_view()}
+                    </ul>
+                </div>
+            }
+            .into_any(),
+            Err(e) => view! { <p class="note error">{crate::error::said(&e)}</p> }.into_any(),
+        })
+    }
+}
+
+/// Where the ledger disagrees with a statement, a count or a broker.
+#[component]
+pub fn Gaps(gaps: Vec<Gap>) -> impl IntoView {
+    (!gaps.is_empty()).then(|| {
+        let rows = gaps
+            .into_iter()
+            .map(|g| view! { <li>{format!("{} {}", g.label, g.text)}</li> })
+            .collect_view();
+        view! { <ul class="gaps">{rows}</ul> }
+    })
+}
+
+/// What the last imports took as confirmed, each still open to change.
+#[component]
+pub fn Confirmed(entries: Vec<Entry>) -> impl IntoView {
+    (!entries.is_empty()).then(|| {
+        let count = format!("頂擺匯入已確認 {}", entries.len());
+        let rows = entries.into_iter().map(|e| entry(e, false)).collect_view();
+        view! {
+            <details class="confirmed">
+                <summary>{count}</summary>
+                <ol class="entries">{rows}</ol>
+            </details>
+        }
+    })
+}
+
 /// What the last run of an action refused, in the server's words.
 #[component]
 pub fn ActionError<T>(
@@ -224,75 +379,21 @@ where
     }
 }
 
-/// Statement lines the importer would not pair alone: pick the record each
-/// one is, and the next import verifies it.
-#[component]
-pub fn Pairings(choices: Vec<Choice>) -> impl IntoView {
-    let choose = expect_context::<Actions>().choose;
-    (!choices.is_empty()).then(|| {
-        view! {
-            <section class="pairings">
-                <h2>"待配對"</h2>
-                <p class="note">"對帳單的這幾筆，同金額的紀錄不只一筆。請選是哪一筆，下次匯入時就會對上。"</p>
-                <ActionError result=choose.value() />
-                <ol>
-                    {choices
-                        .into_iter()
-                        .map(|c| {
-                            let chosen = c.chosen;
-                            view! {
-                                <li class="choice">
-                                    <div class="line">
-                                        <span class="date">{c.date}</span>
-                                        <span class="account">{c.account}</span>
-                                        <MoneyText money=c.money />
-                                        <span class="narration">{c.description}</span>
-                                    </div>
-                                    {chosen.map(|_| view! { <p class="chosen">"已選，下次匯入時對帳"</p> })}
-                                    <ActionForm action=choose>
-                                        <input type="hidden" name="choice" value=c.id />
-                                        <ul class="candidates">
-                                            {c
-                                                .candidates
-                                                .into_iter()
-                                                .map(|e| {
-                                                    let id = e.id;
-                                                    view! {
-                                                        <li>
-                                                            <label>
-                                                                <input
-                                                                    type="radio"
-                                                                    name="record"
-                                                                    value=id
-                                                                    checked=chosen == Some(id)
-                                                                />
-                                                                <EntryHead entry=e.clone() />
-                                                                <EntryLegs legs=e.legs />
-                                                            </label>
-                                                        </li>
-                                                    }
-                                                })
-                                                .collect_view()}
-                                        </ul>
-                                        <button type="submit">"選這筆"</button>
-                                    </ActionForm>
-                                </li>
-                            }
-                        })
-                        .collect_view()}
-                </ol>
-            </section>
-        }
-    })
-}
-
 #[component]
 pub fn EditPage() -> impl IntoView {
     let actions = expect_context::<Actions>();
     let params = use_params_map();
     let id = move || params.read().get("id").and_then(|id| id.parse::<i64>().ok());
+    // A refused save leaves the page as it is, with what was filled in.
+    let changes = Memo::new(move |seen: Option<&usize>| {
+        let refused = actions.save.value().with(|saved| matches!(saved, Some(Err(_))));
+        match (refused, seen) {
+            (true, Some(seen)) => *seen,
+            _ => actions.version(),
+        }
+    });
     let editing = Resource::new(
-        move || (id(), actions.version()),
+        move || (id(), changes.get()),
         |(id, _)| async move {
             match id {
                 Some(id) => load_entry(id).await,
@@ -313,12 +414,13 @@ pub fn EditPage() -> impl IntoView {
     }
 }
 
-/// The legs as rows to edit, and blank ones to split into. Plain form fields,
-/// so the page works before the script loads.
+/// The legs as rows to edit, and a blank one to split into, with ＋ for more.
+/// Plain form fields, so one split works before the script loads.
 #[component]
 pub fn Editor(editing: Editing) -> impl IntoView {
     let Actions { save, delete, unconfirm, .. } = expect_context::<Actions>();
-    let Editing { entry, accounts, history } = editing;
+    let Editing { entry, accounts, parents, history } = editing;
+    let accounts = Accounts::new(accounts, parents);
     let id = entry.id;
     let currency = entry.legs.first().map(|l| l.money.currency.to_string()).unwrap_or_default();
     let narration = entry.narration.clone().unwrap_or_default();
@@ -335,10 +437,10 @@ pub fn Editor(editing: Editing) -> impl IntoView {
             (input, l.origin)
         })
         .collect();
-    rows.extend(
-        (0..SPARE_ROWS)
-            .map(|_| (LegInput { currency: currency.clone(), ..Default::default() }, None)),
-    );
+    let blank = LegInput { currency, ..Default::default() };
+    rows.extend((0..SPARE_ROWS).map(|_| (blank.clone(), None)));
+    let opened = rows.len();
+    let more = RwSignal::new(0);
     let reviewed = entry.reviewed;
     view! {
         <div class="journal edit">
@@ -353,7 +455,7 @@ pub fn Editor(editing: Editing) -> impl IntoView {
                 <table class="legs-edit">
                     <thead>
                         <tr>
-                            <th>"帳戶"</th>
+                            <th>"口座"</th>
                             <th>"金額"</th>
                             <th>"幣別"</th>
                         </tr>
@@ -362,12 +464,25 @@ pub fn Editor(editing: Editing) -> impl IntoView {
                         {rows
                             .into_iter()
                             .enumerate()
-                            .map(|(i, (leg, origin))| leg_row(i, leg, origin, &accounts))
+                            .map(|(i, (leg, origin))| leg_row(i, leg, origin, accounts))
                             .collect_view()}
+                        <For
+                            each=move || opened..opened + more.get()
+                            key=|i| *i
+                            children=move |i| leg_row(i, blank.clone(), None, accounts)
+                        />
                     </tbody>
                 </table>
+                <button
+                    type="button"
+                    class="add-leg"
+                    aria-label="加一个口座"
+                    on:click=move |_| more.update(|n| *n += 1)
+                >
+                    "＋"
+                </button>
                 <p class="note">
-                    "要拆開一筆：把它的金額改小，在空白行選帳戶、填上其餘的金額。每個幣別加起來要是 0。"
+                    "要拆開一筆：把它的金額改小，在空白行選口座、填上其餘的金額。每個幣別加起來要是 0。"
                 </p>
                 <div class="submit">
                     <label>
@@ -440,14 +555,14 @@ fn leg_row(
     i: usize,
     leg: LegInput,
     origin: Option<crate::model::Origin>,
-    accounts: &[ChartAccount],
+    accounts: Accounts,
 ) -> impl IntoView {
     let field = |name: &str| format!("legs[{i}][{name}]");
     view! {
         <tr>
             <td>
                 <input type="hidden" name=field("posting") value=leg.posting />
-                <AccountSelect name=field("account") accounts=accounts.to_vec() selected=leg.account />
+                <AccountBox name=field("account") accounts selected=leg.account />
                 <OriginNote origin />
             </td>
             <td>
@@ -457,35 +572,5 @@ fn leg_row(
                 <input type="text" class="currency" name=field("currency") value=leg.currency />
             </td>
         </tr>
-    }
-}
-
-/// A plain select of accounts, indented by depth.
-#[component]
-pub fn AccountSelect(
-    name: String,
-    accounts: Vec<ChartAccount>,
-    #[prop(optional)] selected: String,
-    /// The text of the empty choice.
-    #[prop(default = "—")]
-    blank: &'static str,
-) -> impl IntoView {
-    view! {
-        <select name=name>
-            <option value="">{blank}</option>
-            {accounts
-                .into_iter()
-                .map(|a| {
-                    let is_selected = a.path == selected;
-                    // Full-width spaces: a select draws no tree.
-                    let text = format!("{}{}", "\u{3000}".repeat(a.depth), a.label);
-                    view! {
-                        <option value=a.path selected=is_selected>
-                            {text}
-                        </option>
-                    }
-                })
-                .collect_view()}
-        </select>
     }
 }

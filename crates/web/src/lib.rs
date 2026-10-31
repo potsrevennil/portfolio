@@ -3,6 +3,7 @@
 //! server, `hydrate` the wasm client.
 
 pub mod account;
+pub mod account_box;
 pub mod app;
 pub mod balance_sheet;
 pub mod charts;

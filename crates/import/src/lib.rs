@@ -1,5 +1,5 @@
 //! Importers: institution downloads into SQLite, deduplicated against what
-//! the ledger already holds and gated by the balance check.
+//! the ledger already holds; the balance check reports what does not agree.
 
 pub mod bank;
 pub mod broker;
